@@ -1,0 +1,47 @@
+{
+  "name": "gemini-mcp-server",
+  "version": "1.0.0",
+  "description": "An MCP server for Google Gemini CLI integration, enabling AI assistants to interact with Gemini models",
+  "type": "module",
+  "bin": {
+    "gemini-mcp-server": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "prebuild": "npm run clean",
+    "build": "tsc && chmod +x dist/index.js",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js",
+    "debug": "DEBUG=true node --trace-warnings dist/index.js",
+    "inspector": "npx @modelcontextprotocol/inspector dist/index.js"
+  },
+  "keywords": [
+    "gemini",
+    "mcp",
+    "ai",
+    "llm",
+    "google",
+    "claude",
+    "modelcontextprotocol"
+  ],
+  "author": "Claude Code",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.9.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.28",
+    "typescript": "^5.8.2"
+  }
+}

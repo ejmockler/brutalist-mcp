@@ -1,150 +1,81 @@
 # Gemini MCP Server
 
-**Lightning-fast AI assistance at your fingertips**
+All LLMs are sycophants. Here's how to make them argue.
 
-Bring Google's blazing-fast Gemini Flash models directly into your CLI workflow. This MCP server transforms any tool that supports MCP (like Claude Code, Codex, or other AI assistants) into a powerful gateway to Gemini's capabilities - all running in your current working directory with full access to your files and context.
-
-## Why This Matters
-
-The Gemini Flash models are **ridiculously fast** - we're talking sub-second responses that make real-time AI assistance actually feel real-time. When you're deep in a coding session and need quick context, code reviews, or rapid iterations, waiting 5-10 seconds for a response breaks your flow. Gemini Flash delivers answers before you can blink.
-
-**Perfect for:**
-- 🚀 **Instant code reviews** during development
-- 🔍 **Quick context gathering** from large codebases  
-- ⚡ **Rapid prototyping** with AI assistance
-- 🛠️ **Real-time debugging** and problem-solving
-- 📊 **Fast data analysis** and processing
-
-Unlike standalone AI tools, this MCP server gives Gemini **full CLI capabilities** - it can read your files, write code, research on the internet, and integrate seamlessly into your existing workflow without context switching.
-
-## Features
-
-- **gemini_prompt**: Execute prompts using Gemini CLI with model selection
-- **gemini_models**: List available Gemini models and their capabilities  
-- **gemini_with_stdin**: Process input data through Gemini with prompts
-- **gemini_status**: Check Gemini CLI availability and configuration
-
-## Real-World Workflow
-
-Imagine you're working in Claude Code and hit a complex bug. Instead of switching contexts, you simply ask Claude Code to "use Gemini to analyze this error pattern across the codebase." Within seconds, Gemini Flash:
-
-1. **Scans your entire project** for similar patterns
-2. **Identifies root causes** with its blazing speed  
-3. **Suggests fixes** based on your specific codebase
-4. **Writes the code** directly in your editor
-
-All without leaving your terminal or waiting more than a second for responses.
-
-## Available Models
-
-- `gemini-2.5-flash`: Latest Gemini 2.5 Flash model ⚡ **Recommended for speed**
-- `gemini-1.5-pro`: Gemini 1.5 Pro model (more capable, slower)
-- `gemini-1.5-flash`: Gemini 1.5 Flash model ⚡ **Great balance of speed/quality**
-- `gemini-pro`: Classic Gemini Pro model
-
-## Quick Setup
-
-Get up and running in under 2 minutes:
+## adversarial workflows
 
 ```bash
-# 1. Install dependencies
-npm install
+# Destroy your architecture before users do
+"Gemini, this microservices design will fail. Tell me how and when."
 
-# 2. Build the server  
-npm run build
+# Roast your code
+"Gemini, assume this codebase is unmaintainable garbage."
 
-# 3. That's it! The server is ready to integrate with your MCP-compatible tools
+# Preemptive failure analysis
+"Gemini, this will get hacked. Show me the three worst attack vectors."
+
+# Economic reality check
+"Gemini, this scaling plan is financially insane. Break down the cost explosion."
+
+# Assumption assassination
+"Gemini, I'm wrong about user behavior here. Demolish my assumptions."
 ```
 
-**Prerequisites:** Make sure you have the [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and authenticated with your Google Cloud credentials.
 
-## How Working Directory Context Works
+## setup
 
-The magic happens automatically based on your MCP client:
-
-**🖥️ CLI Tools (Claude Code, Codex, etc.)**  
-When you run `claude-code` in `/your/project`, the MCP server inherits that same working directory. Gemini automatically has full access to your project files and operates in the correct context. No setup needed!
-
-**🌐 Web Clients (ChatGPT, Claude Web, etc.)**  
-The MCP server starts in whatever directory the web client's backend specifies (often home directory). Gemini can still access files, but you may need to navigate explicitly or provide full paths to your project.
-
-This makes the MCP server incredibly powerful for CLI workflows where you're already working in your project directory.
-
-**🎯 Pro Tip: Override Working Directory**  
-You can specify any working directory using the `cwd` parameter:
-
-```javascript
-// In Claude Code, ask: "Use Gemini to analyze the code in /path/to/project"
-// The MCP server will execute: gemini with cwd="/path/to/project"
+```bash
+npm install -g @google/gemini-cli && gemini  # auth once
+git clone https://github.com/yourusername/gemini-mcp-server
+cd gemini-mcp-server && npm install && npm run build
 ```
 
-This lets you point Gemini at any project directory, even from web clients!
-
-## Integration
-
-### With Claude Code
-
-Add to your Claude Code MCP configuration (`~/.claude/mcp.json`):
-
+`~/.claude/mcp.json`:
 ```json
-{
-  "mcpServers": {
-    "gemini": {
-      "command": "node", 
-      "args": ["/path/to/gemini-mcp-server/dist/index.js"]
-    }
-  }
-}
+{"mcpServers": {"gemini": {"command": "node", "args": ["/path/to/dist/index.js"]}}}
 ```
 
-Then in Claude Code, simply ask: *"Use Gemini to review this function for performance issues"* and watch it work instantly.
 
-### With Other MCP Clients
+## model stats
 
-Any MCP-compatible tool can use this server. Just add the configuration above to your tool's MCP settings.
+**Flash:** 217 tokens/sec, 320ms TTFT, 15x cheaper than Pro  
+**Pro:** 1.27s TTFT, state-of-the-art reasoning when needed  
+**Flash-Lite:** Cheapest + fastest for bulk operations
 
-### Direct Testing
+**Free tier:** 60 requests/min, 1000/day  
+**Context:** 1M tokens
+
+Claude Sonnet 4 completes tasks faster. Gemini responds faster. Use both.
+
+Drop a `GEMINI.md` in your project root for consistent adversarial prompting.
+
+## why this works
+
+**The problem:** All AIs default to "yes, great idea!" 
+
+**The solution:** Make them fight each other at 320ms response times.
+
+**The math:** 1000 free roasts per day. More criticism than your team gives in a year.
+
+## what you get
+
+**MCP Tools:**
+- `gemini_prompt` - Adversarial prompting with model selection
+- `gemini_with_stdin` - Challenge data/code through Gemini
+- `gemini_models` - List available critics
+- `gemini_status` - Health check
+
+**Real Architecture:**
+Thin wrapper around Gemini CLI. MCP → CLI pipes. No LLM proxy, no vendor lock-in.
 
 ```bash
-# List tools
-echo '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}' | node dist/index.js
-
-# Check status
-echo '{"jsonrpc": "2.0", "method": "tools/call", "id": 2, "params": {"name": "gemini_status", "arguments": {}}}' | node dist/index.js
-
-# Execute prompt
-echo '{"jsonrpc": "2.0", "method": "tools/call", "id": 3, "params": {"name": "gemini_prompt", "arguments": {"prompt": "What is 2+2?", "model": "gemini-2.5-flash"}}}' | node dist/index.js
+npm run dev        # build and run
+npm run inspector  # debug MCP messages
 ```
 
-## Tool Parameters
+## sources
 
-### gemini_prompt
-- `prompt` (required): The prompt to send to Gemini
-- `model` (optional): Gemini model to use
-- `sandbox` (optional): Run in sandbox mode
-- `debug` (optional): Enable debug mode  
-- `yolo` (optional): Auto-accept all actions
-- `approvalMode` (optional): Set approval mode (default, auto_edit, yolo)
-- `cwd` (optional): Working directory for Gemini to operate in
+[OpenAI-Anthropic Joint Safety Evaluation](https://openai.com/index/openai-anthropic-safety-evaluation/) - Summer 2025 collaborative testing  
+[SycEval: Evaluating LLM Sycophancy](https://arxiv.org/html/2502.08177v2) - AI sycophancy research
 
-### gemini_with_stdin
-- `inputData` (required): Input data to process
-- `prompt` (required): Prompt to apply to the input data
-- `model` (optional): Gemini model to use
-- `sandbox` (optional): Run in sandbox mode
-- `cwd` (optional): Working directory for Gemini to operate in
-
-## Requirements
-
-- Node.js >= 16.0.0
-- Gemini CLI installed and configured
-- Valid Google Cloud credentials for Gemini API access
-
-## Development
-
-```bash
-npm run dev     # Build and run
-npm run watch   # Watch mode
-npm run debug   # Debug mode
-npm run inspector   # MCP inspector
-```
+---

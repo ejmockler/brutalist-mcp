@@ -60,17 +60,21 @@ Drop a `GEMINI.md` in your project root for consistent adversarial prompting.
 ## what you get
 
 **MCP Tools:**
-- `gemini_prompt` - Adversarial prompting with model selection
-- `gemini_with_stdin` - Challenge data/code through Gemini
-- `gemini_models` - List available critics
-- `gemini_status` - Health check
+- `gemini_prompt` - Standard prompting. Pass `yolo: true` to auto-accept all actions
+- `gemini_with_stdin` - Process text/code through Gemini. Feed it your disasters
+- `gemini_json` - Get structured JSON responses instead of rambling text
+- `gemini_directories` - Include multiple project paths (up to 50). Gemini sees everything
+- `gemini_models` - List what models you can roast with
+- `gemini_status` - Check if Gemini CLI is installed and working
 
 **Real Architecture:**
 Thin wrapper around Gemini CLI. MCP → CLI pipes. No LLM proxy, no vendor lock-in.
 
 ```bash
-npm run dev        # build and run
-npm run inspector  # debug MCP messages
+npm run dev           # build and run
+npm run inspector     # debug MCP messages
+npm test              # run tests (15 passing)
+npm test:coverage     # check coverage
 ```
 
 ## sources

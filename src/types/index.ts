@@ -13,6 +13,11 @@ export interface GeminiPromptOptions {
   approvalMode?: 'default' | 'auto_edit' | 'yolo';
   inputData?: string;
   cwd?: string;
+  checkpointing?: boolean;
+  sessionSummary?: string;
+  includeDirectories?: string[];
+  outputFormat?: 'text' | 'json';
+  nonInteractive?: boolean;
 }
 
 export interface GeminiResponse {

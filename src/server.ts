@@ -1,13 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { exec, execFile } from "child_process";
+import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import { promisify } from "util";
+import { exec } from "child_process";
 import { z } from "zod";
+import { Readable } from "stream";
 
 import { GeminiServerConfig, GeminiModel, GeminiPromptOptions, GeminiResponse } from "./types/index.js";
 
 const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
 
 export class GeminiServer {
   public server: McpServer;
@@ -186,117 +187,217 @@ export class GeminiServer {
         }
       }
     );
+
+    // Tool for JSON output
+    this.server.tool(
+      "gemini_json",
+      "Execute prompt and get structured JSON response",
+      {
+        prompt: z.string().describe("The prompt to send to Gemini"),
+        model: z.string().optional().describe("Gemini model to use"),
+        schema: z.object({}).passthrough().optional().describe("Expected JSON schema for validation"),
+        cwd: z.string().optional().describe("Working directory")
+      },
+      async (args) => {
+        try {
+          const result = await this.executeGeminiPrompt({
+            prompt: args.prompt,
+            model: args.model || this.config.defaultModel,
+            outputFormat: 'json',
+            cwd: args.cwd
+          });
+
+          if (!result.success) {
+            return {
+              content: [{ type: "text" as const, text: `Error: ${result.error}` }]
+            };
+          }
+
+          try {
+            const jsonOutput = JSON.parse(result.output || '{}');
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify(jsonOutput, null, 2)
+                }
+              ]
+            };
+          } catch (parseError) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `Failed to parse JSON response: ${result.output}`
+                }
+              ]
+            };
+          }
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error: ${error instanceof Error ? error.message : String(error)}`
+              }
+            ]
+          };
+        }
+      }
+    );
+
+
+    // Tool for multi-directory support
+    this.server.tool(
+      "gemini_directories",
+      "Run Gemini with access to multiple directories",
+      {
+        directories: z.array(z.string()).describe("List of directories to include"),
+        prompt: z.string().describe("Prompt to execute"),
+        model: z.string().optional().describe("Model to use")
+      },
+      async (args) => {
+        try {
+          const result = await this.executeGeminiPrompt({
+            prompt: args.prompt,
+            model: args.model || this.config.defaultModel,
+            includeDirectories: args.directories
+          });
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: result.success
+                  ? `Executed with ${args.directories.length} directories:\n${result.output}`
+                  : `Error: ${result.error}`
+              }
+            ]
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error: ${error instanceof Error ? error.message : String(error)}`
+              }
+            ]
+          };
+        }
+      }
+    );
   }
 
   private async executeGeminiPrompt(options: GeminiPromptOptions): Promise<GeminiResponse> {
-    // Build command arguments array (no quotes needed with execFile)
-    const args: string[] = [];
+    return new Promise((resolve) => {
+      const args: string[] = [];
 
-    // Add model if specified
-    if (options.model) {
-      args.push("-m");
-      args.push(options.model);
-    }
+      // Add model if specified
+      if (options.model) {
+        args.push("-m", options.model);
+      }
 
-    // Add flags
-    if (options.sandbox) {
-      args.push("--sandbox");
-    }
-    if (options.debug) {
-      args.push("--debug");
-    }
-    if (options.yolo) {
-      args.push("--yolo");
-    }
-    if (options.approvalMode) {
-      args.push("--approval-mode");
-      args.push(options.approvalMode);
-    }
+      // Add flags
+      if (options.sandbox) {
+        args.push("--sandbox");
+      }
+      if (options.debug) {
+        args.push("--debug");
+      }
+      if (options.yolo) {
+        args.push("--yolo");
+      }
+      if (options.approvalMode) {
+        args.push("--approval-mode", options.approvalMode);
+      }
+      if (options.checkpointing) {
+        args.push("--checkpointing");
+      }
+      if (options.sessionSummary) {
+        args.push("--session-summary", options.sessionSummary);
+      }
+      if (options.includeDirectories && options.includeDirectories.length > 0) {
+        args.push("--include-directories", options.includeDirectories.join(","));
+      }
+      if (options.outputFormat) {
+        args.push("--output-format", options.outputFormat);
+      }
+      if (options.nonInteractive) {
+        args.push("--non-interactive");
+      }
 
-    // Add prompt
-    args.push("-p");
-    args.push(options.prompt);
+      // Add prompt as the last argument
+      args.push("-p", options.prompt);
 
-    try {
-      const execOptions: any = {
-        timeout: 30 * 60 * 1000, // 30 minute timeout for long Gemini tasks
-        maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large responses
-        env: process.env, // Pass current environment including PATH
-        cwd: options.cwd // Set working directory if specified
-      };
+      // Spawn the Gemini process
+      const geminiProcess = spawn(this.config.geminiPath || 'gemini', args, {
+        cwd: options.cwd || process.cwd(),
+        env: process.env
+      }) as ChildProcessWithoutNullStreams;
 
-      let result;
-      // If we have input data, we need to use shell exec
+      let stdout = '';
+      let stderr = '';
+
+      // If we have input data, pipe it to stdin
       if (options.inputData) {
-        // Build shell command for piping
-        const escapedPrompt = options.prompt.replace(/"/g, '\\"');
-        const escapedModel = options.model ? options.model.replace(/"/g, '\\"') : '';
-        const escapedInput = options.inputData.replace(/"/g, '\\"');
-        
-        let command = `echo "${escapedInput}" | ${this.config.geminiPath}`;
-        if (options.model) {
-          command += ` -m "${escapedModel}"`;
-        }
-        command += ` -p "${escapedPrompt}"`;
-        
-        result = await execAsync(command, execOptions);
+        const inputStream = Readable.from(options.inputData);
+        inputStream.pipe(geminiProcess.stdin!);
       } else {
-        // Build command with proper escaping for exec
-        const escapedPrompt = options.prompt.replace(/"/g, '\\"');
-        const escapedModel = options.model ? options.model.replace(/"/g, '\\"') : '';
-        
-        let command = `echo "" | ${this.config.geminiPath}`;
-        if (options.model) {
-          command += ` -m "${escapedModel}"`;
+        // Close stdin immediately if no input
+        geminiProcess.stdin!.end();
+      }
+
+      // Collect stdout
+      geminiProcess.stdout!.on('data', (data: Buffer) => {
+        stdout += data.toString();
+      });
+
+      // Collect stderr
+      geminiProcess.stderr!.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      // Handle process completion
+      geminiProcess.on('close', (code: number | null) => {
+        // Check for actual errors (ignore "Loaded cached credentials")
+        if (code !== 0 && !stderr.includes('Loaded cached credentials')) {
+          resolve({
+            success: false,
+            error: `Process exited with code ${code}: ${stderr}`,
+            model: options.model
+          });
+          return;
         }
-        command += ` -p "${escapedPrompt}"`;
-        
-        result = await execAsync(command, execOptions);
-      }
 
-      const { stdout, stderr } = result;
+        // Check for errors in stderr
+        if (stderr && stderr.includes('Error') && !stderr.includes('Loaded cached credentials')) {
+          resolve({
+            success: false,
+            error: stderr,
+            model: options.model
+          });
+          return;
+        }
 
-      // Check if there were any errors (excluding the "Loaded cached credentials" message)
-      const stderrStr = String(stderr);
-      if (stderrStr && stderrStr.includes('Error') && !stderrStr.includes('Loaded cached credentials')) {
-        return {
-          success: false,
-          error: stderrStr,
+        resolve({
+          success: true,
+          output: stdout.trim(),
           model: options.model
-        };
-      }
+        });
+      });
 
-      // Clean output by removing "Loaded cached credentials" if it appears
-      let output = String(stdout).trim();
-      
-      // Also check if stderr has "Loaded cached credentials" and stdout has content
-      if (stderrStr.includes('Loaded cached credentials') && output) {
-        // Output is fine, just has the credentials message in stderr
-      }
-
-      return {
-        success: true,
-        output: output,
-        model: options.model
-      };
-    } catch (error: any) {
-      // Include more detailed error information
-      console.error('Gemini execution error:', error);
-      
-      let errorMessage = error instanceof Error ? error.message : String(error);
-      if (error.code === 'ENOENT') {
-        errorMessage = `Gemini CLI not found at path: ${this.config.geminiPath}`;
-      } else if (error.stderr) {
-        errorMessage += `\nStderr: ${error.stderr}`;
-      } else if (error.stdout) {
-        errorMessage += `\nStdout: ${error.stdout}`;
-      }
-      
-      return {
-        success: false,
-        error: errorMessage,
-        model: options.model
-      };
-    }
+      // Handle spawn errors
+      geminiProcess.on('error', (error: any) => {
+        let errorMessage = error.message;
+        if (error.code === 'ENOENT') {
+          errorMessage = `Gemini CLI not found at path: ${this.config.geminiPath}`;
+        }
+        resolve({
+          success: false,
+          error: errorMessage,
+          model: options.model
+        });
+      });
+    });
   }
 }

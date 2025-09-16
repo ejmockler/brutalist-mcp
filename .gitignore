@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.claude/
+.env
+.DS_Store
+*.log
+npm-debug.log*
+.npm
+.eslintcache
+*.tsbuildinfo

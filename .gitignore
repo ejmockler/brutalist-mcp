@@ -3,6 +3,7 @@ dist/
 coverage/
 .claude/
 .env
+.npmrc
 .DS_Store
 *.log
 npm-debug.log*

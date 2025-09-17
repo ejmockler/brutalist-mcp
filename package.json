@@ -50,12 +50,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yourusername/brutalist-mcp.git"
+    "url": "git+https://github.com/ejmockler/brutalist-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/brutalist-mcp/issues"
+    "url": "https://github.com/ejmockler/brutalist-mcp/issues"
   },
-  "homepage": "https://github.com/yourusername/brutalist-mcp#readme",
+  "homepage": "https://github.com/ejmockler/brutalist-mcp#readme",
   "publishConfig": {
     "access": "public"
   },

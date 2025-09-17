@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
-import { GeminiServer } from './server.js';
+import { BrutalistServer } from './brutalist-server.js';
 
 async function main() {
   try {
-    const server = new GeminiServer();
+    const server = new BrutalistServer();
     await server.start();
   } catch (error) {
     console.error("Fatal error:", error instanceof Error ? error.message : String(error));

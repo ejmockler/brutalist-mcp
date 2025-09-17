@@ -1,85 +1,102 @@
-# Gemini MCP Server
+# Brutalist MCP
 
-All LLMs are sycophants. Here's how to make them argue.
+Your architecture will fail. Your startup will burn money. Your code has three unpatched CVEs.
 
-## adversarial workflows
+All AIs are sycophants. This one doesn't lie.
+
+## brutalist workflows
 
 ```bash
 # Destroy your architecture before users do
-"Gemini, this microservices design will fail. Tell me how and when."
+roast_architecture "This microservices design for our startup..."
 
-# Roast your code
-"Gemini, assume this codebase is unmaintainable garbage."
+# Demolish your code quality with specific models
+roast_code(code="authentication.py", models=["google/gemini-2.5-pro", "anthropic/claude-3.5-sonnet"])
 
-# Preemptive failure analysis
-"Gemini, this will get hacked. Show me the three worst attack vectors."
+# Reality check your ideas with 325+ AI models
+roast_idea "We're building a marketplace for..."
 
-# Economic reality check
-"Gemini, this scaling plan is financially insane. Break down the cost explosion."
+# Discover available models (325+ and growing)
+model_roster()  # Shows all available models
+model_roster(search="gemini")  # Find specific models
 
-# Assumption assassination
-"Gemini, I'm wrong about user behavior here. Demolish my assumptions."
+# Multi-model adversarial debate
+roast_debate "Should we use TypeScript or Go for this API?"
 ```
-
 
 ## setup
 
 ```bash
-npm install -g @google/gemini-cli && gemini  # auth once
-git clone https://github.com/yourusername/gemini-mcp-server
-cd gemini-mcp-server && npm install && npm run build
+# One command. Zero configuration.
+claude mcp add brutalist — npx -y @brutalist/mcp
 ```
 
-`~/.claude/mcp.json`:
-```json
-{"mcpServers": {"gemini": {"command": "node", "args": ["/path/to/dist/index.js"]}}}
+**Environment**: Export `OPENROUTER_API_KEY=your_key_here`  
+**Models**: 325+ models dynamically fetched from OpenRouter. Always current.
+
+## the math
+
+**Response time:** 320ms to shatter your confidence  
+**Critics deployed:** Up to 3 AI models per roast  
+**Perspectives:** Security, performance, economics, UX, ops, research  
+**Accuracy:** Higher than your team's estimates  
+**Cost:** $0.02 per brutal reality check
+
+## why everything is broken
+
+73% of microservices fail in production. Average security breach costs $4.88M. Your "simple" feature will take 3x longer than estimated.
+
+Every LLM defaults to "great idea!" because conflict doesn't pay. Meanwhile your assumptions remain untested until users destroy them.
+
+## model selection
+
+**Dynamic catalog:** 325+ models fetched live from OpenRouter  
+**Specific models:** Pass exact models for reproducible destruction  
+**Random selection:** Don't specify models for chaos from entire catalog  
+**Model discovery:** Use `model_roster()` to explore available critics  
+
+```bash
+# Use specific models
+roast_code(code="...", models=["google/gemini-2.5-pro", "openai/gpt-4o"])
+
+# Search for models
+model_roster(search="claude")  # Find all Claude variants
+
+# Random selection from 325+ models
+roast_idea "..."  # No models specified = random brutality
 ```
 
+## brutalist arsenal
 
-## model stats
+**`roast_code`** — Security vulnerabilities, performance disasters, maintainability failures  
+**`roast_architecture`** — Scalability death spirals, operational nightmares, cost explosions  
+**`roast_idea`** — Market failures, technical impossibilities, economic delusions  
+**`roast_research`** — Methodological flaws, irreproducible experiments, prototype cruft  
+**`roast_data`** — Statistical fishing, bias detection, overfitting paranoia  
+**`roast_security`** — Attack vectors, threat modeling, compliance failures  
+**`roast_product`** — UX disasters, adoption barriers, competitive threats  
+**`roast_infrastructure`** — Single points of failure, hidden costs, SLA violations  
+**`roast_debate`** — Multi-perspective adversarial convergence  
+**`model_roster`** — Available critics and their specializations
 
-**Flash:** 217 tokens/sec, 320ms TTFT, 15x cheaper than Pro  
-**Pro:** 1.27s TTFT, state-of-the-art reasoning when needed  
-**Flash-Lite:** Cheapest + fastest for bulk operations
-
-**Free tier:** 60 requests/min, 1000/day  
-**Context:** 1M tokens
-
-Claude Sonnet 4 completes tasks faster. Gemini responds faster. Use both.
-
-Drop a `GEMINI.md` in your project root for consistent adversarial prompting.
+Each tool accepts optional `models` parameter for specific critics, or randomly selects from 325+ available models.
 
 ## why this works
 
-**The problem:** All AIs default to "yes, great idea!" 
+**The problem:** AI optimizes for engagement, not truth.  
+**The solution:** Deploy multiple models with conflicting incentives.  
+**The result:** Brutal honesty before expensive failures.
 
-**The solution:** Make them fight each other at 320ms response times.
+Your code will fail. Your startup will struggle. Your research won't replicate.  
+Better to learn this from AI critics than users, investors, or peer reviewers.
 
-**The math:** 1000 free roasts per day. More criticism than your team gives in a year.
+## real architecture
 
-## what you get
+OpenRouter API → Live model catalog (325+) → Multi-model parallel execution → LLM-generated brutal prompts → Adversarial synthesis
 
-**MCP Tools:**
-- `gemini_prompt` - Standard prompting. Pass `yolo: true` to auto-accept all actions
-- `gemini_with_stdin` - Process text/code through Gemini. Feed it your disasters
-- `gemini_json` - Get structured JSON responses instead of rambling text
-- `gemini_directories` - Include multiple project paths (up to 50). Gemini sees everything
-- `gemini_models` - List what models you can roast with
-- `gemini_status` - Check if Gemini CLI is installed and working
-
-**Real Architecture:**
-Thin wrapper around Gemini CLI. MCP → CLI pipes. No LLM proxy, no vendor lock-in.
-
-```bash
-npm run dev           # build and run
-npm run inspector     # debug MCP messages
-npm test              # run tests (15 passing)
-npm test:coverage     # check coverage
-```
-
-## sources
-
-[OpenAI-Anthropic Joint Safety Evaluation](https://openai.com/index/openai-anthropic-safety-evaluation/) - Summer 2025 collaborative testing  
-[SycEval: Evaluating LLM Sycophancy](https://arxiv.org/html/2502.08177v2) - AI sycophancy research
+No CLI dependencies. No local tooling. No vendor lock-in.  
+Just brutal truth from 325+ AI models via one API key. Always current.
 
 ---
+
+*"More useful criticism than your team provides in a year."*

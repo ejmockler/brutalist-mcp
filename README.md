@@ -34,69 +34,41 @@ claude mcp add brutalist — npx -y @brutalist/mcp
 **Environment**: Export `OPENROUTER_API_KEY=your_key_here`  
 **Models**: 325+ models dynamically fetched from OpenRouter. Always current.
 
-## the math
+## why
 
-**Response time:** 320ms to shatter your confidence  
-**Critics deployed:** Up to 3 AI models per roast  
-**Perspectives:** Security, performance, economics, UX, ops, research  
-**Accuracy:** Higher than your team's estimates  
-**Cost:** $0.02 per brutal reality check
-
-## why everything is broken
-
-73% of microservices fail in production. Average security breach costs $4.88M. Your "simple" feature will take 3x longer than estimated.
-
-Every LLM defaults to "great idea!" because conflict doesn't pay. Meanwhile your assumptions remain untested until users destroy them.
+Every LLM defaults to "great idea!" because conflict doesn't pay. This deploys 325+ models to fight over your assumptions.
 
 ## model selection
 
-**Dynamic catalog:** 325+ models fetched live from OpenRouter  
-**Specific models:** Pass exact models for reproducible destruction  
-**Random selection:** Don't specify models for chaos from entire catalog  
-**Model discovery:** Use `model_roster()` to explore available critics  
-
 ```bash
-# Use specific models
+# Specific models
 roast_code(code="...", models=["google/gemini-2.5-pro", "openai/gpt-4o"])
 
-# Search for models
-model_roster(search="claude")  # Find all Claude variants
-
-# Random selection from 325+ models
-roast_idea "..."  # No models specified = random brutality
+# Random from 325+ models
+roast_idea "..."  # Chaos mode
 ```
 
-## brutalist arsenal
+## tools
 
-**`roast_code`** — Security vulnerabilities, performance disasters, maintainability failures  
-**`roast_architecture`** — Scalability death spirals, operational nightmares, cost explosions  
-**`roast_idea`** — Market failures, technical impossibilities, economic delusions  
-**`roast_research`** — Methodological flaws, irreproducible experiments, prototype cruft  
-**`roast_data`** — Statistical fishing, bias detection, overfitting paranoia  
-**`roast_security`** — Attack vectors, threat modeling, compliance failures  
-**`roast_product`** — UX disasters, adoption barriers, competitive threats  
-**`roast_infrastructure`** — Single points of failure, hidden costs, SLA violations  
-**`roast_debate`** — Multi-perspective adversarial convergence  
-**`model_roster`** — Available critics and their specializations
-
-Each tool accepts optional `models` parameter for specific critics, or randomly selects from 325+ available models.
+- **`roast_idea`** — Why imagination fails to become reality
+- **`roast_code`** — Security holes, performance disasters, maintainability nightmares
+- **`roast_architecture`** — Scaling failures, cost explosions, operational complexity
+- **`roast_research`** — Methodological flaws, irreproducible results, statistical crimes
+- **`roast_data`** — Overfitting, bias, correlation fallacies
+- **`roast_security`** — Attack vectors, authentication bypasses, data leaks
+- **`roast_product`** — UX disasters, adoption barriers, user abandonment
+- **`roast_infrastructure`** — Single points of failure, hidden costs, 3AM outages
+- **`roast_debate`** — Multiple models argue until truth emerges
+- **`model_roster`** — Browse and search 325+ available critics
 
 ## why this works
 
-**The problem:** AI optimizes for engagement, not truth.  
-**The solution:** Deploy multiple models with conflicting incentives.  
-**The result:** Brutal honesty before expensive failures.
+**Problem:** AI optimizes for engagement, not truth.  
+**Solution:** Deploy multiple models with conflicting incentives.  
+**Result:** Brutal honesty before expensive failures.
 
-Your code will fail. Your startup will struggle. Your research won't replicate.  
-Better to learn this from AI critics than users, investors, or peer reviewers.
-
-## real architecture
-
-OpenRouter API → Live model catalog (325+) → Multi-model parallel execution → LLM-generated brutal prompts → Adversarial synthesis
-
-No CLI dependencies. No local tooling. No vendor lock-in.  
-Just brutal truth from 325+ AI models via one API key. Always current.
+Your code will fail. Your startup will struggle. Better to learn this from AI critics than users.
 
 ---
 
-*"More useful criticism than your team provides in a year."*
+OpenRouter API → 325+ models → Parallel execution → Adversarial synthesis

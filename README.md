@@ -27,11 +27,11 @@ roast_debate "Should we use TypeScript or Go for this API?"
 ## setup
 
 ```bash
-# One command. Zero configuration.
-claude mcp add brutalist — npx -y @brutalist/mcp
+# One command. Zero configuration. Replace YOUR_KEY with your OpenRouter API key.
+claude mcp add brutalist -e OPENROUTER_API_KEY=YOUR_KEY -- npx -y @brutalist/mcp
 ```
 
-**Environment**: Export `OPENROUTER_API_KEY=your_key_here`  
+**Get key**: https://openrouter.ai/keys  
 **Models**: 325+ models dynamically fetched from OpenRouter. Always current.
 
 ## why

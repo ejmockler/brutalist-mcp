@@ -48,13 +48,16 @@ describe('OpenRouterClient', () => {
       await client.initialize();
     });
 
-    it('should execute prompt with a single model', async () => {
-      mockCreate.mockResolvedValueOnce({
-        choices: [{ 
-          message: { content: 'Test response' }
-        }],
-        usage: { total_tokens: 100 }
-      });
+    it('should execute prompt with a single model using streaming', async () => {
+      // Mock streaming response
+      const mockStream = {
+        async *[Symbol.asyncIterator]() {
+          yield { choices: [{ delta: { content: 'Test ' } }] };
+          yield { choices: [{ delta: { content: 'response' } }] };
+          yield { usage: { total_tokens: 100 } };
+        }
+      };
+      mockCreate.mockResolvedValueOnce(mockStream);
 
       const result = await client.executePrompt('Test prompt', 'model1');
       
@@ -64,7 +67,8 @@ describe('OpenRouterClient', () => {
           { role: 'user', content: 'Test prompt' }
         ],
         temperature: 0.7,
-        max_tokens: 2000
+        max_tokens: 2000,
+        stream: true
       });
       
       expect(result).toMatchObject({
@@ -76,9 +80,12 @@ describe('OpenRouterClient', () => {
     });
 
     it('should include context data when provided', async () => {
-      mockCreate.mockResolvedValueOnce({
-        choices: [{ message: { content: 'Response' } }]
-      });
+      const mockStream = {
+        async *[Symbol.asyncIterator]() {
+          yield { choices: [{ delta: { content: 'Response' } }] };
+        }
+      };
+      mockCreate.mockResolvedValueOnce(mockStream);
 
       await client.executePrompt('Prompt', 'model1', 'Context data');
       
@@ -86,9 +93,28 @@ describe('OpenRouterClient', () => {
         expect.objectContaining({
           messages: [
             { role: 'user', content: 'Prompt\n\nContext: Context data' }
-          ]
+          ],
+          stream: true
         })
       );
+    });
+
+    it('should handle streaming callback', async () => {
+      const mockStream = {
+        async *[Symbol.asyncIterator]() {
+          yield { choices: [{ delta: { content: 'Hello ' } }] };
+          yield { choices: [{ delta: { content: 'world' } }] };
+        }
+      };
+      mockCreate.mockResolvedValueOnce(mockStream);
+
+      const chunks: string[] = [];
+      const onStream = (chunk: string) => chunks.push(chunk);
+      
+      const result = await client.executePrompt('Test', 'model1', undefined, onStream);
+      
+      expect(chunks).toEqual(['Hello ', 'world']);
+      expect(result.content).toBe('Hello world');
     });
 
     it('should handle API errors', async () => {
@@ -106,10 +132,13 @@ describe('OpenRouterClient', () => {
     });
 
     it('should execute with random models when none specified', async () => {
-      mockCreate.mockResolvedValue({
-        choices: [{ message: { content: 'Response' } }],
-        usage: { total_tokens: 50 }
-      });
+      const mockStream = {
+        async *[Symbol.asyncIterator]() {
+          yield { choices: [{ delta: { content: 'Response' } }] };
+          yield { usage: { total_tokens: 50 } };
+        }
+      };
+      mockCreate.mockResolvedValue(mockStream);
 
       const results = await client.executeMultiModel('Test prompt', 2);
       
@@ -118,9 +147,12 @@ describe('OpenRouterClient', () => {
     });
 
     it('should execute with specific models when provided', async () => {
-      mockCreate.mockResolvedValue({
-        choices: [{ message: { content: 'Response' } }]
-      });
+      const mockStream = {
+        async *[Symbol.asyncIterator]() {
+          yield { choices: [{ delta: { content: 'Response' } }] };
+        }
+      };
+      mockCreate.mockResolvedValue(mockStream);
 
       const results = await client.executeMultiModel(
         'Test prompt',
@@ -132,17 +164,20 @@ describe('OpenRouterClient', () => {
       expect(results).toHaveLength(2);
       expect(mockCreate).toHaveBeenCalledTimes(2);
       expect(mockCreate).toHaveBeenCalledWith(
-        expect.objectContaining({ model: 'model1' })
+        expect.objectContaining({ model: 'model1', stream: true })
       );
       expect(mockCreate).toHaveBeenCalledWith(
-        expect.objectContaining({ model: 'model3' })
+        expect.objectContaining({ model: 'model3', stream: true })
       );
     });
 
     it('should handle invalid models gracefully', async () => {
-      mockCreate.mockResolvedValue({
-        choices: [{ message: { content: 'Response' } }]
-      });
+      const mockStream = {
+        async *[Symbol.asyncIterator]() {
+          yield { choices: [{ delta: { content: 'Response' } }] };
+        }
+      };
+      mockCreate.mockResolvedValue(mockStream);
 
       const results = await client.executeMultiModel(
         'Test prompt',
@@ -156,14 +191,21 @@ describe('OpenRouterClient', () => {
     });
 
     it('should return partial results on some failures', async () => {
+      const successStream1 = {
+        async *[Symbol.asyncIterator]() {
+          yield { choices: [{ delta: { content: 'Success' } }] };
+        }
+      };
+      const successStream2 = {
+        async *[Symbol.asyncIterator]() {
+          yield { choices: [{ delta: { content: 'Success2' } }] };
+        }
+      };
+      
       mockCreate
-        .mockResolvedValueOnce({
-          choices: [{ message: { content: 'Success' } }]
-        })
+        .mockResolvedValueOnce(successStream1)
         .mockRejectedValueOnce(new Error('Failed'))
-        .mockResolvedValueOnce({
-          choices: [{ message: { content: 'Success2' } }]
-        });
+        .mockResolvedValueOnce(successStream2);
 
       const results = await client.executeMultiModel('Test', 3);
       

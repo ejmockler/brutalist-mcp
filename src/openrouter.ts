@@ -132,17 +132,21 @@ export class OpenRouterClient {
       this.executePrompt(prompt, model, contextData)
     );
     
-    try {
-      return await Promise.all(promises);
-    } catch (error) {
-      // If any model fails, still return partial results
-      const results = await Promise.allSettled(promises);
-      return results
-        .filter((result): result is PromiseFulfilledResult<ModelResponse> => 
-          result.status === 'fulfilled'
-        )
-        .map(result => result.value);
+    // Always use allSettled to get partial results on failure
+    const results = await Promise.allSettled(promises);
+    const successful = results
+      .filter((result): result is PromiseFulfilledResult<ModelResponse> => 
+        result.status === 'fulfilled'
+      )
+      .map(result => result.value);
+    
+    // Log failures for debugging
+    const failures = results.filter(r => r.status === 'rejected');
+    if (failures.length > 0) {
+      logger.warn(`${failures.length} model(s) failed during execution`);
     }
+    
+    return successful;
   }
 
   getAvailableModels(): string[] {

@@ -24,27 +24,71 @@ model_roster(search="gemini")  # Find specific models
 roast_debate "Should we use TypeScript or Go for this API?"
 ```
 
-## setup
+## Setup
+
+**Get your API key:** https://openrouter.ai/keys
+
+<details>
+<summary><strong>VS Code / Cline</strong> — One-liner</summary>
 
 ```bash
-# Claude Code (available across all projects)
-claude mcp add brutalist --scope user -e OPENROUTER_API_KEY=YOUR_KEY -- npx -y @brutalist/mcp
-
-# Gemini CLI  
-gemini mcp add brutalist -e OPENROUTER_API_KEY=YOUR_KEY -- npx -y @brutalist/mcp
-
-# Cursor/Windsurf/Cline: Use MCP settings in your editor to add:
-# Command: npx  Args: ["-y", "@brutalist/mcp"]  Env: {"OPENROUTER_API_KEY": "YOUR_KEY"}
-
-# Codex CLI: Add to ~/.codex/config.toml
-# [mcp_servers.brutalist]
-# command = "npx"
-# args = ["-y", "@brutalist/mcp"]  
-# env = { OPENROUTER_API_KEY = "YOUR_KEY" }
+code --add-mcp '{"name":"brutalist","command":"npx","args":["-y","@brutalist/mcp"],"env":{"OPENROUTER_API_KEY":"YOUR_KEY"}}'
 ```
+</details>
 
-**Get key**: https://openrouter.ai/keys  
-**Models**: 325+ models dynamically fetched from OpenRouter. Always current.
+<details>
+<summary><strong>Claude Code</strong> — One-liner</summary>
+
+```bash
+claude mcp add brutalist --scope user -e OPENROUTER_API_KEY=YOUR_KEY -- npx -y @brutalist/mcp
+```
+</details>
+
+<details>
+<summary><strong>Gemini CLI</strong> — One-liner</summary>
+
+```bash
+gemini mcp add brutalist -e OPENROUTER_API_KEY=YOUR_KEY -- npx -y @brutalist/mcp
+```
+</details>
+
+<details>
+<summary><strong>Cursor</strong> — Manual config</summary>
+
+Add to `~/.cursor/mcp.json` or use **Settings → MCP & Integrations**
+
+```json
+{
+  "brutalist": {
+    "command": "npx",
+    "args": ["-y", "@brutalist/mcp"],
+    "env": {
+      "OPENROUTER_API_KEY": "YOUR_KEY"
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><strong>Windsurf</strong> — Manual config</summary>
+
+Add to `~/.codeium/windsurf/mcp_config.json` or use **Plugin Store**
+
+```json
+{
+  "brutalist": {
+    "command": "npx",
+    "args": ["-y", "@brutalist/mcp"],
+    "env": {
+      "OPENROUTER_API_KEY": "YOUR_KEY"
+    }
+  }
+}
+```
+</details>
+
+**Models:** 325+ models dynamically fetched from OpenRouter. Always current.
 
 ## why
 
@@ -60,18 +104,20 @@ roast_code(code="...", models=["google/gemini-2.5-pro", "openai/gpt-4o"])
 roast_idea "..."  # Chaos mode
 ```
 
-## tools
+## Tools
 
-- **`roast_idea`** — Why imagination fails to become reality
-- **`roast_code`** — Security holes, performance disasters, maintainability nightmares
-- **`roast_architecture`** — Scaling failures, cost explosions, operational complexity
-- **`roast_research`** — Methodological flaws, irreproducible results, statistical crimes
-- **`roast_data`** — Overfitting, bias, correlation fallacies
-- **`roast_security`** — Attack vectors, authentication bypasses, data leaks
-- **`roast_product`** — UX disasters, adoption barriers, user abandonment
-- **`roast_infrastructure`** — Single points of failure, hidden costs, 3AM outages
-- **`roast_debate`** — Multiple models argue until truth emerges
-- **`model_roster`** — Browse and search 325+ available critics
+| Tool | What gets destroyed |
+|------|-------------------|
+| `roast_idea` | Why imagination fails to become reality |
+| `roast_code` | Security holes, performance disasters, maintainability nightmares |
+| `roast_architecture` | Scaling failures, cost explosions, operational complexity |
+| `roast_research` | Methodological flaws, irreproducible results, statistical crimes |
+| `roast_data` | Overfitting, bias, correlation fallacies |
+| `roast_security` | Attack vectors, authentication bypasses, data leaks |
+| `roast_product` | UX disasters, adoption barriers, user abandonment |
+| `roast_infrastructure` | Single points of failure, hidden costs, 3AM outages |
+| `roast_debate` | Multiple models argue until truth emerges |
+| `model_roster` | Browse and search 325+ available critics |
 
 ## why this works
 

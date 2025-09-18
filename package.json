@@ -1,6 +1,6 @@
 {
   "name": "@brutalist/mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "🏢 Brutalist AI feedback engine. All AIs are sycophants. This one demolishes your work before users do. Concrete-hard criticism from multiple models.",
   "type": "module",
   "main": "dist/index.js",

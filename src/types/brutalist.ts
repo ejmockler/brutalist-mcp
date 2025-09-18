@@ -26,4 +26,3 @@ export interface RoastOptions {
   maxModels?: number;
   models?: string[];  // User-specified models
 }
-

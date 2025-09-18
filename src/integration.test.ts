@@ -57,27 +57,40 @@ describeIntegration('Integration Tests', () => {
     }, 30000);
 
     it('should execute a simple roast with gemini-2.0-flash', async () => {
+      // Check what models are actually available
+      const availableModels = client.getAvailableModels();
+      console.log('Available models:', availableModels.slice(0, 10)); // Log first 10
+      
+      // Find a working Gemini model
+      const geminiModel = availableModels.find(m => m.includes('gemini') && m.includes('flash'));
+      const modelToUse = geminiModel || 'google/gemini-2.0-flash-exp:free';
+      console.log('Using model:', modelToUse);
+      
       const result = await client.executeMultiModel(
         'I want to build another todo app',
         1,
         undefined,
-        ['google/gemini-2.0-flash-exp:free']
+        [modelToUse]
       );
 
       expect(result).toBeDefined();
       expect(Array.isArray(result)).toBe(true);
       expect(result.length).toBe(1);
-      expect(result[0].model).toBe('google/gemini-2.0-flash-exp:free');
+      expect(result[0].model).toBe(modelToUse);
       expect(result[0].content).toBeTruthy();
       expect(result[0].content.length).toBeGreaterThan(50);
     }, 30000);
 
     it('should execute multi-model roast', async () => {
+      const availableModels = client.getAvailableModels();
+      const geminiModel = availableModels.find(m => m.includes('gemini')) || availableModels[0];
+      const llamaModel = availableModels.find(m => m.includes('llama')) || availableModels[1];
+      
       const result = await client.executeMultiModel(
         'We are using 47 microservices for our startup MVP',
         2,
         undefined,
-        ['google/gemini-2.0-flash-exp:free', 'meta-llama/llama-3.2-3b-instruct:free']
+        [geminiModel, llamaModel]
       );
 
       expect(result).toBeDefined();
@@ -86,8 +99,8 @@ describeIntegration('Integration Tests', () => {
       
       // Check each model responded
       const modelIds = result.map(r => r.model);
-      expect(modelIds).toContain('google/gemini-2.0-flash-exp:free');
-      expect(modelIds).toContain('meta-llama/llama-3.2-3b-instruct:free');
+      expect(modelIds).toContain(geminiModel);
+      expect(modelIds).toContain(llamaModel);
     }, 30000);
 
     it('should handle code roasting with context', async () => {
@@ -102,17 +115,21 @@ function processData(d) {
   return x;
 }`;
 
+      const availableModels = client.getAvailableModels();
+      const modelToUse = availableModels.find(m => m.includes('gemini')) || availableModels[0];
+      
       const result = await client.executeMultiModel(
         badCode,
         1,
         'File type: javascript',
-        ['google/gemini-2.0-flash-exp:free']
+        [modelToUse]
       );
 
       expect(result).toBeDefined();
+      expect(result.length).toBeGreaterThan(0);
+      expect(result[0]).toBeDefined();
       expect(result[0].content).toBeTruthy();
       
-      // Should criticize the code quality
       const criticism = result[0].content.toLowerCase();
       expect(
         criticism.includes('var') || 
@@ -124,13 +141,14 @@ function processData(d) {
     }, 30000);
 
     it('should handle rate limiting gracefully', async () => {
+      const availableModels = client.getAvailableModels();
       // Try to make multiple concurrent requests
       const promises = Array(3).fill(null).map((_, i) => 
         client.executeMultiModel(
           `Idea ${i}: AI-powered fortune telling app`,
           1,
           undefined,
-          ['google/gemini-2.0-flash-exp:free']
+          [availableModels[0] || 'google/gemini-2.0-flash-exp:free']
         )
       );
 
@@ -213,6 +231,9 @@ function processData(d) {
 
   describe('Real-world scenarios', () => {
     it('should provide meaningful architecture criticism', async () => {
+      const availableModels = client.getAvailableModels();
+      const modelToUse = availableModels.find(m => m.includes('gemini')) || availableModels[0];
+      
       const result = await client.executeMultiModel(
         `Our architecture:
         - 47 microservices for 10 users
@@ -222,9 +243,14 @@ function processData(d) {
         - Manual deployment via FTP`,
         1,
         undefined,
-        ['google/gemini-2.0-flash-exp:free']
+        [modelToUse]
       );
 
+      expect(result).toBeDefined();
+      expect(result.length).toBeGreaterThan(0);
+      expect(result[0]).toBeDefined();
+      expect(result[0].content).toBeDefined();
+      
       const criticism = result[0].content.toLowerCase();
       
       // Should identify major issues
@@ -243,6 +269,9 @@ function processData(d) {
     }, 30000);
 
     it('should provide meaningful security criticism', async () => {
+      const availableModels = client.getAvailableModels();
+      const modelToUse = availableModels.find(m => m.includes('gemini')) || availableModels[0];
+      
       const result = await client.executeMultiModel(
         `Our security approach:
         - Passwords stored in plain text
@@ -252,9 +281,14 @@ function processData(d) {
         - SQL queries built with string concatenation`,
         1,
         undefined,
-        ['google/gemini-2.0-flash-exp:free']
+        [modelToUse]
       );
 
+      expect(result).toBeDefined();
+      expect(result.length).toBeGreaterThan(0);
+      expect(result[0]).toBeDefined();
+      expect(result[0].content).toBeDefined();
+      
       const criticism = result[0].content.toLowerCase();
       
       // Should identify critical security issues

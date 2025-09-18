@@ -27,8 +27,20 @@ roast_debate "Should we use TypeScript or Go for this API?"
 ## setup
 
 ```bash
-# One command. Zero configuration. Replace YOUR_KEY with your OpenRouter API key.
-claude mcp add brutalist -e OPENROUTER_API_KEY=YOUR_KEY -- npx -y @brutalist/mcp
+# Claude Code (available across all projects)
+claude mcp add brutalist --scope user -e OPENROUTER_API_KEY=YOUR_KEY -- npx -y @brutalist/mcp
+
+# Gemini CLI  
+gemini mcp add brutalist -e OPENROUTER_API_KEY=YOUR_KEY -- npx -y @brutalist/mcp
+
+# Cursor/Windsurf/Cline: Use MCP settings in your editor to add:
+# Command: npx  Args: ["-y", "@brutalist/mcp"]  Env: {"OPENROUTER_API_KEY": "YOUR_KEY"}
+
+# Codex CLI: Add to ~/.codex/config.toml
+# [mcp_servers.brutalist]
+# command = "npx"
+# args = ["-y", "@brutalist/mcp"]  
+# env = { OPENROUTER_API_KEY = "YOUR_KEY" }
 ```
 
 **Get key**: https://openrouter.ai/keys  

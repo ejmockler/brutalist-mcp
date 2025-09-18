@@ -11,6 +11,9 @@ import {
 } from './types/brutalist.js';
 import { DEFAULT_MAX_MODELS_PER_REQUEST, DEFAULT_DEBATE_ROUNDS } from './constants.js';
 
+// Package version - updated by build process
+const PACKAGE_VERSION = "0.1.3";
+
 export class BrutalistServer {
   public server: McpServer;
   public config: BrutalistServerConfig;
@@ -33,7 +36,7 @@ export class BrutalistServer {
 
     this.server = new McpServer({
       name: "brutalist-mcp",
-      version: "0.1.0",
+      version: PACKAGE_VERSION,
       capabilities: {
         tools: {}
       }

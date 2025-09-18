@@ -63,7 +63,8 @@ export class OpenRouterClient {
   async executePrompt(
     prompt: string, 
     model: string, 
-    contextData?: string
+    contextData?: string,
+    onStream?: (chunk: string) => void
   ): Promise<ModelResponse> {
     const startTime = Date.now();
     
@@ -71,23 +72,41 @@ export class OpenRouterClient {
     const userPrompt = prompt + (contextData ? `\n\nContext: ${contextData}` : '');
     
     try {
-      const completion = await this.client.chat.completions.create({
+      // Use streaming for better UX
+      const stream = await this.client.chat.completions.create({
         model: model,
         messages: [
           { role: "user", content: userPrompt }
         ],
         temperature: DEFAULT_TEMPERATURE,
-        max_tokens: DEFAULT_MAX_TOKENS
+        max_tokens: DEFAULT_MAX_TOKENS,
+        stream: true
       });
 
+      let content = '';
+      let tokensUsed = 0;
+      
+      for await (const chunk of stream) {
+        const chunkContent = chunk.choices[0]?.delta?.content || '';
+        if (chunkContent) {
+          content += chunkContent;
+          if (onStream) {
+            onStream(chunkContent);
+          }
+        }
+        // Track token usage if available
+        if (chunk.usage) {
+          tokensUsed = chunk.usage.total_tokens;
+        }
+      }
+
       const responseTime = Date.now() - startTime;
-      const content = completion.choices[0]?.message?.content || '';
       
       return {
         model: model,
         persona: `Brutal Critic (${model})`,
         content: content,
-        tokensUsed: completion.usage?.total_tokens,
+        tokensUsed: tokensUsed,
         responseTime: responseTime
       };
     } catch (error) {

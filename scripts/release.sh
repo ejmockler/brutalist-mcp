@@ -2,7 +2,7 @@
 
 set -e
 
-echo "🚀 Gemini MCP Server Release Script"
+echo "🚀 Brutalist MCP Server Release Script"
 echo "===================================="
 
 # Check if we're on main branch
@@ -69,4 +69,4 @@ echo "1. Run CI tests"
 echo "2. Publish to NPM"
 echo "3. Create a GitHub release"
 echo ""
-echo "Monitor progress at: https://github.com/yourusername/gemini-mcp-server/actions"
+echo "Monitor progress at: https://github.com/ejmockler/brutalist-mcp/actions"

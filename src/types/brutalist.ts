@@ -1,28 +1,31 @@
 export interface BrutalistServerConfig {
-  openRouterApiKey?: string;
-  maxModelsPerRequest?: number;
+  workingDirectory?: string;
+  defaultTimeout?: number;
+  enableSandbox?: boolean;
 }
 
-export interface ModelResponse {
-  model: string;
-  persona: string;
-  content: string;
-  tokensUsed?: number;
-  responseTime?: number;
+export interface CLIAgentResponse {
+  agent: 'claude' | 'codex' | 'gemini';
+  success: boolean;
+  output: string;
+  error?: string;
+  executionTime: number;
 }
 
 export interface BrutalistResponse {
   success: boolean;
-  responses: ModelResponse[];
+  responses: CLIAgentResponse[];
   synthesis?: string;
   error?: string;
+  analysisType?: string;
+  targetPath?: string;
 }
 
 export interface RoastOptions {
-  userInput: string;
-  codeContext?: string;
-  fileType?: string;
-  projectContext?: string;
-  maxModels?: number;
-  models?: string[];  // User-specified models
+  targetPath: string;
+  analysisType: string;
+  context?: string;
+  workingDirectory?: string;
+  enableSandbox?: boolean;
+  agents?: ('claude' | 'codex' | 'gemini')[];
 }

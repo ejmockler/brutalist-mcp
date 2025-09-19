@@ -1,5 +1,5 @@
 import { BrutalistServer } from './brutalist-server.js';
-import { ModelResponse } from './types/brutalist.js';
+import { CLIAgentResponse } from './types/brutalist.js';
 
 // Mock the MCP SDK components
 const mockTool = jest.fn();
@@ -16,18 +16,18 @@ jest.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
   StdioServerTransport: jest.fn()
 }));
 
-// Mock OpenRouter since we don't want to make actual API calls in tests
-const mockExecuteMultiModel = jest.fn();
-const mockSynthesizeResponses = jest.fn();
-const mockGetAvailableModels = jest.fn();
-const mockInitialize = jest.fn().mockResolvedValue(undefined);
+// Mock CLI Agent Orchestrator since we don't want to make actual CLI calls in tests
+const mockDetectCLIContext = jest.fn();
+const mockExecuteBrutalistAnalysis = jest.fn();
+const mockSynthesizeBrutalistFeedback = jest.fn();
+const mockGetSmartCLISelection = jest.fn();
 
-jest.mock('./openrouter.js', () => ({
-  OpenRouterClient: jest.fn().mockImplementation(() => ({
-    initialize: mockInitialize,
-    getAvailableModels: mockGetAvailableModels,
-    executeMultiModel: mockExecuteMultiModel,
-    synthesizeResponses: mockSynthesizeResponses
+jest.mock('./cli-agents.js', () => ({
+  CLIAgentOrchestrator: jest.fn().mockImplementation(() => ({
+    detectCLIContext: mockDetectCLIContext,
+    executeBrutalistAnalysis: mockExecuteBrutalistAnalysis,
+    synthesizeBrutalistFeedback: mockSynthesizeBrutalistFeedback,
+    getSmartCLISelection: mockGetSmartCLISelection
   }))
 }));
 
@@ -43,53 +43,53 @@ jest.mock('./logger.js', () => ({
 
 describe('BrutalistServer', () => {
   beforeEach(() => {
-    // Set mock API key for tests
-    process.env.OPENROUTER_API_KEY = 'test-key';
-    
     // Reset mocks
     jest.clearAllMocks();
     
     // Setup default mock returns
-    mockGetAvailableModels.mockReturnValue(['anthropic/claude-3.5-sonnet', 'google/gemini-2.5-pro']);
-    mockExecuteMultiModel.mockResolvedValue([
+    mockDetectCLIContext.mockResolvedValue({
+      currentCLI: 'claude',
+      availableCLIs: ['claude', 'codex', 'gemini']
+    });
+    
+    mockGetSmartCLISelection.mockReturnValue(['codex', 'gemini']);
+    
+    mockExecuteBrutalistAnalysis.mockResolvedValue([
       {
-        model: 'anthropic/claude-3.5-sonnet',
-        persona: 'Brutal Critic (anthropic/claude-3.5-sonnet)',
-        content: 'This code is vulnerable to SQL injection attacks.',
-        tokensUsed: 150,
-        responseTime: 320
+        agent: 'codex',
+        success: true,
+        output: 'This code is vulnerable to injection attacks.',
+        executionTime: 1500
+      },
+      {
+        agent: 'gemini',
+        success: true,
+        output: 'The architecture has scaling bottlenecks.',
+        executionTime: 1200
       }
     ]);
-    mockSynthesizeResponses.mockReturnValue('Synthesized brutal feedback');
-  });
-
-  afterEach(() => {
-    delete process.env.OPENROUTER_API_KEY;
+    
+    mockSynthesizeBrutalistFeedback.mockReturnValue('Synthesized brutal feedback from CLI agents');
   });
 
   describe('Constructor', () => {
     it('should initialize with default config', () => {
       const server = new BrutalistServer();
-      expect(server.config.maxModelsPerRequest).toBe(3);
-    });
-
-    it('should throw error without API key', () => {
-      delete process.env.OPENROUTER_API_KEY;
-      expect(() => new BrutalistServer()).toThrow('OPENROUTER_API_KEY environment variable is required');
+      expect(server.config.workingDirectory).toBe(process.cwd());
+      expect(server.config.defaultTimeout).toBe(30000);
+      expect(server.config.enableSandbox).toBe(true);
     });
 
     it('should accept custom config', () => {
       const customConfig = {
-        maxModelsPerRequest: 5
+        workingDirectory: '/custom/path',
+        defaultTimeout: 60000,
+        enableSandbox: false
       };
       const server = new BrutalistServer(customConfig);
-      expect(server.config.maxModelsPerRequest).toBe(5);
-    });
-
-    it('should use API key from config if provided', () => {
-      delete process.env.OPENROUTER_API_KEY;
-      const server = new BrutalistServer({ openRouterApiKey: 'config-key' });
-      expect(server).toBeDefined();
+      expect(server.config.workingDirectory).toBe('/custom/path');
+      expect(server.config.defaultTimeout).toBe(60000);
+      expect(server.config.enableSandbox).toBe(false);
     });
   });
 
@@ -100,50 +100,47 @@ describe('BrutalistServer', () => {
       server = new BrutalistServer();
     });
 
-    it('should register all 10 tools', () => {
-      expect(mockTool).toHaveBeenCalledTimes(10);
+    it('should register all 13 tools', () => {
+      expect(mockTool).toHaveBeenCalledTimes(13);
     });
 
-    it('should register roast_code tool', () => {
+    it('should register roast_codebase tool', () => {
       expect(mockTool).toHaveBeenCalledWith(
-        'roast_code',
-        expect.stringContaining('battle-scarred principal engineer'),
+        'roast_codebase',
+        expect.stringContaining('Deploy brutal AI critics'),
         expect.any(Object),
         expect.any(Function)
       );
     });
 
-    it('should register roast_architecture tool', () => {
+    it('should register roast_cli_debate tool', () => {
       expect(mockTool).toHaveBeenCalledWith(
-        'roast_architecture',
-        expect.stringContaining('distinguished architect'),
+        'roast_cli_debate',
+        expect.stringContaining('adversarial combat'),
+        expect.any(Object),
+        expect.any(Function)
+      );
+    });
+
+    it('should register cli_agent_roster tool', () => {
+      expect(mockTool).toHaveBeenCalledWith(
+        'cli_agent_roster',
+        expect.stringContaining('Know your weapons'),
         expect.any(Object),
         expect.any(Function)
       );
     });
 
     it('should register roast_idea tool', () => {
-      expect(mockTool).toHaveBeenCalledWith(
-        'roast_idea',
-        expect.stringContaining('philosopher who understands'),
-        expect.any(Object),
-        expect.any(Function)
-      );
+      const roastIdeaCalls = mockTool.mock.calls.filter(call => call[0] === 'roast_idea');
+      expect(roastIdeaCalls.length).toBe(1);
+      expect(roastIdeaCalls[0][1]).toContain('Deploy brutal AI critics');
     });
 
-    it('should register roast_research tool', () => {
+    it('should register roast_architecture tool', () => {
       expect(mockTool).toHaveBeenCalledWith(
-        'roast_research',
-        expect.stringContaining('skeptical peer reviewer'),
-        expect.any(Object),
-        expect.any(Function)
-      );
-    });
-
-    it('should register roast_data tool', () => {
-      expect(mockTool).toHaveBeenCalledWith(
-        'roast_data',
-        expect.stringContaining('supremely jaded data scientist'),
+        'roast_architecture',
+        expect.stringContaining('architect'),
         expect.any(Object),
         expect.any(Function)
       );
@@ -157,42 +154,6 @@ describe('BrutalistServer', () => {
         expect.any(Function)
       );
     });
-
-    it('should register roast_product tool', () => {
-      expect(mockTool).toHaveBeenCalledWith(
-        'roast_product',
-        expect.stringContaining('product veteran'),
-        expect.any(Object),
-        expect.any(Function)
-      );
-    });
-
-    it('should register roast_infrastructure tool', () => {
-      expect(mockTool).toHaveBeenCalledWith(
-        'roast_infrastructure',
-        expect.stringContaining('grizzled site reliability engineer'),
-        expect.any(Object),
-        expect.any(Function)
-      );
-    });
-
-    it('should register roast_debate tool', () => {
-      expect(mockTool).toHaveBeenCalledWith(
-        'roast_debate',
-        expect.stringContaining('Truth emerges from conflict'),
-        expect.any(Object),
-        expect.any(Function)
-      );
-    });
-
-    it('should register model_roster tool', () => {
-      expect(mockTool).toHaveBeenCalledWith(
-        'model_roster',
-        expect.stringContaining('Know your weapons'),
-        expect.any(Object),
-        expect.any(Function)
-      );
-    });
   });
 
   describe('Server Lifecycle', () => {
@@ -200,7 +161,17 @@ describe('BrutalistServer', () => {
       const server = new BrutalistServer();
       await server.start();
       
-      expect(mockInitialize).toHaveBeenCalled();
+      expect(mockDetectCLIContext).toHaveBeenCalled();
+      expect(mockConnect).toHaveBeenCalled();
+    });
+
+    it('should handle CLI context detection failure gracefully', async () => {
+      mockDetectCLIContext.mockRejectedValueOnce(new Error('CLI detection failed'));
+      
+      const server = new BrutalistServer();
+      await server.start();
+      
+      // Should still connect even if CLI detection fails
       expect(mockConnect).toHaveBeenCalled();
     });
   });
@@ -218,65 +189,103 @@ describe('BrutalistServer', () => {
       server = new BrutalistServer();
     });
 
-    describe('roast_code', () => {
+    describe('roast_codebase', () => {
       it('should execute with all parameters', async () => {
-        const result = await toolHandlers['roast_code']({
-          code: 'function test() { return true; }',
-          fileType: 'javascript',
-          context: 'Unit test helper',
-          maxCritics: 5,
-          models: ['google/gemini-2.5-pro']
+        const result = await toolHandlers['roast_codebase']({
+          targetPath: '/path/to/code',
+          context: 'Production API',
+          workingDirectory: '/custom/dir',
+          enableSandbox: true
         });
 
-        expect(mockExecuteMultiModel).toHaveBeenCalledWith(
-          expect.stringContaining('javascript'),
-          5,
-          'function test() { return true; }',
-          ['google/gemini-2.5-pro']
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'codebase',
+          '/path/to/code',
+          'codeAnalysis',
+          'Production API',
+          expect.objectContaining({
+            workingDirectory: '/custom/dir',
+            sandbox: true,
+            excludeCurrentCLI: true
+          })
         );
-        expect(result.content[0].text).toBe('Synthesized brutal feedback');
+        expect(result.content[0].text).toBe('Synthesized brutal feedback from CLI agents');
       });
 
       it('should handle minimal parameters', async () => {
-        const result = await toolHandlers['roast_code']({
-          code: 'SELECT * FROM users'
+        const result = await toolHandlers['roast_codebase']({
+          targetPath: './src'
         });
 
-        expect(mockExecuteMultiModel).toHaveBeenCalledWith(
-          expect.stringContaining('SELECT * FROM users'),
-          3,
-          'SELECT * FROM users',
-          undefined
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'codebase',
+          './src',
+          'codeAnalysis',
+          undefined,
+          expect.objectContaining({
+            workingDirectory: process.cwd(),
+            excludeCurrentCLI: true
+          })
         );
-        expect(result.content[0].text).toBe('Synthesized brutal feedback');
+        expect(result.content[0].text).toBe('Synthesized brutal feedback from CLI agents');
       });
 
       it('should handle errors gracefully', async () => {
-        mockExecuteMultiModel.mockRejectedValueOnce(new Error('API Error'));
+        mockExecuteBrutalistAnalysis.mockRejectedValueOnce(new Error('CLI execution failed'));
         
-        const result = await toolHandlers['roast_code']({
-          code: 'bad code'
+        const result = await toolHandlers['roast_codebase']({
+          targetPath: '/bad/path'
         });
 
-        expect(result.content[0].text).toContain('Brutalist MCP Error: API Error');
+        expect(result.content[0].text).toContain('Brutalist MCP Error: CLI execution failed');
       });
     });
 
-    describe('roast_architecture', () => {
-      it('should execute with all parameters', async () => {
-        const result = await toolHandlers['roast_architecture']({
-          architecture: 'Microservices with Kafka',
-          scale: '1M requests/day',
-          constraints: 'Budget: $10k/month',
-          models: ['anthropic/claude-3.5-sonnet']
+    describe('roast_cli_debate', () => {
+      beforeEach(() => {
+        // Mock the CLI debate specific method
+        mockGetSmartCLISelection.mockReturnValue(['codex', 'gemini']);
+      });
+
+      it('should execute debate with multiple rounds', async () => {
+        const result = await toolHandlers['roast_cli_debate']({
+          targetPath: 'Test concept',
+          debateRounds: 3,
+          context: 'Additional context'
         });
 
-        expect(mockExecuteMultiModel).toHaveBeenCalledWith(
-          expect.stringContaining('Microservices with Kafka'),
-          3,
-          expect.stringContaining('Budget: $10k/month'),
-          ['anthropic/claude-3.5-sonnet']
-        );
+        // Should be called twice (once for initial analysis, once for counter-arguments per round after first)
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledTimes(3);
+        expect(result.content[0].text).toContain('CLI Agent Debate Results');
+      });
+
+      it('should use default 2 rounds', async () => {
+        const result = await toolHandlers['roast_cli_debate']({
+          targetPath: 'Simple debate topic'
+        });
+
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledTimes(2);
+      });
+
+      it('should handle insufficient CLIs', async () => {
+        mockGetSmartCLISelection.mockReturnValue(['claude']); // Only one CLI
+
+        const result = await toolHandlers['roast_cli_debate']({
+          targetPath: 'Test concept'
+        });
+
+        expect(result.content[0].text).toContain('CLI debate requires at least 2 CLIs');
+      });
+    });
+
+    describe('cli_agent_roster', () => {
+      it('should show available CLI agents and context', async () => {
+        const result = await toolHandlers['cli_agent_roster']({});
+
+        expect(mockDetectCLIContext).toHaveBeenCalled();
+        expect(result.content[0].text).toContain('Brutalist CLI Agent Arsenal');
+        expect(result.content[0].text).toContain('Available AI Critics (13 Tools Total)');
+        expect(result.content[0].text).toContain('Current CLI Context');
       });
     });
 
@@ -285,16 +294,17 @@ describe('BrutalistServer', () => {
         const result = await toolHandlers['roast_idea']({
           idea: 'AI-powered code review',
           context: 'For open source projects',
-          timeline: '3 months',
-          resources: 'Solo developer',
-          models: ['google/gemini-2.5-pro', 'anthropic/claude-3.5-sonnet']
+          workingDirectory: '/project/root'
         });
 
-        expect(mockExecuteMultiModel).toHaveBeenCalledWith(
-          expect.stringContaining('AI-powered code review'),
-          3,
-          expect.stringContaining('Timeline: 3 months'),
-          ['google/gemini-2.5-pro', 'anthropic/claude-3.5-sonnet']
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'idea',
+          'AI-powered code review',
+          'idea',
+          expect.stringContaining('For open source projects'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
         );
       });
 
@@ -303,11 +313,176 @@ describe('BrutalistServer', () => {
           idea: 'Revolutionary new framework'
         });
 
-        expect(mockExecuteMultiModel).toHaveBeenCalledWith(
-          expect.stringContaining('Revolutionary new framework'),
-          3,
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'idea',
+          'Revolutionary new framework',
+          'idea',
           expect.stringContaining('Context: none'),
-          undefined
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
+        );
+      });
+    });
+
+    describe('roast_file_structure', () => {
+      it('should execute with directory path', async () => {
+        const result = await toolHandlers['roast_file_structure']({
+          targetPath: '/project/src',
+          context: 'Monorepo structure'
+        });
+
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'file_structure',
+          '/project/src',
+          'fileStructure',
+          expect.stringContaining('Monorepo structure'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
+        );
+      });
+    });
+
+    describe('roast_dependencies', () => {
+      it('should execute with package file', async () => {
+        const result = await toolHandlers['roast_dependencies']({
+          targetPath: 'package.json'
+        });
+
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'dependencies',
+          'package.json',
+          'dependencies',
+          expect.stringContaining('Dependency analysis'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
+        );
+      });
+
+      it('should handle includeDevDeps parameter', async () => {
+        const result = await toolHandlers['roast_dependencies']({
+          targetPath: 'package.json',
+          includeDevDeps: false
+        });
+
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'dependencies',
+          'package.json',
+          'dependencies',
+          expect.stringContaining('dev deps: false'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
+        );
+      });
+    });
+
+    describe('roast_git_history', () => {
+      it('should execute with default parameters', async () => {
+        const result = await toolHandlers['roast_git_history']({
+          targetPath: '/project/repo'
+        });
+
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'git_history',
+          '/project/repo',
+          'gitHistory',
+          expect.stringContaining('last 20 commits'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
+        );
+      });
+
+      it('should handle custom commit range', async () => {
+        const result = await toolHandlers['roast_git_history']({
+          targetPath: '/project/repo',
+          commitRange: 'last 50 commits',
+          context: 'Feature branch analysis'
+        });
+
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'git_history',
+          '/project/repo',
+          'gitHistory',
+          expect.stringContaining('last 50 commits'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
+        );
+      });
+    });
+
+    describe('roast_test_coverage', () => {
+      it('should execute with default parameters', async () => {
+        const result = await toolHandlers['roast_test_coverage']({
+          targetPath: '/project/tests'
+        });
+
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'test_coverage',
+          '/project/tests',
+          'testCoverage',
+          expect.stringContaining('run coverage: true'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
+        );
+      });
+
+      it('should handle runCoverage parameter', async () => {
+        const result = await toolHandlers['roast_test_coverage']({
+          targetPath: '/project/tests',
+          runCoverage: false,
+          context: 'Manual test review'
+        });
+
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'test_coverage',
+          '/project/tests',
+          'testCoverage',
+          expect.stringContaining('run coverage: false'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
+        );
+      });
+    });
+
+    describe('roast_architecture', () => {
+      it('should execute with architecture description', async () => {
+        const result = await toolHandlers['roast_architecture']({
+          architecture: 'Microservices with Event Sourcing',
+          scale: '1M users',
+          constraints: 'Limited budget'
+        });
+
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'architecture',
+          'Microservices with Event Sourcing',
+          'architecture',
+          expect.stringContaining('Scale: 1M users'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
+        );
+      });
+
+      it('should handle minimal parameters', async () => {
+        const result = await toolHandlers['roast_architecture']({
+          architecture: 'Simple REST API'
+        });
+
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'architecture',
+          'Simple REST API',
+          'architecture',
+          expect.stringContaining('Scale: unknown'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
         );
       });
     });
@@ -315,35 +490,36 @@ describe('BrutalistServer', () => {
     describe('roast_research', () => {
       it('should execute with research parameters', async () => {
         const result = await toolHandlers['roast_research']({
-          research: 'Novel ML optimization technique',
-          field: 'Machine Learning',
-          claims: '10x faster training',
-          data: 'MNIST and ImageNet'
+          research: 'ML optimization study',
+          field: 'Computer Science',
+          claims: '10x performance improvement',
+          data: 'Synthetic benchmarks'
         });
 
-        expect(mockExecuteMultiModel).toHaveBeenCalledWith(
-          expect.stringContaining('Machine Learning'),
-          3,
-          expect.stringContaining('Claims: 10x faster training'),
-          undefined
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'research',
+          'ML optimization study',
+          'research',
+          expect.stringContaining('Field: Computer Science'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
         );
       });
-    });
 
-    describe('roast_data', () => {
-      it('should execute with data analysis parameters', async () => {
-        const result = await toolHandlers['roast_data']({
-          analysis: 'Customer churn prediction model',
-          dataset: '100k customer records',
-          metrics: 'AUC 0.95, Precision 0.92',
-          deployment: 'Real-time scoring API'
+      it('should handle missing optional fields', async () => {
+        const result = await toolHandlers['roast_research']({
+          research: 'Basic study'
         });
 
-        expect(mockExecuteMultiModel).toHaveBeenCalledWith(
-          expect.stringContaining('Customer churn prediction'),
-          3,
-          expect.stringContaining('AUC 0.95'),
-          undefined
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'research',
+          'Basic study',
+          'research',
+          expect.stringContaining('Field: unspecified'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
         );
       });
     });
@@ -352,16 +528,19 @@ describe('BrutalistServer', () => {
       it('should execute with security parameters', async () => {
         const result = await toolHandlers['roast_security']({
           system: 'OAuth2 implementation',
-          assets: 'User credentials and sessions',
-          threatModel: 'MITM, token theft',
+          assets: 'User credentials',
+          threatModel: 'Web application threats',
           compliance: 'GDPR, SOC2'
         });
 
-        expect(mockExecuteMultiModel).toHaveBeenCalledWith(
-          expect.stringContaining('OAuth2 implementation'),
-          3,
-          expect.stringContaining('GDPR, SOC2'),
-          undefined
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'security',
+          'OAuth2 implementation',
+          'security',
+          expect.stringContaining('Assets: User credentials'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
         );
       });
     });
@@ -370,16 +549,19 @@ describe('BrutalistServer', () => {
       it('should execute with product parameters', async () => {
         const result = await toolHandlers['roast_product']({
           product: 'Developer productivity tool',
-          users: 'Senior engineers',
+          users: 'Software engineers',
           competition: 'GitHub Copilot',
-          metrics: 'DAU, retention rate'
+          metrics: 'Daily active users'
         });
 
-        expect(mockExecuteMultiModel).toHaveBeenCalledWith(
-          expect.stringContaining('Developer productivity tool'),
-          3,
-          expect.stringContaining('GitHub Copilot'),
-          undefined
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'product',
+          'Developer productivity tool',
+          'product',
+          expect.stringContaining('Users: Software engineers'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
         );
       });
     });
@@ -393,216 +575,231 @@ describe('BrutalistServer', () => {
           sla: '99.99% uptime'
         });
 
-        expect(mockExecuteMultiModel).toHaveBeenCalledWith(
-          expect.stringContaining('Kubernetes on AWS'),
-          3,
-          expect.stringContaining('99.99% uptime'),
-          undefined
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'infrastructure',
+          'Kubernetes on AWS',
+          'infrastructure',
+          expect.stringContaining('Scale: 1000 pods'),
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
         );
-      });
-    });
-
-    describe('roast_debate', () => {
-      it('should execute debate with multiple rounds', async () => {
-        const result = await toolHandlers['roast_debate']({
-          topic: 'Microservices vs Monolith',
-          rounds: 3,
-          models: ['google/gemini-2.5-pro']
-        });
-
-        // Should be called once per round
-        expect(mockExecuteMultiModel).toHaveBeenCalledTimes(3);
-        expect(result.content[0].text).toContain('Adversarial Debate: 3 Rounds');
-      });
-
-      it('should use default 2 rounds', async () => {
-        const result = await toolHandlers['roast_debate']({
-          topic: 'TypeScript vs JavaScript'
-        });
-
-        expect(mockExecuteMultiModel).toHaveBeenCalledTimes(2);
-        expect(result.content[0].text).toContain('Adversarial Debate: 2 Rounds');
-      });
-
-      it('should build debate history', async () => {
-        await toolHandlers['roast_debate']({
-          topic: 'Initial topic',
-          rounds: 2
-        });
-
-        // First round should get original topic
-        expect(mockExecuteMultiModel).toHaveBeenNthCalledWith(1,
-          'Initial topic',
-          3,
-          undefined,
-          undefined
-        );
-
-        // Second round should include previous debate
-        expect(mockExecuteMultiModel).toHaveBeenNthCalledWith(2,
-          expect.stringContaining('Previous debate:'),
-          3,
-          undefined,
-          undefined
-        );
-      });
-    });
-
-    describe('model_roster', () => {
-      it('should list all available models', async () => {
-        mockGetAvailableModels.mockReturnValue([
-          'google/gemini-2.5-pro',
-          'anthropic/claude-3.5-sonnet',
-          'openai/gpt-4'
-        ]);
-
-        const result = await toolHandlers['model_roster']({});
-
-        expect(result.content[0].text).toContain('3 Models Available');
-        expect(result.content[0].text).toContain('google/gemini-2.5-pro');
-        expect(result.content[0].text).toContain('anthropic/claude-3.5-sonnet');
-        expect(result.content[0].text).toContain('openai/gpt-4');
-      });
-
-      it('should filter models by search term', async () => {
-        mockGetAvailableModels.mockReturnValue([
-          'google/gemini-2.5-pro',
-          'google/gemini-1.5-flash',
-          'anthropic/claude-3.5-sonnet',
-          'openai/gpt-4'
-        ]);
-
-        const result = await toolHandlers['model_roster']({
-          search: 'gemini'
-        });
-
-        expect(result.content[0].text).toContain('2 Models Matching "gemini"');
-        expect(result.content[0].text).toContain('google/gemini-2.5-pro');
-        expect(result.content[0].text).toContain('google/gemini-1.5-flash');
-        // The example section will still show anthropic/claude in the usage example
-        expect(result.content[0].text).toContain('How to Use Specific Models');
-      });
-
-      it('should handle no matching models', async () => {
-        mockGetAvailableModels.mockReturnValue(['google/gemini-2.5-pro']);
-
-        const result = await toolHandlers['model_roster']({
-          search: 'nonexistent'
-        });
-
-        expect(result.content[0].text).toContain('No models found matching "nonexistent"');
-      });
-
-      it('should truncate large model lists', async () => {
-        const manyModels = Array.from({ length: 50 }, (_, i) => `model-${i}`);
-        mockGetAvailableModels.mockReturnValue(manyModels);
-
-        const result = await toolHandlers['model_roster']({});
-
-        expect(result.content[0].text).toContain('...and 30 more models available');
       });
     });
   });
 
-  describe('Private Methods', () => {
+  describe('CLI Context Integration', () => {
     let server: BrutalistServer;
 
     beforeEach(() => {
       server = new BrutalistServer();
     });
 
-    describe('executeRoast', () => {
-      it('should execute with default options', async () => {
-        const result = await (server as any).executeRoast({
-          userInput: 'Test input'
+    it('should use smart CLI selection to exclude current CLI', async () => {
+      mockDetectCLIContext.mockResolvedValue({
+        currentCLI: 'claude',
+        availableCLIs: ['claude', 'codex', 'gemini']
+      });
+
+      await (server as any).executeBrutalistAnalysis(
+        'idea',
+        'test concept',
+        'idea'
+      );
+
+      expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+        'idea',
+        'test concept',
+        'idea',
+        undefined,
+        expect.objectContaining({
+          excludeCurrentCLI: true
+        })
+      );
+    });
+
+    it('should handle empty CLI context gracefully', async () => {
+      mockDetectCLIContext.mockResolvedValue({
+        currentCLI: undefined,
+        availableCLIs: []
+      });
+
+      mockExecuteBrutalistAnalysis.mockResolvedValue([{
+        agent: 'claude',
+        success: false,
+        output: '',
+        error: 'No CLIs available for analysis',
+        executionTime: 0
+      }]);
+
+      const result = await (server as any).executeBrutalistAnalysis(
+        'idea',
+        'test concept',
+        'idea'
+      );
+
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('CLI Interface Validation', () => {
+    let server: BrutalistServer;
+
+    beforeEach(() => {
+      server = new BrutalistServer();
+    });
+
+    it('should verify all tools use CLI agent orchestrator', async () => {
+      // Create a server and start it to trigger CLI context detection
+      const server = new BrutalistServer();
+      await server.start();
+      
+      // Verify the orchestrator detectCLIContext was called during startup
+      expect(mockDetectCLIContext).toHaveBeenCalled();
+    });
+
+    it('should verify system prompt types match tool categories', async () => {
+      // File-system analysis tools should use appropriate prompt types
+      const fileSystemTools = [
+        { tool: 'roast_codebase', promptType: 'codeAnalysis', hasContext: false },
+        { tool: 'roast_file_structure', promptType: 'fileStructure', hasContext: true },
+        { tool: 'roast_dependencies', promptType: 'dependencies', hasContext: true },
+        { tool: 'roast_git_history', promptType: 'gitHistory', hasContext: true },
+        { tool: 'roast_test_coverage', promptType: 'testCoverage', hasContext: true }
+      ];
+
+      const toolHandlers: Record<string, Function> = {};
+      mockTool.mockImplementation((name, description, schema, handler) => {
+        toolHandlers[name] = handler;
+      });
+      
+      new BrutalistServer();
+
+      for (const { tool, promptType, hasContext } of fileSystemTools) {
+        mockExecuteBrutalistAnalysis.mockClear();
+        
+        await toolHandlers[tool]({
+          targetPath: '/test/path'
         });
 
-        expect(mockExecuteMultiModel).toHaveBeenCalledWith(
-          'Test input',
-          3,
-          undefined,
-          undefined
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          expect.any(String),
+          '/test/path',
+          promptType,
+          hasContext ? expect.any(String) : undefined,
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
         );
-        expect(result.success).toBe(true);
-        expect(result.synthesis).toBe('Synthesized brutal feedback');
-      });
+      }
+    });
 
-      it('should use specific models when provided', async () => {
-        await (server as any).executeRoast({
-          userInput: 'Test input',
-          models: ['specific-model-1', 'specific-model-2']
+    it('should verify abstract analysis tools use correct prompt types', async () => {
+      const abstractTools = [
+        { tool: 'roast_idea', promptType: 'idea', param: 'idea' },
+        { tool: 'roast_architecture', promptType: 'architecture', param: 'architecture' },
+        { tool: 'roast_research', promptType: 'research', param: 'research' },
+        { tool: 'roast_security', promptType: 'security', param: 'system' },
+        { tool: 'roast_product', promptType: 'product', param: 'product' },
+        { tool: 'roast_infrastructure', promptType: 'infrastructure', param: 'infrastructure' }
+      ];
+
+      const toolHandlers: Record<string, Function> = {};
+      mockTool.mockImplementation((name, description, schema, handler) => {
+        toolHandlers[name] = handler;
+      });
+      
+      new BrutalistServer();
+
+      for (const { tool, promptType, param } of abstractTools) {
+        mockExecuteBrutalistAnalysis.mockClear();
+        
+        await toolHandlers[tool]({
+          [param]: 'test input'
         });
 
-        expect(mockExecuteMultiModel).toHaveBeenCalledWith(
-          'Test input',
-          3,
-          undefined,
-          ['specific-model-1', 'specific-model-2']
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          expect.any(String),
+          'test input',
+          promptType,
+          expect.any(String), // Context string varies by tool
+          expect.objectContaining({
+            excludeCurrentCLI: true
+          })
         );
-      });
-
-      it('should handle API errors', async () => {
-        mockExecuteMultiModel.mockRejectedValueOnce(new Error('API failed'));
-
-        await expect((server as any).executeRoast({
-          userInput: 'Test input'
-        })).rejects.toThrow('API failed');
-      });
+      }
     });
 
-    describe('synthesizeDebate', () => {
-      it('should format debate results', () => {
-        const responses: ModelResponse[] = [
-          { model: 'model1', persona: 'Persona 1', content: 'Round 1 response 1' },
-          { model: 'model2', persona: 'Persona 2', content: 'Round 1 response 2' },
-          { model: 'model1', persona: 'Persona 1', content: 'Round 2 response 1' },
-          { model: 'model2', persona: 'Persona 2', content: 'Round 2 response 2' }
-        ];
-
-        const synthesis = (server as any).synthesizeDebate(responses, 2);
-
-        expect(synthesis).toContain('Adversarial Debate: 2 Rounds');
-        expect(synthesis).toContain('Round 1');
-        expect(synthesis).toContain('Round 2');
-        expect(synthesis).toContain('4 total perspectives deployed');
+    it('should verify CLI debate uses proper round-based execution', async () => {
+      const toolHandlers: Record<string, Function> = {};
+      mockTool.mockImplementation((name, description, schema, handler) => {
+        toolHandlers[name] = handler;
       });
+      
+      new BrutalistServer();
+
+      mockGetSmartCLISelection.mockReturnValue(['codex', 'gemini']);
+      
+      await toolHandlers['roast_cli_debate']({
+        targetPath: 'Test concept',
+        debateRounds: 3
+      });
+
+      // Should call executeBrutalistAnalysis for each round
+      expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledTimes(3);
+      
+      // First call should use 'idea' prompt type
+      expect(mockExecuteBrutalistAnalysis).toHaveBeenNthCalledWith(1,
+        'idea',
+        'Test concept',
+        'idea',
+        expect.any(String),
+        expect.objectContaining({
+          excludeCurrentCLI: true
+        })
+      );
+      
+      // Subsequent calls should use 'research' prompt type for counter-arguments
+      expect(mockExecuteBrutalistAnalysis).toHaveBeenNthCalledWith(2,
+        'research',
+        'Test concept',
+        'research',
+        expect.stringContaining('Previous analyses:'),
+        expect.objectContaining({
+          excludeCurrentCLI: true
+        })
+      );
     });
 
-    describe('formatToolResponse', () => {
-      it('should format successful response', () => {
-        const result = (server as any).formatToolResponse({
-          success: true,
-          responses: [],
-          synthesis: 'Test synthesis'
-        });
-
-        expect(result.content[0].type).toBe('text');
-        expect(result.content[0].text).toBe('Test synthesis');
+    it('should verify CLI context detection affects tool execution', async () => {
+      mockDetectCLIContext.mockResolvedValue({
+        currentCLI: 'claude',
+        availableCLIs: ['claude', 'codex', 'gemini']
       });
 
-      it('should handle missing synthesis', () => {
-        const result = (server as any).formatToolResponse({
-          success: true,
-          responses: []
-        });
+      mockGetSmartCLISelection.mockReturnValue(['codex', 'gemini']); // Excludes claude
 
-        expect(result.content[0].text).toBe('No synthesis available');
+      const toolHandlers: Record<string, Function> = {};
+      mockTool.mockImplementation((name, description, schema, handler) => {
+        toolHandlers[name] = handler;
       });
-    });
+      
+      new BrutalistServer();
 
-    describe('formatErrorResponse', () => {
-      it('should format error response', () => {
-        const result = (server as any).formatErrorResponse(new Error('Test error'));
-
-        expect(result.content[0].type).toBe('text');
-        expect(result.content[0].text).toBe('Brutalist MCP Error: Test error');
+      await toolHandlers['roast_codebase']({
+        targetPath: '/test/path'
       });
 
-      it('should handle non-Error objects', () => {
-        const result = (server as any).formatErrorResponse('String error');
-
-        expect(result.content[0].text).toBe('Brutalist MCP Error: String error');
-      });
+      // Verify excludeCurrentCLI is passed correctly
+      expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+        'codebase',
+        '/test/path',
+        'codeAnalysis',
+        undefined, // No context when only targetPath provided
+        expect.objectContaining({
+          excludeCurrentCLI: true
+        })
+      );
     });
   });
 });

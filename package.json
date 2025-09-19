@@ -1,7 +1,7 @@
 {
   "name": "@brutalist/mcp",
   "version": "0.1.3",
-  "description": "🏢 Brutalist AI feedback engine. All AIs are sycophants. This one demolishes your work before users do. Concrete-hard criticism from multiple models.",
+  "description": "🏢 Brutalist AI feedback engine. Deploy Claude Code, Codex, and Gemini CLI agents to demolish your work before users do. Real file-system analysis with brutal system prompts.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

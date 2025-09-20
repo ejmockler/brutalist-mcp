@@ -11,7 +11,7 @@ import {
 } from './types/brutalist.js';
 
 // Package version - updated by build process
-const PACKAGE_VERSION = "0.3.0";
+const PACKAGE_VERSION = "0.4.0";
 
 export class BrutalistServer {
   public server: McpServer;

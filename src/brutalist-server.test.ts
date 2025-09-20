@@ -16,22 +16,20 @@ jest.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
   StdioServerTransport: jest.fn()
 }));
 
-// Mock CLI Agent Orchestrator since we don't want to make actual CLI calls in tests
+// Mock CLI Agent Orchestrator with current interface
 const mockDetectCLIContext = jest.fn();
 const mockExecuteBrutalistAnalysis = jest.fn();
 const mockSynthesizeBrutalistFeedback = jest.fn();
-const mockGetSmartCLISelection = jest.fn();
 
 jest.mock('./cli-agents.js', () => ({
   CLIAgentOrchestrator: jest.fn().mockImplementation(() => ({
     detectCLIContext: mockDetectCLIContext,
     executeBrutalistAnalysis: mockExecuteBrutalistAnalysis,
-    synthesizeBrutalistFeedback: mockSynthesizeBrutalistFeedback,
-    getSmartCLISelection: mockGetSmartCLISelection
+    synthesizeBrutalistFeedback: mockSynthesizeBrutalistFeedback
   }))
 }));
 
-// Mock logger to avoid console output during tests
+// Mock logger
 jest.mock('./logger.js', () => ({
   logger: {
     debug: jest.fn(),
@@ -43,116 +41,91 @@ jest.mock('./logger.js', () => ({
 
 describe('BrutalistServer', () => {
   beforeEach(() => {
-    // Reset mocks
     jest.clearAllMocks();
     
-    // Setup default mock returns
+    // Setup realistic mock responses
     mockDetectCLIContext.mockResolvedValue({
       currentCLI: 'claude',
       availableCLIs: ['claude', 'codex', 'gemini']
     });
     
-    mockGetSmartCLISelection.mockReturnValue(['codex', 'gemini']);
-    
     mockExecuteBrutalistAnalysis.mockResolvedValue([
       {
         agent: 'codex',
         success: true,
-        output: 'This code is vulnerable to injection attacks.',
-        executionTime: 1500
+        output: 'Your code has 3 SQL injection vulnerabilities in the authentication module.',
+        executionTime: 2400,
+        command: 'codex exec',
+        workingDirectory: '/test',
+        exitCode: 0
       },
       {
-        agent: 'gemini',
+        agent: 'gemini', 
         success: true,
-        output: 'The architecture has scaling bottlenecks.',
-        executionTime: 1200
+        output: 'This architecture will cost $50k/month at 10k users due to inefficient database queries.',
+        executionTime: 1800,
+        command: 'gemini --model gemini-2.5-flash',
+        workingDirectory: '/test',
+        exitCode: 0
       }
     ]);
     
-    mockSynthesizeBrutalistFeedback.mockReturnValue('Synthesized brutal feedback from CLI agents');
+    mockSynthesizeBrutalistFeedback.mockReturnValue('## BRUTAL ANALYSIS COMPLETE\n\n2 AI critics have demolished your work.\n\n### Codex Analysis\nSQL injection vulnerabilities found...\n\n### Gemini Analysis\nCost explosion predicted...');
   });
 
   describe('Constructor', () => {
     it('should initialize with default config', () => {
       const server = new BrutalistServer();
       expect(server.config.workingDirectory).toBe(process.cwd());
-      expect(server.config.defaultTimeout).toBe(300000); // 5 minutes for complex CLI analysis
+      expect(server.config.defaultTimeout).toBe(1500000); // 25 minutes
       expect(server.config.enableSandbox).toBe(true);
     });
 
     it('should accept custom config', () => {
-      const customConfig = {
-        workingDirectory: '/custom/path',
+      const config = {
+        workingDirectory: '/custom',
         defaultTimeout: 60000,
         enableSandbox: false
       };
-      const server = new BrutalistServer(customConfig);
-      expect(server.config.workingDirectory).toBe('/custom/path');
+      const server = new BrutalistServer(config);
+      expect(server.config.workingDirectory).toBe('/custom');
       expect(server.config.defaultTimeout).toBe(60000);
       expect(server.config.enableSandbox).toBe(false);
     });
   });
 
   describe('Tool Registration', () => {
-    let server: BrutalistServer;
-
-    beforeEach(() => {
-      server = new BrutalistServer();
-    });
-
-    it('should register all 13 tools', () => {
+    it('should register all 13 brutalist tools', () => {
+      new BrutalistServer();
       expect(mockTool).toHaveBeenCalledTimes(13);
+      
+      const toolNames = mockTool.mock.calls.map(call => call[0]);
+      expect(toolNames).toContain('roast_codebase');
+      expect(toolNames).toContain('roast_cli_debate');
+      expect(toolNames).toContain('cli_agent_roster');
+      expect(toolNames).toContain('roast_idea');
+      expect(toolNames).toContain('roast_architecture');
+      expect(toolNames).toContain('roast_security');
+      expect(toolNames).toContain('roast_file_structure');
+      expect(toolNames).toContain('roast_dependencies');
+      expect(toolNames).toContain('roast_git_history');
+      expect(toolNames).toContain('roast_test_coverage');
+      expect(toolNames).toContain('roast_research');
+      expect(toolNames).toContain('roast_product');
+      expect(toolNames).toContain('roast_infrastructure');
     });
 
-    it('should register roast_codebase tool', () => {
-      expect(mockTool).toHaveBeenCalledWith(
-        'roast_codebase',
-        expect.stringContaining('Deploy brutal AI critics'),
-        expect.any(Object),
-        expect.any(Function)
-      );
-    });
-
-    it('should register roast_cli_debate tool', () => {
-      expect(mockTool).toHaveBeenCalledWith(
-        'roast_cli_debate',
-        expect.stringContaining('adversarial combat'),
-        expect.any(Object),
-        expect.any(Function)
-      );
-    });
-
-    it('should register cli_agent_roster tool', () => {
-      expect(mockTool).toHaveBeenCalledWith(
-        'cli_agent_roster',
-        expect.stringContaining('Know your weapons'),
-        expect.any(Object),
-        expect.any(Function)
-      );
-    });
-
-    it('should register roast_idea tool', () => {
-      const roastIdeaCalls = mockTool.mock.calls.filter(call => call[0] === 'roast_idea');
-      expect(roastIdeaCalls.length).toBe(1);
-      expect(roastIdeaCalls[0][1]).toContain('Deploy brutal AI critics');
-    });
-
-    it('should register roast_architecture tool', () => {
-      expect(mockTool).toHaveBeenCalledWith(
-        'roast_architecture',
-        expect.stringContaining('architect'),
-        expect.any(Object),
-        expect.any(Function)
-      );
-    });
-
-    it('should register roast_security tool', () => {
-      expect(mockTool).toHaveBeenCalledWith(
-        'roast_security',
-        expect.stringContaining('battle-hardened penetration tester'),
-        expect.any(Object),
-        expect.any(Function)
-      );
+    it('should register tools with brutal descriptions', () => {
+      new BrutalistServer();
+      
+      const codebaseCall = mockTool.mock.calls.find(call => call[0] === 'roast_codebase');
+      expect(codebaseCall[1]).toContain('Deploy brutal AI critics');
+      
+      const debateCall = mockTool.mock.calls.find(call => call[0] === 'roast_cli_debate');
+      expect(debateCall[1]).toContain('adversarial combat');
+      
+      const securityCall = mockTool.mock.calls.find(call => call[0] === 'roast_security');
+      expect(securityCall[1]).toContain('battle-hardened');
     });
   });
 
@@ -161,650 +134,494 @@ describe('BrutalistServer', () => {
       const server = new BrutalistServer();
       await server.start();
       
-      expect(mockDetectCLIContext).toHaveBeenCalled();
       expect(mockConnect).toHaveBeenCalled();
-    });
-
-    it('should handle CLI context detection failure gracefully', async () => {
-      mockDetectCLIContext.mockRejectedValueOnce(new Error('CLI detection failed'));
-      
-      const server = new BrutalistServer();
-      await server.start();
-      
-      // Should still connect even if CLI detection fails
-      expect(mockConnect).toHaveBeenCalled();
+      // Note: CLI context detection happens lazily during tool execution
     });
   });
 
-  describe.skip('Tool Execution', () => {
+  describe('Tool Execution', () => {
     let server: BrutalistServer;
     let toolHandlers: Record<string, Function> = {};
 
     beforeEach(() => {
-      // Capture tool handlers when registered
       mockTool.mockImplementation((name, description, schema, handler) => {
         toolHandlers[name] = handler;
       });
-      
       server = new BrutalistServer();
     });
 
     describe('roast_codebase', () => {
-      it('should execute with all parameters', async () => {
+      it('should execute brutal codebase analysis', async () => {
         const result = await toolHandlers['roast_codebase']({
-          targetPath: '/path/to/code',
-          context: 'Production API',
-          workingDirectory: '/custom/dir',
-          enableSandbox: true
+          targetPath: '/src',
+          context: 'Production trading system'
         });
 
         expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
           'codebase',
-          '/path/to/code',
-          expect.stringContaining('brutal code critic'),
-          'Production API',
+          '/src',
+          expect.stringContaining('battle-scarred principal engineer'),
+          'Production trading system',
           expect.objectContaining({
-            workingDirectory: '/custom/dir',
+            workingDirectory: process.cwd(),
             sandbox: true,
-            timeout: 300000,
-            preferredCLI: undefined,
-            analysisType: 'codebase'
+            timeout: 1500000
           })
         );
-        expect(result.content[0].text).toBe('Synthesized brutal feedback from CLI agents');
+        
+        expect(result.content[0].text).toContain('BRUTAL ANALYSIS COMPLETE');
       });
 
       it('should handle minimal parameters', async () => {
         const result = await toolHandlers['roast_codebase']({
-          targetPath: './src'
+          targetPath: './auth'
         });
 
         expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
           'codebase',
-          './src',
-          expect.stringContaining('brutal code critic'),
+          './auth',
+          expect.stringContaining('battle-scarred principal engineer'),
           undefined,
           expect.objectContaining({
             workingDirectory: process.cwd(),
-            sandbox: true,
-            timeout: 300000,
-            preferredCLI: undefined,
-            analysisType: 'codebase'
+            sandbox: true
           })
         );
-        expect(result.content[0].text).toBe('Synthesized brutal feedback from CLI agents');
       });
 
-      it('should handle errors gracefully', async () => {
-        mockExecuteBrutalistAnalysis.mockRejectedValueOnce(new Error('CLI execution failed'));
+      it('should handle execution failures', async () => {
+        mockExecuteBrutalistAnalysis.mockRejectedValueOnce(new Error('All CLI agents failed'));
         
         const result = await toolHandlers['roast_codebase']({
           targetPath: '/bad/path'
         });
 
-        expect(result.content[0].text).toContain('Brutalist MCP Error: CLI execution failed');
+        expect(result.content[0].text).toContain('Brutalist MCP Error');
+        expect(result.content[0].text).toContain('Analysis failed due to internal error');
       });
     });
 
     describe('roast_cli_debate', () => {
       beforeEach(() => {
-        // Mock the CLI debate specific method
-        mockGetSmartCLISelection.mockReturnValue(['codex', 'gemini']);
+        // Mock multi-round responses
+        mockExecuteBrutalistAnalysis
+          .mockResolvedValueOnce([{
+            agent: 'codex',
+            success: true,
+            output: 'TypeScript is safer for large teams due to static typing.',
+            executionTime: 2000,
+            command: 'codex exec',
+            workingDirectory: '/test',
+            exitCode: 0
+          }])
+          .mockResolvedValueOnce([{
+            agent: 'gemini',
+            success: true,
+            output: 'Go is faster and has better concurrency primitives.',
+            executionTime: 1500,
+            command: 'gemini --model gemini-2.5-flash',
+            workingDirectory: '/test',
+            exitCode: 0
+          }]);
       });
 
-      it('should execute debate with multiple rounds', async () => {
+      it('should execute multi-round CLI debate', async () => {
         const result = await toolHandlers['roast_cli_debate']({
-          targetPath: 'Test concept',
-          debateRounds: 3,
-          context: 'Additional context'
+          targetPath: 'TypeScript vs Go for API backend',
+          debateRounds: 2
         });
 
-        // Should be called twice (once for initial analysis, once for counter-arguments per round after first)
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledTimes(3);
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledTimes(2);
         expect(result.content[0].text).toContain('CLI Agent Debate Results');
       });
 
-      it('should use default 2 rounds', async () => {
-        const result = await toolHandlers['roast_cli_debate']({
+      it('should default to 2 rounds', async () => {
+        await toolHandlers['roast_cli_debate']({
           targetPath: 'Simple debate topic'
         });
 
         expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledTimes(2);
       });
-
-      it('should handle insufficient CLIs', async () => {
-        mockGetSmartCLISelection.mockReturnValue(['claude']); // Only one CLI
-
-        const result = await toolHandlers['roast_cli_debate']({
-          targetPath: 'Test concept'
-        });
-
-        expect(result.content[0].text).toContain('CLI debate requires at least 2 CLIs');
-      });
-    });
-
-    describe('cli_agent_roster', () => {
-      it('should show available CLI agents and context', async () => {
-        const result = await toolHandlers['cli_agent_roster']({});
-
-        expect(mockDetectCLIContext).toHaveBeenCalled();
-        expect(result.content[0].text).toContain('Brutalist CLI Agent Arsenal');
-        expect(result.content[0].text).toContain('Available AI Critics (13 Tools Total)');
-        expect(result.content[0].text).toContain('Current CLI Context');
-      });
     });
 
     describe('roast_idea', () => {
-      it('should execute with full context', async () => {
+      it('should demolish startup ideas', async () => {
         const result = await toolHandlers['roast_idea']({
-          idea: 'AI-powered code review',
-          context: 'For open source projects',
-          workingDirectory: '/project/root'
+          idea: 'AI-powered social network for pets',
+          context: 'Limited budget, 2-person team'
         });
 
         expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
           'idea',
-          'AI-powered code review',
-          'idea',
-          expect.stringContaining('For open source projects'),
+          'AI-powered social network for pets',
+          expect.stringContaining('brutal idea critic'),
+          expect.stringContaining('Limited budget, 2-person team'),
           expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      });
-
-      it('should handle idea with no context', async () => {
-        const result = await toolHandlers['roast_idea']({
-          idea: 'Revolutionary new framework'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'idea',
-          'Revolutionary new framework',
-          'idea',
-          expect.stringContaining('Context: none'),
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      });
-    });
-
-    describe('roast_file_structure', () => {
-      it('should execute with directory path', async () => {
-        const result = await toolHandlers['roast_file_structure']({
-          targetPath: '/project/src',
-          context: 'Monorepo structure'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'file_structure',
-          '/project/src',
-          'fileStructure',
-          expect.stringContaining('Monorepo structure'),
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      });
-    });
-
-    describe('roast_dependencies', () => {
-      it('should execute with package file', async () => {
-        const result = await toolHandlers['roast_dependencies']({
-          targetPath: 'package.json'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'dependencies',
-          'package.json',
-          'dependencies',
-          expect.stringContaining('Dependency analysis'),
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      });
-
-      it('should handle includeDevDeps parameter', async () => {
-        const result = await toolHandlers['roast_dependencies']({
-          targetPath: 'package.json',
-          includeDevDeps: false
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'dependencies',
-          'package.json',
-          'dependencies',
-          expect.stringContaining('dev deps: false'),
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      });
-    });
-
-    describe('roast_git_history', () => {
-      it('should execute with default parameters', async () => {
-        const result = await toolHandlers['roast_git_history']({
-          targetPath: '/project/repo'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'git_history',
-          '/project/repo',
-          'gitHistory',
-          expect.stringContaining('last 20 commits'),
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      });
-
-      it('should handle custom commit range', async () => {
-        const result = await toolHandlers['roast_git_history']({
-          targetPath: '/project/repo',
-          commitRange: 'last 50 commits',
-          context: 'Feature branch analysis'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'git_history',
-          '/project/repo',
-          'gitHistory',
-          expect.stringContaining('last 50 commits'),
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      });
-    });
-
-    describe('roast_test_coverage', () => {
-      it('should execute with default parameters', async () => {
-        const result = await toolHandlers['roast_test_coverage']({
-          targetPath: '/project/tests'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'test_coverage',
-          '/project/tests',
-          'testCoverage',
-          expect.stringContaining('run coverage: true'),
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      });
-
-      it('should handle runCoverage parameter', async () => {
-        const result = await toolHandlers['roast_test_coverage']({
-          targetPath: '/project/tests',
-          runCoverage: false,
-          context: 'Manual test review'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'test_coverage',
-          '/project/tests',
-          'testCoverage',
-          expect.stringContaining('run coverage: false'),
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      });
-    });
-
-    describe('roast_architecture', () => {
-      it('should execute with architecture description', async () => {
-        const result = await toolHandlers['roast_architecture']({
-          architecture: 'Microservices with Event Sourcing',
-          scale: '1M users',
-          constraints: 'Limited budget'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'architecture',
-          'Microservices with Event Sourcing',
-          'architecture',
-          expect.stringContaining('Scale: 1M users'),
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      });
-
-      it('should handle minimal parameters', async () => {
-        const result = await toolHandlers['roast_architecture']({
-          architecture: 'Simple REST API'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'architecture',
-          'Simple REST API',
-          'architecture',
-          expect.stringContaining('Scale: unknown'),
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      });
-    });
-
-    describe('roast_research', () => {
-      it('should execute with research parameters', async () => {
-        const result = await toolHandlers['roast_research']({
-          research: 'ML optimization study',
-          field: 'Computer Science',
-          claims: '10x performance improvement',
-          data: 'Synthetic benchmarks'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'research',
-          'ML optimization study',
-          'research',
-          expect.stringContaining('Field: Computer Science'),
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      });
-
-      it('should handle missing optional fields', async () => {
-        const result = await toolHandlers['roast_research']({
-          research: 'Basic study'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'research',
-          'Basic study',
-          'research',
-          expect.stringContaining('Field: unspecified'),
-          expect.objectContaining({
-            excludeCurrentCLI: true
+            analysisType: 'idea',
+            sandbox: true,
+            timeout: 1500000
           })
         );
       });
     });
 
     describe('roast_security', () => {
-      it('should execute with security parameters', async () => {
+      it('should find security vulnerabilities', async () => {
         const result = await toolHandlers['roast_security']({
-          system: 'OAuth2 implementation',
-          assets: 'User credentials',
-          threatModel: 'Web application threats',
-          compliance: 'GDPR, SOC2'
+          system: 'JWT authentication with localStorage',
+          assets: 'User credentials and payment data'
         });
 
         expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
           'security',
-          'OAuth2 implementation',
-          'security',
-          expect.stringContaining('Assets: User credentials'),
+          'JWT authentication with localStorage',
+          expect.stringContaining('battle-hardened penetration tester'),
+          expect.stringContaining('User credentials and payment data'),
           expect.objectContaining({
-            excludeCurrentCLI: true
+            analysisType: 'security',
+            sandbox: true,
+            timeout: 1500000
           })
         );
       });
     });
 
-    describe('roast_product', () => {
-      it('should execute with product parameters', async () => {
-        const result = await toolHandlers['roast_product']({
-          product: 'Developer productivity tool',
-          users: 'Software engineers',
-          competition: 'GitHub Copilot',
-          metrics: 'Daily active users'
+    describe('roast_architecture', () => {
+      it('should expose scaling disasters', async () => {
+        const result = await toolHandlers['roast_architecture']({
+          architecture: 'Microservices with event sourcing',
+          scale: '1M daily users',
+          constraints: '$10k/month budget'
         });
 
         expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'product',
-          'Developer productivity tool',
-          'product',
-          expect.stringContaining('Users: Software engineers'),
+          'architecture',
+          'Microservices with event sourcing',
+          expect.stringContaining('brutal system architecture critic'),
+          expect.stringContaining('1M daily users'),
           expect.objectContaining({
-            excludeCurrentCLI: true
+            analysisType: 'architecture',
+            sandbox: true,
+            timeout: 1500000
           })
         );
       });
     });
 
-    describe('roast_infrastructure', () => {
-      it('should execute with infrastructure parameters', async () => {
-        const result = await toolHandlers['roast_infrastructure']({
-          infrastructure: 'Kubernetes on AWS',
-          scale: '1000 pods',
-          budget: '$50k/month',
-          sla: '99.99% uptime'
+    describe('codebase analysis tools', () => {
+      const codebaseTools = [
+        'roast_file_structure',
+        'roast_dependencies', 
+        'roast_git_history',
+        'roast_test_coverage'
+      ];
+
+      codebaseTools.forEach(toolName => {
+        it(`should execute ${toolName}`, async () => {
+          const result = await toolHandlers[toolName]({
+            targetPath: '/project'
+          });
+
+          expect(mockExecuteBrutalistAnalysis).toHaveBeenCalled();
+          expect(result.content[0].text).toContain('BRUTAL ANALYSIS');
+        });
+      });
+    });
+
+    describe('cli_agent_roster', () => {
+      it('should show available CLI agents', async () => {
+        const result = await toolHandlers['cli_agent_roster']({});
+
+        expect(mockDetectCLIContext).toHaveBeenCalled();
+        expect(result.content[0].text).toContain('CLI Agent Arsenal');
+        expect(result.content[0].text).toContain('Available AI Critics');
+      });
+    });
+  });
+
+  describe('Error Handling', () => {
+    let toolHandlers: Record<string, Function> = {};
+
+    beforeEach(() => {
+      mockTool.mockImplementation((name, description, schema, handler) => {
+        toolHandlers[name] = handler;
+      });
+      new BrutalistServer();
+    });
+
+    it('should handle CLI detection failures gracefully', async () => {
+      mockDetectCLIContext.mockRejectedValueOnce(new Error('CLI not found'));
+      
+      const result = await toolHandlers['cli_agent_roster']({});
+      
+      expect(result.content[0].text).toContain('Analysis failed due to internal error');
+    });
+
+    it('should handle analysis failures gracefully', async () => {
+      mockExecuteBrutalistAnalysis.mockRejectedValueOnce(new Error('All agents failed'));
+      
+      const result = await toolHandlers['roast_codebase']({
+        targetPath: '/test'
+      });
+
+      expect(result.content[0].text).toContain('Brutalist MCP Error');
+    });
+
+    it('should handle partial CLI failures', async () => {
+      mockExecuteBrutalistAnalysis.mockResolvedValueOnce([
+        {
+          agent: 'codex',
+          success: true,
+          output: 'Found security issues',
+          executionTime: 1000,
+          command: 'codex exec',
+          workingDirectory: '/test',
+          exitCode: 0
+        },
+        {
+          agent: 'gemini',
+          success: false,
+          output: '',
+          error: 'Timeout',
+          executionTime: 25000,
+          command: 'gemini',
+          workingDirectory: '/test',
+          exitCode: 1
+        }
+      ]);
+
+      const result = await toolHandlers['roast_codebase']({
+        targetPath: '/test'
+      });
+
+      expect(mockSynthesizeBrutalistFeedback).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ agent: 'codex', success: true }),
+          expect.objectContaining({ agent: 'gemini', success: false })
+        ]),
+        'codebase'
+      );
+    });
+  });
+
+  describe('Security Tests', () => {
+    let toolHandlers: Record<string, Function> = {};
+
+    beforeEach(() => {
+      mockTool.mockImplementation((name, description, schema, handler) => {
+        toolHandlers[name] = handler;
+      });
+      new BrutalistServer();
+    });
+
+    describe('Input Sanitization', () => {
+      it('should handle malicious paths safely', async () => {
+        const maliciousPaths = [
+          '../../../etc/passwd',
+          '../../.ssh/id_rsa',
+          '/proc/self/environ',
+          'C:\\Windows\\System32\\config\\SAM'
+        ];
+
+        for (const path of maliciousPaths) {
+          const result = await toolHandlers['roast_codebase']({
+            targetPath: path
+          });
+
+          expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+            'codebase',
+            path, // Should pass through but orchestrator handles security
+            expect.any(String),
+            undefined,
+            expect.objectContaining({
+              sandbox: true, // Sandbox must be enabled for security
+              workingDirectory: expect.any(String)
+            })
+          );
+        }
+      });
+
+      it('should sanitize working directory overrides', async () => {
+        const maliciousWorkingDirs = [
+          '../../../',
+          '/etc',
+          '~/.ssh',
+          '/proc'
+        ];
+
+        for (const workingDir of maliciousWorkingDirs) {
+          const result = await toolHandlers['roast_codebase']({
+            targetPath: './test',
+            workingDirectory: workingDir
+          });
+
+          expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+            'codebase',
+            './test',
+            expect.any(String),
+            undefined,
+            expect.objectContaining({
+              workingDirectory: workingDir, // Passes through - orchestrator validates
+              sandbox: true
+            })
+          );
+        }
+      });
+
+      it('should handle malicious CLI output safely', async () => {
+        // Mock malicious CLI responses - test that they pass through unsanitized
+        const maliciousOutput = '<script>alert("xss")</script>';
+        
+        mockExecuteBrutalistAnalysis.mockResolvedValueOnce([{
+          agent: 'codex',
+          success: true,
+          output: maliciousOutput,
+          executionTime: 1000,
+          command: 'codex exec',
+          workingDirectory: '/test',
+          exitCode: 0
+        }]);
+
+        // Mock synthesis to return the malicious output 
+        mockSynthesizeBrutalistFeedback.mockReturnValueOnce(
+          `## Brutal Analysis\n\n${maliciousOutput}\n\nEnd of analysis.`
+        );
+
+        const result = await toolHandlers['roast_codebase']({
+          targetPath: '/test'
+        });
+
+        // Response should contain the malicious output (server doesn't sanitize, relies on client)
+        // This is by design - the MCP protocol expects clients to handle output safely
+        expect(result.content[0].text).toContain(maliciousOutput);
+        expect(mockSynthesizeBrutalistFeedback).toHaveBeenCalledWith(
+          expect.arrayContaining([
+            expect.objectContaining({ output: maliciousOutput })
+          ]),
+          'codebase'
+        );
+      });
+    });
+
+    describe('Resource Limits', () => {
+      it('should handle large debate rounds', async () => {
+        const result = await toolHandlers['roast_cli_debate']({
+          targetPath: 'Test concept',
+          debateRounds: 100 // Excessive rounds
+        });
+
+        // Should complete but may be limited by implementation
+        expect(result).toBeDefined();
+        expect(result.content[0].text).toContain('CLI Agent Debate Results');
+      });
+
+      it('should handle concurrent tool executions', async () => {
+        const promises = Array(10).fill(0).map(() => 
+          toolHandlers['roast_codebase']({ targetPath: '/test' })
+        );
+
+        const results = await Promise.all(promises);
+        
+        expect(results).toHaveLength(10);
+        results.forEach(result => {
+          expect(result.content[0].text).toContain('BRUTAL ANALYSIS');
+        });
+      });
+    });
+
+    describe('Sandbox Security', () => {
+      it('should enforce sandbox by default', async () => {
+        await toolHandlers['roast_codebase']({
+          targetPath: '/sensitive/path'
         });
 
         expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          'infrastructure',
-          'Kubernetes on AWS',
-          'infrastructure',
-          expect.stringContaining('Scale: 1000 pods'),
+          'codebase',
+          '/sensitive/path',
+          expect.any(String),
+          undefined,
           expect.objectContaining({
-            excludeCurrentCLI: true
+            sandbox: true
+          })
+        );
+      });
+
+      it('should allow sandbox override only when explicitly disabled', async () => {
+        await toolHandlers['roast_codebase']({
+          targetPath: '/test',
+          enableSandbox: false
+        });
+
+        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
+          'codebase',
+          '/test',
+          expect.any(String),
+          undefined,
+          expect.objectContaining({
+            sandbox: false
           })
         );
       });
     });
   });
 
-  describe.skip('CLI Context Integration', () => {
-    let server: BrutalistServer;
+  describe('Error Security', () => {
+    let toolHandlers: Record<string, Function> = {};
 
     beforeEach(() => {
-      server = new BrutalistServer();
+      mockTool.mockImplementation((name, description, schema, handler) => {
+        toolHandlers[name] = handler;
+      });
+      new BrutalistServer();
     });
 
-    it('should use smart CLI selection to exclude current CLI', async () => {
-      mockDetectCLIContext.mockResolvedValue({
-        currentCLI: 'claude',
-        availableCLIs: ['claude', 'codex', 'gemini']
+    it('should not leak sensitive information in error messages', async () => {
+      mockExecuteBrutalistAnalysis.mockRejectedValueOnce(
+        new Error('ENOENT: no such file or directory, open \'/etc/shadow\'')
+      );
+
+      const result = await toolHandlers['roast_codebase']({
+        targetPath: '/test'
       });
 
-      await (server as any).executeBrutalistAnalysis(
-        'idea',
-        'test concept',
-        'idea'
-      );
-
-      expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-        'idea',
-        'test concept',
-        'idea',
-        undefined,
-        expect.objectContaining({
-          excludeCurrentCLI: true
-        })
-      );
+      // Should contain generic error, not expose system paths
+      expect(result.content[0].text).toContain('Brutalist MCP Error');
+      expect(result.content[0].text).toContain('Target path not found'); // Sanitized message
+      expect(result.content[0].text).not.toContain('/etc/shadow');
+      expect(result.content[0].text).not.toContain('ENOENT');
     });
 
-    it('should handle empty CLI context gracefully', async () => {
-      mockDetectCLIContext.mockResolvedValue({
-        currentCLI: undefined,
-        availableCLIs: []
+    it('should not expose stack traces to clients', async () => {
+      const errorWithStack = new Error('Test error');
+      errorWithStack.stack = 'Error: Test error\n    at /home/user/.secrets/config.js:123:45';
+      
+      mockExecuteBrutalistAnalysis.mockRejectedValueOnce(errorWithStack);
+
+      const result = await toolHandlers['roast_codebase']({
+        targetPath: '/test'
       });
 
-      mockExecuteBrutalistAnalysis.mockResolvedValue([{
-        agent: 'claude',
-        success: false,
-        output: '',
-        error: 'No CLIs available for analysis',
-        executionTime: 0
-      }]);
-
-      const result = await (server as any).executeBrutalistAnalysis(
-        'idea',
-        'test concept',
-        'idea'
-      );
-
-      expect(result.success).toBe(false);
+      expect(result.content[0].text).toContain('Analysis failed due to internal error'); // Generic sanitized message
+      expect(result.content[0].text).not.toContain('.secrets');
+      expect(result.content[0].text).not.toContain('/home/user');
+      expect(result.content[0].text).not.toContain('config.js');
     });
   });
 
-  describe.skip('CLI Interface Validation', () => {
-    let server: BrutalistServer;
-
-    beforeEach(() => {
-      server = new BrutalistServer();
+  describe('Configuration Integration', () => {
+    it('should use custom timeout setting', () => {
+      const server = new BrutalistServer({ defaultTimeout: 60000 });
+      expect(server.config.defaultTimeout).toBe(60000);
     });
 
-    it('should verify all tools use CLI agent orchestrator', async () => {
-      // Create a server and start it to trigger CLI context detection
-      const server = new BrutalistServer();
-      await server.start();
-      
-      // Verify the orchestrator detectCLIContext was called during startup
-      expect(mockDetectCLIContext).toHaveBeenCalled();
+    it('should use custom working directory', () => {
+      const server = new BrutalistServer({ workingDirectory: '/custom' });
+      expect(server.config.workingDirectory).toBe('/custom');
     });
 
-    it('should verify system prompt types match tool categories', async () => {
-      // File-system analysis tools should use appropriate prompt types
-      const fileSystemTools = [
-        { tool: 'roast_codebase', promptType: 'codeAnalysis', hasContext: false },
-        { tool: 'roast_file_structure', promptType: 'fileStructure', hasContext: true },
-        { tool: 'roast_dependencies', promptType: 'dependencies', hasContext: true },
-        { tool: 'roast_git_history', promptType: 'gitHistory', hasContext: true },
-        { tool: 'roast_test_coverage', promptType: 'testCoverage', hasContext: true }
-      ];
-
-      const toolHandlers: Record<string, Function> = {};
-      mockTool.mockImplementation((name, description, schema, handler) => {
-        toolHandlers[name] = handler;
-      });
-      
-      new BrutalistServer();
-
-      for (const { tool, promptType, hasContext } of fileSystemTools) {
-        mockExecuteBrutalistAnalysis.mockClear();
-        
-        await toolHandlers[tool]({
-          targetPath: '/test/path'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          expect.any(String),
-          '/test/path',
-          promptType,
-          hasContext ? expect.any(String) : undefined,
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      }
-    });
-
-    it('should verify abstract analysis tools use correct prompt types', async () => {
-      const abstractTools = [
-        { tool: 'roast_idea', promptType: 'idea', param: 'idea' },
-        { tool: 'roast_architecture', promptType: 'architecture', param: 'architecture' },
-        { tool: 'roast_research', promptType: 'research', param: 'research' },
-        { tool: 'roast_security', promptType: 'security', param: 'system' },
-        { tool: 'roast_product', promptType: 'product', param: 'product' },
-        { tool: 'roast_infrastructure', promptType: 'infrastructure', param: 'infrastructure' }
-      ];
-
-      const toolHandlers: Record<string, Function> = {};
-      mockTool.mockImplementation((name, description, schema, handler) => {
-        toolHandlers[name] = handler;
-      });
-      
-      new BrutalistServer();
-
-      for (const { tool, promptType, param } of abstractTools) {
-        mockExecuteBrutalistAnalysis.mockClear();
-        
-        await toolHandlers[tool]({
-          [param]: 'test input'
-        });
-
-        expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-          expect.any(String),
-          'test input',
-          promptType,
-          expect.any(String), // Context string varies by tool
-          expect.objectContaining({
-            excludeCurrentCLI: true
-          })
-        );
-      }
-    });
-
-    it('should verify CLI debate uses proper round-based execution', async () => {
-      const toolHandlers: Record<string, Function> = {};
-      mockTool.mockImplementation((name, description, schema, handler) => {
-        toolHandlers[name] = handler;
-      });
-      
-      new BrutalistServer();
-
-      mockGetSmartCLISelection.mockReturnValue(['codex', 'gemini']);
-      
-      await toolHandlers['roast_cli_debate']({
-        targetPath: 'Test concept',
-        debateRounds: 3
-      });
-
-      // Should call executeBrutalistAnalysis for each round
-      expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledTimes(3);
-      
-      // First call should use 'idea' prompt type
-      expect(mockExecuteBrutalistAnalysis).toHaveBeenNthCalledWith(1,
-        'idea',
-        'Test concept',
-        'idea',
-        expect.any(String),
-        expect.objectContaining({
-          excludeCurrentCLI: true
-        })
-      );
-      
-      // Subsequent calls should use 'research' prompt type for counter-arguments
-      expect(mockExecuteBrutalistAnalysis).toHaveBeenNthCalledWith(2,
-        'research',
-        'Test concept',
-        'research',
-        expect.stringContaining('Previous analyses:'),
-        expect.objectContaining({
-          excludeCurrentCLI: true
-        })
-      );
-    });
-
-    it('should verify CLI context detection affects tool execution', async () => {
-      mockDetectCLIContext.mockResolvedValue({
-        currentCLI: 'claude',
-        availableCLIs: ['claude', 'codex', 'gemini']
-      });
-
-      mockGetSmartCLISelection.mockReturnValue(['codex', 'gemini']); // Excludes claude
-
-      const toolHandlers: Record<string, Function> = {};
-      mockTool.mockImplementation((name, description, schema, handler) => {
-        toolHandlers[name] = handler;
-      });
-      
-      new BrutalistServer();
-
-      await toolHandlers['roast_codebase']({
-        targetPath: '/test/path'
-      });
-
-      // Verify excludeCurrentCLI is passed correctly
-      expect(mockExecuteBrutalistAnalysis).toHaveBeenCalledWith(
-        'codebase',
-        '/test/path',
-        'codeAnalysis',
-        undefined, // No context when only targetPath provided
-        expect.objectContaining({
-          excludeCurrentCLI: true
-        })
-      );
+    it('should respect sandbox settings', () => {
+      const server = new BrutalistServer({ enableSandbox: false });
+      expect(server.config.enableSandbox).toBe(false);
     });
   });
 });

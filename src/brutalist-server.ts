@@ -21,7 +21,7 @@ export class BrutalistServer {
   constructor(config: BrutalistServerConfig = {}) {
     this.config = {
       workingDirectory: process.cwd(),
-      defaultTimeout: 300000, // 5 minutes for complex CLI analysis
+      defaultTimeout: 1500000, // 25 minutes for thorough CLI analysis
       enableSandbox: true,
       ...config
     };
@@ -676,10 +676,30 @@ export class BrutalistServer {
 
   private formatErrorResponse(error: unknown) {
     logger.error("Tool execution failed", error);
+    
+    // Sanitize error message to prevent information leakage
+    let sanitizedMessage = "Analysis failed";
+    
+    if (error instanceof Error) {
+      // Only expose safe, generic error types
+      if (error.message.includes('timeout') || error.message.includes('Timeout')) {
+        sanitizedMessage = "Analysis timed out - try reducing scope or increasing timeout";
+      } else if (error.message.includes('ENOENT') || error.message.includes('no such file')) {
+        sanitizedMessage = "Target path not found";
+      } else if (error.message.includes('EACCES') || error.message.includes('permission denied')) {
+        sanitizedMessage = "Permission denied - check file access";
+      } else if (error.message.includes('No CLI agents available')) {
+        sanitizedMessage = "No CLI agents available for analysis";
+      } else {
+        // Generic message for other errors to prevent path/info leakage
+        sanitizedMessage = "Analysis failed due to internal error";
+      }
+    }
+    
     return {
       content: [{
         type: "text" as const,
-        text: `Brutalist MCP Error: ${error instanceof Error ? error.message : String(error)}`
+        text: `Brutalist MCP Error: ${sanitizedMessage}`
       }]
     };
   }

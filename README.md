@@ -110,6 +110,8 @@ This MCP server orchestrates brutal feedback from locally installed CLI agents:
 
 Each agent runs locally on your machine with custom brutal prompts to find real problems before production fails.
 
+**⏱️ Analysis Timeout:** 25 minutes default - thorough analysis takes time to find real issues. Complex codebases and architectural reviews need deep analysis to catch subtle problems that quick scans miss.
+
 ## Setup
 
 ### Prerequisites

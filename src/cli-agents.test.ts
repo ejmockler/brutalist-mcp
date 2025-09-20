@@ -179,6 +179,12 @@ describe('CLIAgentOrchestrator', () => {
 
     describe('Codex', () => {
       it.skip('should construct correct command for Codex with sandbox', async () => {
+        // Pre-seed CLI context to avoid detection calls
+        (orchestrator as any).cliContext = {
+          availableCLIs: ['claude', 'codex', 'gemini'],
+          currentCLI: 'claude'
+        };
+
         setTimeout(() => {
           mockChild.stdout.emit('data', 'Codex analysis output');
           mockChild.emit('close', 0);
@@ -192,7 +198,7 @@ describe('CLIAgentOrchestrator', () => {
 
         expect(mockSpawn).toHaveBeenCalledWith(
           'codex',
-          ['exec', '--sandbox', 'read-only'],
+          ['exec', '--model', 'gpt-5', '--sandbox', 'read-only'],
           expect.objectContaining({
             shell: false,
             detached: true,
@@ -205,6 +211,12 @@ describe('CLIAgentOrchestrator', () => {
       });
 
       it.skip('should handle working directory option', async () => {
+        // Pre-seed CLI context to avoid detection calls
+        (orchestrator as any).cliContext = {
+          availableCLIs: ['claude', 'codex', 'gemini'],
+          currentCLI: 'claude'
+        };
+
         setTimeout(() => {
           mockChild.stdout.emit('data', 'output');
           mockChild.emit('close', 0);
@@ -221,7 +233,7 @@ describe('CLIAgentOrchestrator', () => {
 
         expect(mockSpawn).toHaveBeenCalledWith(
           'codex',
-          expect.any(Array),
+          ['exec', '--model', 'gpt-5', '--sandbox', 'read-only'],
           expect.objectContaining({
             cwd: '/custom/path',
             input: expect.stringContaining('CONTEXT AND INSTRUCTIONS')
@@ -232,6 +244,12 @@ describe('CLIAgentOrchestrator', () => {
 
     describe('Gemini CLI', () => {
       it.skip('should construct correct command for Gemini', async () => {
+        // Pre-seed CLI context to avoid detection calls
+        (orchestrator as any).cliContext = {
+          availableCLIs: ['claude', 'codex', 'gemini'],
+          currentCLI: 'claude'
+        };
+
         setTimeout(() => {
           mockChild.stdout.emit('data', 'Gemini analysis output');
           mockChild.emit('close', 0);

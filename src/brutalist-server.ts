@@ -532,37 +532,100 @@ export class BrutalistServer {
 
     try {
       // Get CLI context
-      await this.cliOrchestrator.detectCLIContext();
+      const cliContext = await this.cliOrchestrator.detectCLIContext();
+      const availableAgents = cliContext.availableCLIs;
+      
+      if (availableAgents.length < 2) {
+        throw new Error(`Need at least 2 CLI agents for debate. Available: ${availableAgents.join(', ')}`);
+      }
       
       const debateContext: CLIAgentResponse[] = [];
-      let currentContext = context || `Initial analysis of: ${targetPath}`;
+      const fullDebateTranscript: Map<string, string[]> = new Map();
       
-      const systemPrompt = `You are part of a brutal AI critic debate. Your job is to systematically destroy the given concept by finding every flaw, but then engage in rigorous intellectual debate. First provide devastating critique, then argue from multiple perspectives, and finally synthesize the strongest counter-arguments. Be intellectually honest about both weaknesses AND potential strengths.`;
+      // Initialize transcript for each agent
+      availableAgents.forEach(agent => fullDebateTranscript.set(agent, []));
+      
+      // Round 1: Initial positions from all agents
+      logger.debug(`Starting debate round 1: Initial positions`);
+      
+      const initialPrompt = `You are in a brutal adversarial debate about: ${targetPath}\n\n${context || ''}
 
-      // Conduct rounds of analysis with different CLI perspectives
-      for (let round = 1; round <= debateRounds; round++) {
-        logger.debug(`Starting debate round ${round}`);
+Provide your INITIAL POSITION with devastating critique. Be specific about flaws and problems. Take a clear stance.`;
+      
+      const initialResponses = await this.cliOrchestrator.executeBrutalistAnalysis(
+        'debate',
+        targetPath,
+        initialPrompt,
+        '',
+        {
+          workingDirectory: workingDirectory || this.config.workingDirectory,
+          sandbox: enableSandbox ?? this.config.enableSandbox,
+          timeout: (this.config.defaultTimeout || 60000) * 2,
+          analysisType: 'debate',
+          models
+        }
+      );
+      
+      // Store initial positions
+      initialResponses.forEach(response => {
+        if (response.success) {
+          debateContext.push(response);
+          fullDebateTranscript.get(response.agent)?.push(response.output);
+        }
+      });
+      
+      // Subsequent rounds: Turn-based responses attacking specific arguments
+      for (let round = 2; round <= debateRounds; round++) {
+        logger.debug(`Starting debate round ${round}: Adversarial engagement`);
         
-        const responses = await this.cliOrchestrator.executeBrutalistAnalysis(
-          'debate',
-          targetPath,
-          systemPrompt,
-          currentContext,
-          {
-            workingDirectory: workingDirectory || this.config.workingDirectory,
-            sandbox: enableSandbox ?? this.config.enableSandbox,
-            timeout: (this.config.defaultTimeout || 60000) * 2, // Longer timeout for debates
-            analysisType: 'debate',
-            models
+        // Build confrontational context from ALL previous responses
+        const previousPositions = Array.from(fullDebateTranscript.entries())
+          .map(([agent, outputs]) => {
+            const latestOutput = outputs[outputs.length - 1];
+            return `${agent.toUpperCase()} argued:\n${latestOutput}`;
+          })
+          .join('\n\n---\n\n');
+        
+        // Execute turn-based responses
+        for (const currentAgent of availableAgents) {
+          const opponents = availableAgents.filter(a => a !== currentAgent);
+          const opponentPositions = opponents
+            .map(opponent => {
+              const transcript = fullDebateTranscript.get(opponent) || [];
+              const latestPosition = transcript[transcript.length - 1] || 'No position stated';
+              return `${opponent.toUpperCase()}'s position:\n${latestPosition}`;
+            })
+            .join('\n\n');
+          
+          const confrontationalPrompt = `You are ${currentAgent.toUpperCase()} in round ${round} of a brutal debate.
+
+YOUR OPPONENTS' POSITIONS:
+${opponentPositions}
+
+YOUR TASK:
+1. DIRECTLY ATTACK the specific arguments made by ${opponents.map(o => o.toUpperCase()).join(' and ')}
+2. Point out logical flaws, missing evidence, and contradictions IN THEIR ACTUAL ARGUMENTS
+3. Defend your position against their attacks
+4. Present NEW evidence or arguments they haven't addressed
+
+Be specific. Quote their actual claims. Show why they're wrong about: ${targetPath}`;
+          
+          const response = await this.cliOrchestrator.executeSingleCLI(
+            currentAgent,
+            confrontationalPrompt,
+            confrontationalPrompt, // Using same prompt as both user and system prompt
+            {
+              workingDirectory: workingDirectory || this.config.workingDirectory,
+              sandbox: enableSandbox ?? this.config.enableSandbox,
+              timeout: (this.config.defaultTimeout || 60000) * 2,
+              models: models ? { [currentAgent]: models[currentAgent as keyof typeof models] } : undefined
+            }
+          );
+          
+          if (response.success) {
+            debateContext.push(response);
+            fullDebateTranscript.get(currentAgent)?.push(response.output);
           }
-        );
-        
-        debateContext.push(...responses);
-        
-        // Update context for next round with previous analysis
-        const successfulResponse = responses.find(r => r.success);
-        if (successfulResponse && round < debateRounds) {
-          currentContext = `Previous round analysis:\n${successfulResponse.output.substring(0, 1000)}...\n\nNow provide counter-arguments and alternative perspectives for: ${targetPath}`;
         }
       }
 
@@ -593,25 +656,58 @@ export class BrutalistServer {
     synthesis += `**Rounds:** ${rounds}\n`;
     synthesis += `**Participants:** ${Array.from(new Set(successfulResponses.map(r => r.agent))).join(', ')}\n\n`;
 
-    // Group responses by round
-    const responsesByRound = [];
-    const responsesPerRound = successfulResponses.length / rounds;
+    // Identify key points of conflict
+    const agents = Array.from(new Set(successfulResponses.map(r => r.agent)));
+    const agentPositions = new Map<string, string[]>();
+    
+    successfulResponses.forEach(response => {
+      if (!agentPositions.has(response.agent)) {
+        agentPositions.set(response.agent, []);
+      }
+      agentPositions.get(response.agent)?.push(response.output);
+    });
+    
+    synthesis += `## Key Points of Conflict\n\n`;
+    
+    // Extract disagreements by looking for contradictory keywords
+    const conflictIndicators = ['wrong', 'incorrect', 'flawed', 'fails', 'ignores', 'misses', 'overlooks', 'contradicts', 'however', 'but', 'actually', 'contrary'];
+    const conflicts: string[] = [];
+    
+    agentPositions.forEach((positions, agent) => {
+      positions.forEach(position => {
+        const lines = position.split('\n');
+        lines.forEach(line => {
+          if (conflictIndicators.some(indicator => line.toLowerCase().includes(indicator))) {
+            conflicts.push(`**${agent.toUpperCase()}:** ${line.trim()}`);
+          }
+        });
+      });
+    });
+    
+    if (conflicts.length > 0) {
+      synthesis += conflicts.slice(0, 10).join('\n\n') + '\n\n';
+    } else {
+      synthesis += `*No explicit conflicts identified - agents may be in unexpected agreement*\n\n`;
+    }
+    
+    // Group responses by round with clear speaker identification
+    synthesis += `## Full Debate Transcript\n\n`;
+    
+    const responsesPerRound = Math.ceil(successfulResponses.length / rounds);
     
     for (let i = 0; i < rounds; i++) {
-      const start = Math.floor(i * responsesPerRound);
-      const end = Math.floor((i + 1) * responsesPerRound);
-      responsesByRound.push(successfulResponses.slice(start, end));
-    }
-
-    responsesByRound.forEach((roundResponses, index) => {
-      synthesis += `## Round ${index + 1}: ${index === 0 ? 'Initial Analysis' : 'Counter-Arguments'}\n\n`;
+      const start = i * responsesPerRound;
+      const end = Math.min((i + 1) * responsesPerRound, successfulResponses.length);
+      const roundResponses = successfulResponses.slice(start, end);
+      
+      synthesis += `### Round ${i + 1}: ${i === 0 ? 'Initial Positions' : `Adversarial Engagement ${i}`}\n\n`;
       
       roundResponses.forEach((response) => {
-        synthesis += `### ${response.agent.toUpperCase()} (${response.executionTime}ms)\n`;
+        synthesis += `#### ${response.agent.toUpperCase()} speaks (${response.executionTime}ms):\n\n`;
         synthesis += `${response.output}\n\n`;
         synthesis += `---\n\n`;
       });
-    });
+    }
 
     synthesis += `## Debate Synthesis\n`;
     synthesis += `After ${rounds} rounds of brutal adversarial analysis involving ${Array.from(new Set(successfulResponses.map(r => r.agent))).length} CLI agents, `;

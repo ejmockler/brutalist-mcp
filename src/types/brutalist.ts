@@ -41,3 +41,9 @@ export interface RoastOptions {
   enableSandbox?: boolean;
   agents?: ('claude' | 'codex' | 'gemini')[];
 }
+
+export interface ChildProcessError extends Error {
+  code?: number;
+  stdout?: string;
+  stderr?: string;
+}

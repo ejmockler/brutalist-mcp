@@ -76,7 +76,7 @@ describe('BrutalistServer', () => {
     it('should initialize with default config', () => {
       const server = new BrutalistServer();
       expect(server.config.workingDirectory).toBe(process.cwd());
-      expect(server.config.defaultTimeout).toBe(180000); // Updated for CLI execution reliability
+      expect(server.config.defaultTimeout).toBe(300000); // 5 minutes for complex CLI analysis
       expect(server.config.enableSandbox).toBe(true);
     });
 
@@ -206,7 +206,7 @@ describe('BrutalistServer', () => {
           expect.objectContaining({
             workingDirectory: '/custom/dir',
             sandbox: true,
-            timeout: 180000,
+            timeout: 300000,
             preferredCLI: undefined,
             analysisType: 'codebase'
           })
@@ -227,7 +227,7 @@ describe('BrutalistServer', () => {
           expect.objectContaining({
             workingDirectory: process.cwd(),
             sandbox: true,
-            timeout: 180000,
+            timeout: 300000,
             preferredCLI: undefined,
             analysisType: 'codebase'
           })

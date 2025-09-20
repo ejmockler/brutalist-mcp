@@ -56,6 +56,14 @@ npm version $VERSION_TYPE
 # Get the new version
 VERSION=$(node -p "require('./package.json').version")
 
+# Update PACKAGE_VERSION in src/brutalist-server.ts
+echo "📝 Updating PACKAGE_VERSION in src/brutalist-server.ts to v$VERSION..."
+sed -i '' "s/const PACKAGE_VERSION = \".*\";/const PACKAGE_VERSION = \"$VERSION\";/g" src/brutalist-server.ts
+
+# Commit the version bump and the updated PACKAGE_VERSION
+git add package.json src/brutalist-server.ts
+git commit -m "Release v$VERSION"
+
 # Push changes and tag
 echo "📤 Pushing to GitHub..."
 git push origin main

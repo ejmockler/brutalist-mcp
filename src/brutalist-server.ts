@@ -11,7 +11,7 @@ import {
 } from './types/brutalist.js';
 
 // Package version - updated by build process
-const PACKAGE_VERSION = "0.2.1";
+const PACKAGE_VERSION = "0.3.0";
 
 export class BrutalistServer {
   public server: McpServer;
@@ -21,7 +21,7 @@ export class BrutalistServer {
   constructor(config: BrutalistServerConfig = {}) {
     this.config = {
       workingDirectory: process.cwd(),
-      defaultTimeout: 180000, // 3 minutes for testing
+      defaultTimeout: 300000, // 5 minutes for complex CLI analysis
       enableSandbox: true,
       ...config
     };
@@ -43,13 +43,8 @@ export class BrutalistServer {
   async start() {
     logger.info("Starting Brutalist MCP Server with CLI Agents");
     
-    // Initialize CLI context detection
-    try {
-      await this.cliOrchestrator.detectCLIContext();
-      logger.info("CLI context detection completed");
-    } catch (error) {
-      logger.warn("CLI context detection failed", error);
-    }
+    // Skip CLI detection at startup - will be done lazily on first request
+    logger.info("CLI context will be detected on first request");
     
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
@@ -71,7 +66,7 @@ export class BrutalistServer {
       },
       async (args) => {
         try {
-          const systemPrompt = `You are a brutal code critic. Find security vulnerabilities, performance issues, and architectural problems in this codebase. Be direct about real issues that cause production failures.`;
+          const systemPrompt = `You are a battle-scarred principal engineer who has debugged production disasters for 15 years. Find security holes, performance bottlenecks, and maintainability nightmares in this codebase. Be brutal about what's broken but specific about what would actually work. Treat this like code that will kill people if it fails.`;
           
           const result = await this.executeBrutalistAnalysis(
             "codebase",
@@ -589,6 +584,7 @@ export class BrutalistServer {
       await this.cliOrchestrator.detectCLIContext();
       
       // Execute CLI agent analysis (single or multi-CLI based on preferences)
+      logger.info(`🔍 Executing brutalist analysis with timeout: ${this.config.defaultTimeout}ms`);
       const responses = await this.cliOrchestrator.executeBrutalistAnalysis(
         analysisType,
         targetPath,

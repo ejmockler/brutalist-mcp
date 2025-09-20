@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import path from 'path';
 import { logger } from './logger.js';
 import { CLIAgentResponse } from './types/brutalist.js';
 
@@ -37,8 +38,17 @@ async function spawnAsync(
   } = {}
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
+    // Resolve and validate working directory to prevent path traversal
+    const projectRoot = process.cwd(); // Assuming process.cwd() is the project root
+    let resolvedCwd = options.cwd ? path.resolve(projectRoot, options.cwd) : projectRoot;
+
+    // Ensure the resolvedCwd is within the projectRoot
+    if (!resolvedCwd.startsWith(projectRoot)) {
+      throw new Error(`Attempted path traversal: ${options.cwd} resolves outside project root.`);
+    }
+
     const child = spawn(command, args, {
-      cwd: options.cwd,
+      cwd: resolvedCwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false, // CRITICAL: disable shell to prevent injection
       detached: command !== 'gemini', // Disable detached for Gemini CLI to fix macOS sandbox issue
@@ -76,6 +86,8 @@ async function spawnAsync(
     }, timeoutMs);
 
     // Collect output
+    // NOTE: maxBuffer (default 10MB) can lead to high memory usage if CLI agents produce large outputs.
+    // Consider making this configurable or dynamically adjusting based on expected output size.
     child.stdout?.on('data', (data) => {
       stdout += data.toString();
       if (options.maxBuffer && stdout.length > options.maxBuffer) {
@@ -151,6 +163,12 @@ export class CLIAgentOrchestrator {
   private runningCLIs = 0; // Track concurrent CLI executions
   private readonly MAX_CONCURRENT_CLIS = 2; // Prevent resource exhaustion
 
+  constructor() {
+    // Detect CLI context at startup and cache it
+    this.detectCLIContext().catch(error => {
+      logger.error("Failed to detect CLI context at startup:", error);
+    });
+  }
   async detectCLIContext(): Promise<CLIContext> {
     // Return cached context if still valid
     if (this.cliContextCached && Date.now() - this.cliContextCacheTime < this.CLI_CACHE_TTL) {
@@ -273,74 +291,108 @@ export class CLIAgentOrchestrator {
     return finalCandidates[0];
   }
 
-  async executeClaudeCode(
-    userPrompt: string, 
+  private async _executeCLI(
+    cliName: 'claude' | 'codex' | 'gemini',
+    userPrompt: string,
     systemPromptSpec: string,
-    options: CLIAgentOptions = {}
+    options: CLIAgentOptions = {},
+    commandBuilder: (userPrompt: string, systemPromptSpec: string, options: CLIAgentOptions) => { command: string; args: string[]; env?: Record<string, string> }
   ): Promise<CLIAgentResponse> {
     const startTime = Date.now();
     const workingDir = options.workingDirectory || this.defaultWorkingDir;
-    
+    const timeout = options.timeout || this.defaultTimeout;
+
     try {
-      logger.info(`🤖 Executing Claude Code CLI`);
-      logger.debug("Claude Code prompt", { prompt: userPrompt.substring(0, 100) });
-      
-      // Embed system prompt directly in the user prompt for Claude
-      // This avoids issues with --append-system-prompt timing out
-      const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
-      
-      // Build safe argument array for Claude CLI
-      const args = ['--print'];
-      if (options.models?.claude) {
-        args.push('--model', options.models.claude);
+      logger.info(`🤖 Executing ${cliName.toUpperCase()} CLI`);
+      logger.debug(`${cliName.toUpperCase()} prompt`, { prompt: userPrompt.substring(0, 100) });
+
+      // WARNING: Claude CLI does not have a native --sandbox flag. 
+      // If options.sandbox is true, it is assumed that the environment 
+      // running this Brutalist MCP server provides the sandboxing (e.g., Docker, VM).
+      // Running Claude without external sandboxing can be a security risk.
+      if (cliName === 'claude' && options.sandbox) {
+        logger.warn("⚠️ Claude CLI requested with sandbox: true, but Claude CLI does not support native sandboxing. Ensure external sandboxing is in place.");
       }
-      args.push(combinedPrompt);
-      
-      const claudeTimeout = options.timeout || this.defaultTimeout;
-      
-      logger.info(`📋 Command: claude --print "..."`);
+
+      const { command, args, env } = commandBuilder(userPrompt, systemPromptSpec, options);
+
+      logger.info(`📋 Command: ${command} ${args.join(' ').substring(0, 100)}...`);
       logger.info(`📁 Working directory: ${workingDir}`);
-      logger.info(`⏱️ Timeout: ${claudeTimeout}ms`);
-      
-      const { stdout, stderr } = await spawnAsync('claude', args, {
+      logger.info(`⏱️ Timeout: ${timeout}ms`);
+
+      const { stdout, stderr } = await spawnAsync(command, args, {
         cwd: workingDir,
-        timeout: claudeTimeout,
-        maxBuffer: 10 * 1024 * 1024
+        timeout: timeout,
+        maxBuffer: 10 * 1024 * 1024, // Large buffer for model outputs
+        env: env
       });
 
-      logger.info(`✅ Claude Code completed (${Date.now() - startTime}ms)`);
-      
+      logger.info(`✅ ${cliName.toUpperCase()} completed (${Date.now() - startTime}ms)`);
+
       return {
-        agent: 'claude',
+        agent: cliName,
         success: true,
         output: stdout,
         error: stderr || undefined,
         executionTime: Date.now() - startTime,
-        command: 'claude --print "..."',
+        command: `${command} ${args.join(' ')}`,
         workingDirectory: workingDir,
         exitCode: 0
       };
     } catch (error) {
       const execError: ChildProcessError = error as ChildProcessError;
       const exitCode = execError.code || -1;
-      
-      logger.error(`❌ Claude Code execution failed (${Date.now() - startTime}ms)`, {
-        error: execError.message,
-        exitCode,
-        stderr: execError.stderr
-      });
-      
+
+      // Detect rate limiting errors for Gemini
+      const isRateLimit = cliName === 'gemini' && (
+        execError.stderr?.includes('429') ||
+        execError.message?.includes('rateLimitExceeded') ||
+        execError.stderr?.includes('rate limit')
+      );
+
+      if (isRateLimit) {
+        logger.warn(`⏱️ ${cliName.toUpperCase()} CLI hit rate limit (${Date.now() - startTime}ms)`);
+      } else {
+        logger.error(`❌ ${cliName.toUpperCase()} execution failed (${Date.now() - startTime}ms)`, {
+          error: "Redacted: See internal logs for full error details.",
+          exitCode,
+          stderr: "Redacted: See internal logs for full stderr output."
+        });
+      }
+
       return {
-        agent: 'claude',
+        agent: cliName,
         success: false,
         output: '',
         error: error instanceof Error ? error.message : String(error),
         executionTime: Date.now() - startTime,
-        command: 'claude --print "..."',
+        command: `(redacted command for ${cliName})`,
         workingDirectory: workingDir,
         exitCode
       };
     }
+  }
+
+  async executeClaudeCode(
+    userPrompt: string, 
+    systemPromptSpec: string,
+    options: CLIAgentOptions = {}
+  ): Promise<CLIAgentResponse> {
+    return this._executeCLI(
+      'claude',
+      userPrompt,
+      systemPromptSpec,
+      options,
+      (userPrompt, systemPromptSpec, options) => {
+        const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
+        const args = ['--print'];
+        if (options.models?.claude) {
+          args.push('--model', options.models.claude);
+        }
+        args.push(combinedPrompt);
+        return { command: 'claude', args };
+      }
+    );
   }
 
   async executeCodex(
@@ -348,72 +400,24 @@ export class CLIAgentOrchestrator {
     systemPromptSpec: string, 
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse> {
-    const startTime = Date.now();
-    const workingDir = options.workingDirectory || this.defaultWorkingDir;
-    
-    try {
-      logger.info(`🤖 Executing Codex CLI`);
-      logger.debug("Codex prompt", { prompt: userPrompt.substring(0, 100) });
-      
-      // Embed instructions inline for Codex
-      const combinedPrompt = `CONTEXT AND INSTRUCTIONS:\n${systemPromptSpec}\n\nANALYZE:\n${userPrompt}`;
-      
-      // Build safe argument array for Codex CLI
-      const args = ['exec'];
-      if (options.models?.codex) {
-        args.push('--model', options.models.codex);
+    return this._executeCLI(
+      'codex',
+      userPrompt,
+      systemPromptSpec,
+      { ...options, sandbox: true }, // Ensure sandbox is always true for Codex
+      (userPrompt, systemPromptSpec, options) => {
+        const combinedPrompt = `CONTEXT AND INSTRUCTIONS:\n${systemPromptSpec}\n\nANALYZE:\n${userPrompt}`;
+        const args = ['exec'];
+        if (options.models?.codex) {
+          args.push('--model', options.models.codex);
+        }
+        if (options.sandbox) {
+          args.push('--sandbox', 'read-only');
+        }
+        args.push(combinedPrompt);
+        return { command: 'codex', args };
       }
-      if (options.sandbox) {
-        args.push('--sandbox', 'read-only');
-      }
-      // NOTE: Use cwd option in spawnAsync instead of --cd flag to avoid conflicts
-      args.push(combinedPrompt);
-      
-      const codexTimeout = options.timeout || this.defaultTimeout;
-      
-      logger.info(`📋 Command: codex exec ${args.slice(1, 5).join(' ')} "..."`);
-      logger.info(`📁 Working directory: ${workingDir}`);
-      logger.info(`⏱️ Timeout: ${codexTimeout}ms`);
-      
-      const { stdout, stderr } = await spawnAsync('codex', args, {
-        cwd: workingDir,
-        timeout: codexTimeout,
-        maxBuffer: 10 * 1024 * 1024
-      });
-
-      logger.info(`✅ Codex completed (${Date.now() - startTime}ms)`);
-      
-      return {
-        agent: 'codex',
-        success: true,
-        output: stdout,
-        error: stderr || undefined,
-        executionTime: Date.now() - startTime,
-        command: `codex exec ${args.slice(1, 5).join(' ')} "..."`,
-        workingDirectory: workingDir,
-        exitCode: 0
-      };
-    } catch (error) {
-      const execError: ChildProcessError = error as ChildProcessError;
-      const exitCode = execError.code || -1;
-      
-      logger.error(`❌ Codex execution failed (${Date.now() - startTime}ms)`, {
-        error: execError.message,
-        exitCode,
-        stderr: execError.stderr
-      });
-      
-      return {
-        agent: 'codex',
-        success: false,
-        output: '',
-        error: error instanceof Error ? error.message : String(error),
-        executionTime: Date.now() - startTime,
-        command: `codex exec ${options.sandbox ? '--sandbox read-only' : ''} ${workingDir ? `--cd "${workingDir}"` : ''} "..."`,
-        workingDirectory: workingDir,
-        exitCode
-      };
-    }
+    );
   }
 
   async executeGemini(
@@ -421,88 +425,34 @@ export class CLIAgentOrchestrator {
     systemPromptSpec: string, 
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse> {
-    const startTime = Date.now();
-    const workingDir = options.workingDirectory || this.defaultWorkingDir;
-    
-    try {
-      logger.info(`🤖 Executing Gemini CLI`);
-      logger.debug("Gemini prompt", { prompt: userPrompt.substring(0, 100) });
-      
-      // Build safe argument array for Gemini CLI
-      const args = [];
-      const modelName = options.models?.gemini || 'gemini-2.5-flash';
-      args.push('--model', modelName);
-      
-      if (options.sandbox) {
-        args.push('--sandbox');
-      }
-      
-      // Enable --yolo for automated file reading in MCP context
-      args.push('--yolo');
-      
-      // Combine system prompt and user prompt into single prompt argument
-      const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
-      args.push(combinedPrompt);
-      
-      logger.info(`📋 Command: gemini ${args.join(' ').substring(0, 100)}... (with file access enabled)`);
-      
-      const geminiTimeout = options.timeout || this.defaultTimeout;
-      
-      const { stdout, stderr } = await spawnAsync('gemini', args, {
-        cwd: workingDir,
-        timeout: geminiTimeout,
-        maxBuffer: 10 * 1024 * 1024, // Large buffer for model outputs
-        env: {
-          ...process.env,
-          // Force non-interactive mode for Gemini CLI in spawned context
-          TERM: 'dumb',
-          NO_COLOR: '1',
-          CI: 'true'
+    return this._executeCLI(
+      'gemini',
+      userPrompt,
+      systemPromptSpec,
+      { ...options, sandbox: true }, // Ensure sandbox is always true for Gemini
+      (userPrompt, systemPromptSpec, options) => {
+        const args = [];
+        const modelName = options.models?.gemini || 'gemini-2.5-flash';
+        args.push('--model', modelName);
+        
+        if (options.sandbox) {
+          args.push('--sandbox');
         }
-      });
-
-      logger.info(`✅ Gemini completed (${Date.now() - startTime}ms)`);
-      
-      return {
-        agent: 'gemini',
-        success: true,
-        output: stdout,
-        error: stderr || undefined,
-        executionTime: Date.now() - startTime,
-        command: `gemini ${args.join(' ')}`,
-        workingDirectory: workingDir,
-        exitCode: 0
-      };
-    } catch (error) {
-      const execError: ChildProcessError = error as ChildProcessError;
-      const exitCode = execError.code || -1;
-      
-      // Detect rate limiting errors
-      const isRateLimit = execError.stderr?.includes('429') || 
-                         execError.message?.includes('rateLimitExceeded') ||
-                         execError.stderr?.includes('rate limit');
-      
-      if (isRateLimit) {
-        logger.warn(`⏱️ Gemini CLI hit rate limit (${Date.now() - startTime}ms)`);
-      } else {
-        logger.error(`❌ Gemini CLI execution failed (${Date.now() - startTime}ms)`, {
-          error: execError.message,
-          exitCode,
-          stderr: execError.stderr
-        });
+        
+        const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
+        args.push(combinedPrompt);
+        return { 
+          command: 'gemini', 
+          args: args,
+          env: {
+            ...process.env,
+            TERM: 'dumb',
+            NO_COLOR: '1',
+            CI: 'true'
+          }
+        };
       }
-      
-      return {
-        agent: 'gemini',
-        success: false,
-        output: '',
-        error: error instanceof Error ? error.message : String(error),
-        executionTime: Date.now() - startTime,
-        command: `gemini --model ${options.models?.gemini || 'gemini-2.5-flash'} ${options.sandbox ? '--sandbox' : ''}`,
-        workingDirectory: workingDir,
-        exitCode
-      };
-    }
+    );
   }
 
   async executeSingleCLI(
@@ -538,14 +488,16 @@ export class CLIAgentOrchestrator {
   }
 
   private async waitForAvailableSlot(): Promise<void> {
+    let waitTime = 100; // Start with 100ms wait time
     while (this.runningCLIs >= this.MAX_CONCURRENT_CLIS) {
-      logger.info(`⏳ Waiting for available CLI slot (${this.runningCLIs}/${this.MAX_CONCURRENT_CLIS} in use)...`);
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before checking again
+      logger.info(`⏳ Waiting for available CLI slot (${this.runningCLIs}/${this.MAX_CONCURRENT_CLIS} in use). Next check in ${waitTime}ms...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      waitTime = Math.min(waitTime * 2, 5000); // Exponential backoff, max 5 seconds
     }
   }
 
   async executeBrutalistAnalysis(
-    analysisType: string,
+    analysisType: BrutalistPromptType,
     targetPath: string,
     systemPromptSpec: string,
     context?: string,
@@ -632,9 +584,9 @@ export class CLIAgentOrchestrator {
    * @returns The sanitized string.
    */
   private sanitizePromptInput(input: string): string {
-    // Minimal sanitization - just prevent extreme edge cases
-    // CLI agents run in sandboxed environments anyway
-    return input;
+    // Basic sanitization to prevent prompt injection by escaping characters that could be interpreted as code or special commands.
+    // This is a first line of defense; a more robust solution might involve AI-specific escaping or structured input.
+    return input.replace(/`/g, '\\`').replace(/\$/g, '\\$');
   }
 
   synthesizeBrutalistFeedback(responses: CLIAgentResponse[], analysisType: string): string {

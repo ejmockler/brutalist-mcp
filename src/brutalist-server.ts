@@ -9,9 +9,8 @@ import {
   RoastOptions, 
   CLIAgentResponse 
 } from './types/brutalist.js';
-
-// Package version - updated by build process
-const PACKAGE_VERSION = "0.4.0";
+// Package version - keep in sync with package.json
+const PACKAGE_VERSION = "0.4.1";
 
 export class BrutalistServer {
   public server: McpServer;
@@ -101,7 +100,7 @@ export class BrutalistServer {
           const systemPrompt = `You are a brutal file organization critic. Your job is to systematically destroy the given directory structure by finding every organizational disaster, naming convention failure, and structural nightmare that makes codebases unmaintainable. Examine folder hierarchies, file naming patterns, separation of concerns, and overall project organization. Be ruthlessly honest about how poor organization will slow development and confuse developers. But after cataloguing this organizational hellscape, sketch out what sanity would actually look like.`;
           
           const result = await this.executeBrutalistAnalysis(
-            "file_structure",
+            "fileStructure",
             args.targetPath,
             systemPrompt,
             `Project structure analysis (depth: ${args.depth || 3}). ${args.context || ''}`,
@@ -159,7 +158,7 @@ export class BrutalistServer {
           const systemPrompt = `You are a brutal git workflow critic. Your job is to systematically destroy the given git history and development practices by finding every workflow disaster, commit quality issue, and collaboration nightmare. Examine commit messages, branching strategies, merge patterns, and code evolution. Be ruthlessly honest about how poor git practices will cause deployment issues, collaboration failures, and development chaos. When you're done cataloguing this version control wasteland, reluctantly outline what professional git hygiene actually demands.`;
           
           const result = await this.executeBrutalistAnalysis(
-            "git_history",
+            "gitHistory",
             args.targetPath,
             systemPrompt,
             `Git history analysis (range: ${args.commitRange || 'last 20 commits'}). ${args.context || ''}`,
@@ -188,7 +187,7 @@ export class BrutalistServer {
           const systemPrompt = `You are a brutal testing strategy critic. Your job is to systematically destroy the given testing approach by finding every testing gap, quality assurance nightmare, and coverage disaster that will let bugs slip into production. Examine test coverage, test quality, testing patterns, and CI/CD integration. Be ruthlessly honest about how poor testing will cause production failures and user-facing bugs. After dissecting this quality assurance horror show, begrudgingly spell out what it takes to actually catch bugs before users do.`;
           
           const result = await this.executeBrutalistAnalysis(
-            "test_coverage",
+            "testCoverage",
             args.targetPath,
             systemPrompt,
             `Test coverage analysis (run coverage: ${args.runCoverage ?? true}). ${args.context || ''}`,
@@ -376,14 +375,14 @@ export class BrutalistServer {
       "Deploy two or more CLI agents in brutal adversarial combat. Watch Claude Code, Codex, and Gemini CLI tear apart your work from different angles, then debate each other's criticisms. The perfect storm of systematic destruction through AI agent disagreement.",
       {
         targetPath: z.string().describe("Path or concept to analyze"),
-        debateRounds: z.number().optional().describe("Number of debate rounds (default: 2)"),
+        debateRounds: z.number().optional().describe("Number of debate rounds (default: 2, max: 10)"),
         context: z.string().optional().describe("Additional context for the debate"),
         workingDirectory: z.string().optional().describe("Working directory for analysis"),
         enableSandbox: z.boolean().optional().describe("Enable sandbox mode for security")
       },
       async (args) => {
         return this.handleToolExecution(async () => {
-          const debateRounds = args.debateRounds || 2;
+          const debateRounds = Math.min(args.debateRounds || 2, 10); // Limit to max 10 rounds to prevent DoS
           const responses = await this.executeCLIDebate(
             args.targetPath,
             debateRounds,
@@ -560,7 +559,7 @@ export class BrutalistServer {
   }
 
   private async executeBrutalistAnalysis(
-    analysisType: string,
+    analysisType: BrutalistPromptType,
     targetPath: string, 
     systemPromptSpec: string,
     context?: string,

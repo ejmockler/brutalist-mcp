@@ -178,6 +178,17 @@ export interface CLIAgentOptions {
     codex?: string;
     gemini?: string;
   };
+  onStreamingEvent?: (event: StreamingEvent) => void;
+  progressToken?: string | number;
+  onProgress?: (progress: number, total: number, message: string) => void;
+}
+
+export interface StreamingEvent {
+  type: 'agent_start' | 'agent_progress' | 'agent_complete' | 'agent_error';
+  agent: 'claude' | 'codex' | 'gemini';
+  content?: string;
+  timestamp: number;
+  sessionId?: string;
 }
 
 export interface CLIContext {
@@ -194,6 +205,11 @@ export class CLIAgentOrchestrator {
   private readonly CLI_CACHE_TTL = 300000; // 5 minutes cache
   private runningCLIs = 0; // Track concurrent CLI executions
   private readonly MAX_CONCURRENT_CLIS = MAX_CONCURRENT_CLIS; // Configurable concurrency limit
+  
+  // Streaming throttle properties
+  private streamingBuffers = new Map<string, { chunks: string[], lastFlush: number }>();
+  private readonly STREAMING_FLUSH_INTERVAL = 200; // 200ms
+  private readonly MAX_CHUNK_SIZE = 2048; // 2KB per event
 
   constructor() {
     // Log configuration at startup
@@ -207,6 +223,139 @@ export class CLIAgentOrchestrator {
     this.detectCLIContext().catch(error => {
       logger.error("Failed to detect CLI context at startup:", error);
     });
+  }
+
+  private parseClaudeStreamOutput(chunk: string, options: CLIAgentOptions): string | null {
+    // Parse Claude's stream-json output to extract only model content
+    try {
+      const jsonChunk = JSON.parse(chunk.trim());
+      
+      if (jsonChunk.type === 'assistant' && jsonChunk.message?.content) {
+        // Extract text content from assistant messages
+        const textContent = jsonChunk.message.content
+          .filter((c: any) => c.type === 'text')
+          .map((c: any) => c.text)
+          .join('');
+        
+        if (textContent.trim()) {
+          return textContent;
+        }
+      }
+      
+      // Ignore system messages, init messages, etc.
+      return null;
+    } catch (e) {
+      // Not JSON, return as-is for non-streaming mode
+      return chunk;
+    }
+  }
+  
+  // Decode Claude's stream-json NDJSON output into plain text
+  private decodeClaudeStreamJson(ndjsonOutput: string): string {
+    if (!ndjsonOutput || !ndjsonOutput.trim()) {
+      return '';
+    }
+    
+    const textParts: string[] = [];
+    const lines = ndjsonOutput.split('\n');
+    
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      
+      try {
+        const event = JSON.parse(line);
+        
+        // Handle different event types from Claude's stream-json format
+        if (event.type === 'message' && event.message?.content) {
+          // Full message event
+          const content = event.message.content;
+          if (Array.isArray(content)) {
+            for (const item of content) {
+              if (item.type === 'text' && item.text) {
+                textParts.push(item.text);
+              }
+            }
+          }
+        } else if (event.type === 'content_block_delta' && event.delta?.text) {
+          // Incremental text delta
+          textParts.push(event.delta.text);
+        } else if (event.type === 'assistant' && event.message?.content) {
+          // Assistant message format (same as parseClaudeStreamOutput)
+          const content = event.message.content;
+          if (Array.isArray(content)) {
+            for (const item of content) {
+              if (item.type === 'text' && item.text) {
+                textParts.push(item.text);
+              }
+            }
+          }
+        }
+      } catch {
+        // Skip invalid JSON lines
+        continue;
+      }
+    }
+    
+    return textParts.join('');
+  }
+
+  private emitThrottledStreamingEvent(
+    agent: 'claude' | 'codex' | 'gemini',
+    type: 'agent_progress' | 'agent_error',
+    content: string,
+    onStreamingEvent?: (event: StreamingEvent) => void,
+    options?: CLIAgentOptions
+  ) {
+    if (!onStreamingEvent) return;
+
+    // Filter Claude stream output to only show model content
+    let processedContent = content;
+    if (agent === 'claude' && options?.progressToken) {
+      const filtered = this.parseClaudeStreamOutput(content, options);
+      if (!filtered) return; // Skip non-content events
+      processedContent = filtered;
+    }
+
+    const key = `${agent}-${type}`;
+    const now = Date.now();
+    
+    // Truncate content to prevent huge events
+    const truncatedContent = processedContent.length > this.MAX_CHUNK_SIZE 
+      ? processedContent.substring(0, this.MAX_CHUNK_SIZE) + '...[truncated]'
+      : processedContent;
+
+    // Get or create buffer for this agent+type
+    if (!this.streamingBuffers.has(key)) {
+      this.streamingBuffers.set(key, { chunks: [], lastFlush: now });
+    }
+    
+    const buffer = this.streamingBuffers.get(key)!;
+    buffer.chunks.push(truncatedContent);
+
+    // For progress notifications, emit immediately and also call onProgress
+    if (options?.progressToken && options?.onProgress && type === 'agent_progress') {
+      // Estimate progress based on content length (rough approximation)
+      const currentProgress = buffer.chunks.length * 10; // rough estimate
+      const totalProgress = 100;
+      
+      options.onProgress(currentProgress, totalProgress, `${agent.toUpperCase()}: ${truncatedContent.substring(0, 50)}...`);
+    }
+
+    // Flush if enough time has passed or buffer is getting large
+    if (now - buffer.lastFlush > this.STREAMING_FLUSH_INTERVAL || buffer.chunks.length > 10) {
+      const combinedContent = buffer.chunks.join('\n');
+      
+      onStreamingEvent({
+        type,
+        agent,
+        content: combinedContent,
+        timestamp: now
+      });
+
+      // Reset buffer
+      buffer.chunks = [];
+      buffer.lastFlush = now;
+    }
   }
   async detectCLIContext(): Promise<CLIContext> {
     // Return cached context if still valid
@@ -345,6 +494,16 @@ export class CLIAgentOrchestrator {
       logger.info(`🤖 Executing ${cliName.toUpperCase()} CLI`);
       logger.debug(`${cliName.toUpperCase()} prompt`, { prompt: userPrompt.substring(0, 100) });
 
+      // Emit agent start event
+      if (options.onStreamingEvent) {
+        options.onStreamingEvent({
+          type: 'agent_start',
+          agent: cliName,
+          content: `Starting ${cliName.toUpperCase()} analysis...`,
+          timestamp: Date.now()
+        });
+      }
+
       // WARNING: Claude CLI does not have a native --sandbox flag. 
       // If options.sandbox is true, it is assumed that the environment 
       // running this Brutalist MCP server provides the sandboxing (e.g., Docker, VM).
@@ -372,18 +531,52 @@ export class CLIAgentOrchestrator {
           // Stream output in real-time with agent identification
           if (type === 'stdout' && chunk.trim()) {
             logger.info(`🤖 ${cliName.toUpperCase()}: ${chunk.trim()}`);
+            
+            // Emit throttled streaming event for real-time updates
+            this.emitThrottledStreamingEvent(cliName, 'agent_progress', chunk.trim(), options.onStreamingEvent, options);
           } else if (type === 'stderr' && chunk.trim()) {
             logger.warn(`⚠️ ${cliName.toUpperCase()} stderr: ${chunk.trim()}`);
+            
+            // Emit throttled error streaming event
+            this.emitThrottledStreamingEvent(cliName, 'agent_error', chunk.trim(), options.onStreamingEvent, options);
           }
         }
       });
 
       logger.info(`✅ ${cliName.toUpperCase()} completed (${Date.now() - startTime}ms)`);
 
+      // Emit completion event
+      if (options.onStreamingEvent) {
+        options.onStreamingEvent({
+          type: 'agent_complete',
+          agent: cliName,
+          content: `${cliName.toUpperCase()} analysis completed (${Date.now() - startTime}ms)`,
+          timestamp: Date.now()
+        });
+      }
+
+      // Post-process Claude stream-json output if needed
+      let finalOutput = stdout;
+      
+      // If Claude was run with stream-json format, decode the NDJSON to extract text
+      if (cliName === 'claude' && args.includes('--output-format') && args.includes('stream-json')) {
+        const decodedText = this.decodeClaudeStreamJson(stdout);
+        if (decodedText) {
+          finalOutput = decodedText;
+        }
+      }
+      
+      // Fallback: If stdout is empty but stderr has content and exit was successful,
+      // Claude might have written to stderr (common in non-TTY environments)
+      if (!finalOutput.trim() && stderr && stderr.trim()) {
+        logger.info(`📝 Using stderr as output for ${cliName} (stdout was empty)`);
+        finalOutput = stderr;
+      }
+      
       return {
         agent: cliName,
         success: true,
-        output: stdout,
+        output: finalOutput,
         error: stderr || undefined,
         executionTime: Date.now() - startTime,
         command: `${command} ${args.join(' ')}`,
@@ -408,6 +601,16 @@ export class CLIAgentOrchestrator {
           error: "Redacted: See internal logs for full error details.",
           exitCode,
           stderr: "Redacted: See internal logs for full stderr output."
+        });
+      }
+
+      // Emit error event
+      if (options.onStreamingEvent) {
+        options.onStreamingEvent({
+          type: 'agent_error',
+          agent: cliName,
+          content: `${cliName.toUpperCase()} failed: ${error instanceof Error ? error.message : String(error)}`,
+          timestamp: Date.now()
         });
       }
 
@@ -437,13 +640,29 @@ export class CLIAgentOrchestrator {
       (userPrompt, systemPromptSpec, options) => {
         const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
         const args = ['--print'];
+        
+        // Enable streaming for real-time progress if progress notifications are enabled
+        if (options.progressToken) {
+          args.push('--output-format', 'stream-json', '--verbose');
+        }
+        
         // Use provided model or let Claude use its default
         const model = options.models?.claude || AVAILABLE_MODELS.claude.default;
         if (model) {
           args.push('--model', model);
         }
+        // Pass prompt as argument - Claude CLI works better this way
         args.push(combinedPrompt);
-        return { command: 'claude', args };
+        
+        // Set environment to ensure consistent output behavior
+        const env = {
+          ...process.env,
+          TERM: 'dumb',      // Disable fancy terminal output
+          NO_COLOR: '1',     // Disable colored output
+          CI: 'true'         // Indicate non-interactive environment
+        };
+        
+        return { command: 'claude', args, env };
       }
     );
   }
@@ -591,7 +810,7 @@ export class CLIAgentOrchestrator {
       availableCLIs = availableCLIs.filter(cli => cli !== this.cliContext.currentCLI);
       logger.info(`🔄 Excluding current CLI (${this.cliContext.currentCLI}) to prevent recursion`);
     } else if (this.cliContext.currentCLI && this.cliContext.availableCLIs.length === 1) {
-      logger.warn(`⚠️ Only current CLI (${this.cliContext.currentCLI}) available - allowing with recursion guard`);
+      logger.info(`🔄 Using current CLI (${this.cliContext.currentCLI}) - spawning separate process`);
     }
     
     if (availableCLIs.length === 0) {

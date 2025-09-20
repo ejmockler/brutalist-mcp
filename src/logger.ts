@@ -14,7 +14,7 @@ export class Logger {
   }
 
   info(message: string, data?: any) {
-    console.log(`[BRUTALIST MCP] INFO: ${message}`, data ? JSON.stringify(data) : '');
+    console.error(`[BRUTALIST MCP] INFO: ${message}`, data ? JSON.stringify(data) : '');
   }
 
   warn(message: string, data?: any) {
@@ -30,7 +30,7 @@ export class Logger {
 
   debug(message: string, data?: any) {
     if (this.debugMode) {
-      console.log(`[BRUTALIST MCP] DEBUG: ${message}`, data ? JSON.stringify(data) : '');
+      console.error(`[BRUTALIST MCP] DEBUG: ${message}`, data ? JSON.stringify(data) : '');
     }
   }
 }

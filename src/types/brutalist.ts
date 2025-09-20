@@ -2,6 +2,8 @@ export interface BrutalistServerConfig {
   workingDirectory?: string;
   defaultTimeout?: number;
   enableSandbox?: boolean;
+  transport?: 'stdio' | 'http';
+  httpPort?: number;
 }
 
 export interface CLIAgentResponse {

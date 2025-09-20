@@ -1,7 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { randomUUID } from "crypto";
+import express, { Request, Response, NextFunction } from "express";
 import { z } from "zod";
-import { CLIAgentOrchestrator, BrutalistPromptType } from './cli-agents.js';
+import { CLIAgentOrchestrator, BrutalistPromptType, StreamingEvent } from './cli-agents.js';
 import { logger } from './logger.js';
 import { 
   BrutalistServerConfig, 
@@ -9,19 +12,22 @@ import {
   RoastOptions, 
   CLIAgentResponse 
 } from './types/brutalist.js';
-// Package version - keep in sync with package.json
-const PACKAGE_VERSION = "0.4.1";
+import pkg from '../package.json' assert { type: 'json' };
+const PACKAGE_VERSION = pkg.version;
 
 export class BrutalistServer {
   public server: McpServer;
   public config: BrutalistServerConfig;
   private cliOrchestrator: CLIAgentOrchestrator;
+  private httpTransport?: StreamableHTTPServerTransport;
 
   constructor(config: BrutalistServerConfig = {}) {
     this.config = {
       workingDirectory: process.cwd(),
       defaultTimeout: 1500000, // 25 minutes for thorough CLI analysis
       enableSandbox: true,
+      transport: 'stdio', // Default to stdio for backward compatibility
+      httpPort: 3000,
       ...config
     };
 
@@ -39,15 +45,133 @@ export class BrutalistServer {
     this.registerTools();
   }
 
+  private handleStreamingEvent = (event: StreamingEvent) => {
+    // Send streaming event via MCP server (works for both stdio and HTTP transports)
+    try {
+      logger.debug(`🔄 Streaming event: ${event.type} from ${event.agent} - ${event.content?.substring(0, 100)}...`);
+      
+      // Convert streaming event to MCP notification format
+      this.server.sendLoggingMessage({
+        level: 'info',
+        data: event,
+        logger: 'brutalist-mcp-streaming'
+      });
+      
+      logger.debug(`✅ Sent logging message for ${event.type} event`);
+    } catch (error) {
+      logger.error("Failed to send streaming event", error);
+    }
+  };
+
+  private handleProgressUpdate = (progressToken: string | number, progress: number, total: number, message: string) => {
+    try {
+      logger.debug(`📊 Progress update: ${progress}/${total} - ${message}`);
+      
+      // Send progress notification via MCP server
+      this.server.server.notification({
+        method: "notifications/progress",
+        params: {
+          progressToken,
+          progress,
+          total,
+          message
+        }
+      });
+      
+      logger.debug(`✅ Sent progress notification: ${progress}/${total}`);
+    } catch (error) {
+      logger.error("Failed to send progress notification", error);
+    }
+  };
+
   async start() {
     logger.info("Starting Brutalist MCP Server with CLI Agents");
     
     // Skip CLI detection at startup - will be done lazily on first request
     logger.info("CLI context will be detected on first request");
     
+    if (this.config.transport === 'http') {
+      await this.startHttpServer();
+    } else {
+      await this.startStdioServer();
+    }
+    
+    logger.info("Brutalist MCP Server started successfully");
+  }
+
+  private async startStdioServer() {
+    logger.info("Starting with stdio transport");
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    logger.info("Brutalist MCP Server started successfully");
+  }
+
+  private async startHttpServer() {
+    logger.info(`Starting with HTTP streaming transport on port ${this.config.httpPort}`);
+    
+    // Create HTTP transport with streaming support
+    this.httpTransport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      enableJsonResponse: false, // Force SSE streaming
+      onsessioninitialized: (sessionId) => {
+        logger.info(`New session initialized: ${sessionId}`);
+      },
+      onsessionclosed: (sessionId) => {
+        logger.info(`Session closed: ${sessionId}`);
+      }
+    });
+
+    // Connect the MCP server to the HTTP transport
+    await this.server.connect(this.httpTransport);
+
+    // Create Express app for HTTP handling
+    const app = express();
+    app.use(express.json({ limit: '10mb' })); // Add JSON size limit for security
+    
+    // Enable CORS for development
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      res.header('Access-Control-Allow-Origin', '*');
+      res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
+      if (req.method === 'OPTIONS') {
+        res.sendStatus(200);
+        return;
+      }
+      next();
+    });
+
+    // Route all MCP requests through the transport
+    app.all('/mcp', async (req: Request, res: Response) => {
+      try {
+        await this.httpTransport!.handleRequest(req, res, req.body);
+      } catch (error) {
+        logger.error("HTTP request handling failed", error);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    // Health check endpoint
+    app.get('/health', (req: Request, res: Response) => {
+      res.json({ status: 'ok', transport: 'http-streaming', version: PACKAGE_VERSION });
+    });
+
+    // Start the HTTP server - bind to localhost only for security
+    const port = this.config.httpPort || 3000;
+    const server = app.listen(port, '127.0.0.1', () => {
+      logger.info(`HTTP server listening on port ${port}`);
+      logger.info(`MCP endpoint: http://localhost:${port}/mcp`);
+      logger.info(`Health check: http://localhost:${port}/health`);
+    });
+
+    // Handle graceful shutdown
+    process.on('SIGTERM', () => {
+      logger.info('Received SIGTERM, shutting down gracefully');
+      server.close(() => {
+        logger.info('HTTP server closed');
+        process.exit(0);
+      });
+    });
   }
 
   private registerTools() {
@@ -68,9 +192,12 @@ export class BrutalistServer {
           gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
         }).optional().describe("Specific models to use for each CLI agent (defaults: codex=gpt-5, gemini=gemini-2.5-flash)")
       },
-      async (args) => {
+      async (args, extra) => {
         try {
           const systemPrompt = `You are a battle-scarred principal engineer who has debugged production disasters for 15 years. Find security holes, performance bottlenecks, and maintainability nightmares in this codebase. Be brutal about what's broken but specific about what would actually work. Treat this like code that will kill people if it fails.`;
+          
+          // Extract progressToken from request metadata for real-time streaming
+          const progressToken = extra._meta?.progressToken;
           
           const result = await this.executeBrutalistAnalysis(
             "codebase",
@@ -81,7 +208,8 @@ export class BrutalistServer {
             args.enableSandbox,
             args.preferredCLI,
             args.verbose,
-            args.models
+            args.models,
+            progressToken
           );
 
           return this.formatToolResponse(result, args.verbose);
@@ -100,6 +228,7 @@ export class BrutalistServer {
         depth: z.number().optional().describe("Maximum directory depth to analyze (default: 3)"),
         context: z.string().optional().describe("Additional context about the project structure"),
         workingDirectory: z.string().optional().describe("Working directory to execute from"),
+        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
         models: z.object({
           claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
           codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
@@ -117,7 +246,7 @@ export class BrutalistServer {
             `Project structure analysis (depth: ${args.depth || 3}). ${args.context || ''}`,
             args.workingDirectory,
             undefined, // enableSandbox
-            undefined, // preferredCLI
+            args.preferredCLI,
             undefined, // verbose
             args.models
           );
@@ -137,7 +266,13 @@ export class BrutalistServer {
         targetPath: z.string().describe("Path to package file (package.json, requirements.txt, Cargo.toml, etc.)"),
         includeDevDeps: z.boolean().optional().describe("Include development dependencies in analysis (default: true)"),
         context: z.string().optional().describe("Additional context about the project dependencies"),
-        workingDirectory: z.string().optional().describe("Working directory to execute from")
+        workingDirectory: z.string().optional().describe("Working directory to execute from"),
+        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
+        models: z.object({
+          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
+          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
+          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+        }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {
         try {
@@ -148,7 +283,11 @@ export class BrutalistServer {
             args.targetPath,
             systemPrompt,
             `Dependency analysis (dev deps: ${args.includeDevDeps ?? true}). ${args.context || ''}`,
-            args.workingDirectory
+            args.workingDirectory,
+            undefined, // enableSandbox
+            args.preferredCLI,
+            undefined, // verbose
+            args.models
           );
 
           return this.formatToolResponse(result);
@@ -166,7 +305,13 @@ export class BrutalistServer {
         targetPath: z.string().describe("Git repository path to analyze"),
         commitRange: z.string().optional().describe("Commit range to analyze (e.g., 'HEAD~10..HEAD', default: last 20 commits)"),
         context: z.string().optional().describe("Additional context about the development workflow"),
-        workingDirectory: z.string().optional().describe("Working directory to execute from")
+        workingDirectory: z.string().optional().describe("Working directory to execute from"),
+        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
+        models: z.object({
+          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
+          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
+          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+        }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {
         try {
@@ -177,7 +322,11 @@ export class BrutalistServer {
             args.targetPath,
             systemPrompt,
             `Git history analysis (range: ${args.commitRange || 'last 20 commits'}). ${args.context || ''}`,
-            args.workingDirectory
+            args.workingDirectory,
+            undefined, // enableSandbox
+            args.preferredCLI,
+            undefined, // verbose
+            args.models
           );
 
           return this.formatToolResponse(result);
@@ -195,7 +344,13 @@ export class BrutalistServer {
         targetPath: z.string().describe("Path to test directory or test configuration file"),
         runCoverage: z.boolean().optional().describe("Attempt to run coverage analysis (default: true)"),
         context: z.string().optional().describe("Additional context about the testing strategy"),
-        workingDirectory: z.string().optional().describe("Working directory to execute from")
+        workingDirectory: z.string().optional().describe("Working directory to execute from"),
+        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
+        models: z.object({
+          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
+          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
+          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+        }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {
         try {
@@ -206,7 +361,11 @@ export class BrutalistServer {
             args.targetPath,
             systemPrompt,
             `Test coverage analysis (run coverage: ${args.runCoverage ?? true}). ${args.context || ''}`,
-            args.workingDirectory
+            args.workingDirectory,
+            undefined, // enableSandbox
+            args.preferredCLI,
+            undefined, // verbose
+            args.models
           );
 
           return this.formatToolResponse(result);
@@ -225,6 +384,7 @@ export class BrutalistServer {
         context: z.string().optional().describe("Additional context about goals, constraints, or background"),
         timeline: z.string().optional().describe("Expected timeline or deadline"),
         resources: z.string().optional().describe("Available resources (budget, team, time, skills)"),
+        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
         models: z.object({
           claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
           codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
@@ -242,7 +402,7 @@ export class BrutalistServer {
             `Context: ${args.context || 'none'}, Timeline: ${args.timeline || 'unspecified'}, Resources: ${args.resources || 'unknown'}`,
             undefined, // workingDirectory
             undefined, // enableSandbox
-            undefined, // preferredCLI
+            args.preferredCLI,
             undefined, // verbose
             args.models
           );
@@ -263,6 +423,7 @@ export class BrutalistServer {
         scale: z.string().optional().describe("Expected scale/load (users, requests, data)"),
         constraints: z.string().optional().describe("Budget, timeline, or technical constraints"),
         deployment: z.string().optional().describe("Deployment environment and strategy"),
+        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
         models: z.object({
           claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
           codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
@@ -280,7 +441,7 @@ export class BrutalistServer {
             `Scale: ${args.scale || 'unknown'}, Constraints: ${args.constraints || 'none specified'}, Deployment: ${args.deployment || 'unclear'}`,
             undefined, // workingDirectory
             undefined, // enableSandbox
-            undefined, // preferredCLI
+            args.preferredCLI,
             undefined, // verbose
             args.models
           );
@@ -301,6 +462,7 @@ export class BrutalistServer {
         field: z.string().optional().describe("Research field (ML, systems, theory, etc.)"),
         claims: z.string().optional().describe("Main claims or contributions"),
         data: z.string().optional().describe("Data sources, datasets, or experimental setup"),
+        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
         models: z.object({
           claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
           codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
@@ -318,7 +480,7 @@ export class BrutalistServer {
             `Field: ${args.field || 'unspecified'}, Claims: ${args.claims || 'unclear'}, Data: ${args.data || 'not provided'}`,
             undefined, // workingDirectory
             undefined, // enableSandbox
-            undefined, // preferredCLI
+            args.preferredCLI,
             undefined, // verbose
             args.models
           );
@@ -339,6 +501,7 @@ export class BrutalistServer {
         assets: z.string().optional().describe("Critical assets or data to protect"),
         threatModel: z.string().optional().describe("Known threats or attack vectors to consider"),
         compliance: z.string().optional().describe("Compliance requirements (GDPR, HIPAA, etc.)"),
+        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
         models: z.object({
           claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
           codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
@@ -356,7 +519,7 @@ export class BrutalistServer {
             `Assets: ${args.assets || 'unspecified'}, Threats: ${args.threatModel || 'unknown'}, Compliance: ${args.compliance || 'none specified'}`,
             undefined, // workingDirectory
             undefined, // enableSandbox
-            undefined, // preferredCLI
+            args.preferredCLI,
             undefined, // verbose
             args.models
           );
@@ -376,7 +539,13 @@ export class BrutalistServer {
         product: z.string().describe("Product description, features, or user experience to analyze"),
         users: z.string().optional().describe("Target users or user personas"),
         competition: z.string().optional().describe("Competitive landscape or alternatives"),
-        metrics: z.string().optional().describe("Success metrics or KPIs")
+        metrics: z.string().optional().describe("Success metrics or KPIs"),
+        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
+        models: z.object({
+          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
+          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
+          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+        }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {
         try {
@@ -386,7 +555,12 @@ export class BrutalistServer {
             "product",
             args.product,
             systemPrompt,
-            `Users: ${args.users || 'unclear'}, Competition: ${args.competition || 'unknown'}, Metrics: ${args.metrics || 'undefined'}`
+            `Users: ${args.users || 'unclear'}, Competition: ${args.competition || 'unknown'}, Metrics: ${args.metrics || 'undefined'}`,
+            undefined, // workingDirectory
+            undefined, // enableSandbox
+            args.preferredCLI,
+            undefined, // verbose
+            args.models
           );
 
           return this.formatToolResponse(result);
@@ -404,7 +578,13 @@ export class BrutalistServer {
         infrastructure: z.string().describe("Infrastructure setup, deployment strategy, or operations plan"),
         scale: z.string().optional().describe("Expected scale and load patterns"),
         budget: z.string().optional().describe("Infrastructure budget or cost constraints"),
-        sla: z.string().optional().describe("SLA requirements or uptime targets")
+        sla: z.string().optional().describe("SLA requirements or uptime targets"),
+        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
+        models: z.object({
+          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
+          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
+          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+        }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {
         try {
@@ -414,7 +594,12 @@ export class BrutalistServer {
             "infrastructure",
             args.infrastructure,
             systemPrompt,
-            `Scale: ${args.scale || 'unknown'}, Budget: ${args.budget || 'unlimited?'}, SLA: ${args.sla || 'undefined'}`
+            `Scale: ${args.scale || 'unknown'}, Budget: ${args.budget || 'unlimited?'}, SLA: ${args.sla || 'undefined'}`,
+            undefined, // workingDirectory
+            undefined, // enableSandbox
+            args.preferredCLI,
+            undefined, // verbose
+            args.models
           );
 
           return this.formatToolResponse(result);
@@ -774,9 +959,11 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
       claude?: string;
       codex?: string;
       gemini?: string;
-    }
+    },
+    progressToken?: string | number
   ): Promise<BrutalistResponse> {
     logger.info(`🏢 Starting brutalist analysis: ${analysisType}`);
+    logger.info(`🔧 DEBUG: preferredCLI=${preferredCLI}, targetPath=${targetPath}`);
     logger.debug("Executing brutalist analysis", { 
       targetPath,
       analysisType,
@@ -788,10 +975,13 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
 
     try {
       // Get CLI context for execution summary
+      logger.info(`🔧 DEBUG: About to detect CLI context`);
       await this.cliOrchestrator.detectCLIContext();
+      logger.info(`🔧 DEBUG: CLI context detected successfully`);
       
       // Execute CLI agent analysis (single or multi-CLI based on preferences)
       logger.info(`🔍 Executing brutalist analysis with timeout: ${this.config.defaultTimeout}ms`);
+      logger.info(`🔧 DEBUG: About to call cliOrchestrator.executeBrutalistAnalysis`);
       const responses = await this.cliOrchestrator.executeBrutalistAnalysis(
         analysisType,
         targetPath,
@@ -803,19 +993,26 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
           timeout: this.config.defaultTimeout,
           preferredCLI,
           analysisType: analysisType as BrutalistPromptType,
-          models
+          models,
+          onStreamingEvent: this.handleStreamingEvent,
+          progressToken,
+          onProgress: progressToken ? this.handleProgressUpdate.bind(this, progressToken) : undefined
         }
       );
+      logger.info(`🔧 DEBUG: cliOrchestrator.executeBrutalistAnalysis returned ${responses.length} responses`);
       
       const successfulResponses = responses.filter(r => r.success);
       const totalExecutionTime = responses.reduce((sum, r) => sum + r.executionTime, 0);
       
       logger.info(`📊 Analysis complete: ${successfulResponses.length}/${responses.length} CLIs successful (${totalExecutionTime}ms total)`);
+      logger.info(`🔧 DEBUG: About to synthesize feedback`);
+      const synthesis = this.cliOrchestrator.synthesizeBrutalistFeedback(responses, analysisType);
+      logger.info(`🔧 DEBUG: Synthesis length: ${synthesis.length} characters`);
 
-      return {
+      const result = {
         success: successfulResponses.length > 0,
         responses,
-        synthesis: this.cliOrchestrator.synthesizeBrutalistFeedback(responses, analysisType),
+        synthesis,
         analysisType,
         targetPath,
         executionSummary: {
@@ -827,6 +1024,8 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
           selectionMethod: responses.length === 1 ? (responses[0] as any).selectionMethod : 'multi-cli'
         }
       };
+      logger.info(`🔧 DEBUG: Returning result with success=${result.success}`);
+      return result;
     } catch (error) {
       logger.error("Brutalist analysis execution failed", error);
       throw error;
@@ -835,8 +1034,12 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
 
 
   private formatToolResponse(result: BrutalistResponse, verbose: boolean = false) {
+    logger.info(`🔧 DEBUG: formatToolResponse called with synthesis length: ${result.synthesis?.length || 0}`);
+    logger.info(`🔧 DEBUG: result.success=${result.success}, responses.length=${result.responses?.length || 0}`);
+    
     // Maximum CLI output, minimal MCP fluff
     if (result.synthesis) {
+      logger.info(`🔧 DEBUG: Returning synthesis of ${result.synthesis.length} characters`);
       return {
         content: [{ 
           type: "text" as const, 

@@ -12,7 +12,7 @@ import {
   RoastOptions, 
   CLIAgentResponse 
 } from './types/brutalist.js';
-import pkg from '../package.json' assert { type: 'json' };
+import pkg from '../package.json' with { type: 'json' };
 const PACKAGE_VERSION = pkg.version;
 
 export class BrutalistServer {

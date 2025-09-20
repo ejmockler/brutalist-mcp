@@ -12,8 +12,8 @@ import {
   RoastOptions, 
   CLIAgentResponse 
 } from './types/brutalist.js';
-import pkg from '../package.json' with { type: 'json' };
-const PACKAGE_VERSION = pkg.version;
+// Use environment variable or fallback to manual version
+const PACKAGE_VERSION = process.env.npm_package_version || "0.4.4";
 
 export class BrutalistServer {
   public server: McpServer;

@@ -1,30 +1,54 @@
 export default {
-  preset: 'ts-jest',
+  preset: 'ts-jest/presets/default-esm',
   testEnvironment: 'node',
   setupFiles: ['<rootDir>/jest.setup.js'],
-  roots: ['<rootDir>/src'],
-  testMatch: ['**/__tests__/**/*.ts', '**/*.test.ts'],
+  setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
+  roots: ['<rootDir>/tests/unit', '<rootDir>/src'],
+  testPathIgnorePatterns: [
+    '<rootDir>/tests/integration/',
+    '<rootDir>/tests/e2e/',
+    '<rootDir>/node_modules/'
+  ],
+  testMatch: [
+    '<rootDir>/tests/unit/**/*.test.ts',
+    '<rootDir>/tests/unit/**/*.spec.ts'
+  ],
   collectCoverageFrom: [
     'src/**/*.ts',
     '!src/**/*.d.ts',
-    '!src/index.ts'
+    '!src/index.ts',
+    '!src/**/*.test.ts',
+    '!src/**/*.spec.ts'
   ],
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'html'],
+  coverageThreshold: {
+    global: {
+      branches: 70,
+      functions: 80,
+      lines: 80,
+      statements: 80
+    }
+  },
   moduleNameMapper: {
-    '^(\\.{1,2}/.*)\\.js$': '$1'
+    '^(\\.{1,2}/.*)\\.js$': '$1',
+    '^@/(.*)$': '<rootDir>/src/$1'
   },
   extensionsToTreatAsEsm: ['.ts'],
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {
       useESM: true,
       tsconfig: {
-        module: 'esnext',
-        target: 'esnext',
-        moduleResolution: 'node',
+        module: 'node20',
+        target: 'ES2022',
+        moduleResolution: 'Node16',
         allowSyntheticDefaultImports: true,
-        esModuleInterop: true
+        esModuleInterop: true,
+        resolveJsonModule: true
       }
     }]
-  }
+  },
+  testTimeout: 30000,
+  maxWorkers: '50%',
+  workerIdleMemoryLimit: '512MB'
 };

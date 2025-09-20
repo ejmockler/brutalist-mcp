@@ -402,6 +402,97 @@ args.push('--append-system-prompt', systemPrompt); // Times out
 4. **Language Support**: Best results with mainstream languages (JS, Python, Go, etc.)
 5. **Security**: Significant compromises made for functionality - see above
 
+## TypeScript Standards - NON-NEGOTIABLE
+
+### ZERO TOLERANCE FOR TYPE SHORTCUTS
+
+This codebase maintains STRICT TypeScript standards. The following are **ABSOLUTELY FORBIDDEN**:
+
+#### ❌ NEVER USE:
+- `any` type - indicates lack of type safety
+- `never` type inappropriately - only for genuinely impossible states  
+- `@ts-ignore` comments - masks real type issues
+- `@ts-expect-error` without fixing the root cause
+- `unknown` without proper type guards
+- Casting with `as` without validation
+- Loose function signatures like `(...args: any[]) => any`
+
+#### ✅ ALWAYS USE:
+- Proper interface definitions
+- Generic constraints with `extends`
+- Union types for multiple possibilities  
+- Type guards and narrowing
+- Zod schemas for runtime validation
+- Exact Jest mock types matching real interfaces
+
+### Common Type Errors We've Eliminated
+
+Based on extensive debugging, here are the type patterns that MUST be avoided:
+
+**Mock Type Mismatches:**
+```typescript
+// ❌ WRONG - causes Mock<UnknownFunction> errors
+mockTool = jest.fn().mockImplementation((name: string, ...restArgs: unknown[]) => {
+  // Generic callback assignment fails
+  toolHandlers[name] = callback as any; // FORBIDDEN
+});
+
+// ✅ CORRECT - proper typed mock
+mockTool = jest.fn<MockedFunction<McpServer['tool']>>().mockImplementation(
+  (name: string, description: string, schema: ZodRawShape, callback: ToolCallback<ZodRawShape>) => {
+    // Type-safe callback assignment
+    toolHandlers[name] = callback;
+    return registeredToolMock;
+  }
+);
+```
+
+**Jest Mock Type Safety:**
+```typescript
+// ❌ WRONG - jest.fn() returns Mock<UnknownFunction>
+const mockConnect = jest.fn().mockResolvedValue(undefined);
+
+// ✅ CORRECT - explicitly typed Jest mock
+const mockConnect = jest.fn<MockedFunction<McpServer['connect']>>()
+  .mockResolvedValue(undefined);
+```
+
+**Generic Type Constraints:**
+```typescript
+// ❌ WRONG - loses type information
+interface ToolHandler {
+  (args: any): any; // FORBIDDEN
+}
+
+// ✅ CORRECT - maintains type safety
+interface ToolHandler<T extends ZodRawShape = Record<string, never>> {
+  (args: T extends Record<string, never> ? {} : z.infer<ZodObject<T>>): CallToolResult | Promise<CallToolResult>;
+}
+```
+
+### Debugging Type Errors
+
+When encountering type errors:
+
+1. **Read the full error message** - TypeScript errors contain the exact type mismatch
+2. **Trace to the source** - Don't suppress with `any`, fix the root interface
+3. **Check import types** - Ensure imported types match usage
+4. **Verify generic constraints** - Complex generics need proper bounds
+5. **Test mock compatibility** - Jest mocks must match real function signatures exactly
+
+### Code Review Checklist
+
+Every PR MUST pass these checks:
+
+- [ ] `npm run build` succeeds with 0 TypeScript errors
+- [ ] `npm run lint` passes with 0 violations
+- [ ] No `any`, `never`, `@ts-ignore`, or `@ts-expect-error` in new code
+- [ ] All Jest mocks properly typed with correct function signatures
+- [ ] Interface definitions match actual usage patterns
+- [ ] Generic constraints properly bound
+
+**If you see type shortcuts in code review, REJECT immediately. No exceptions.**
+
 ## Support
 
 For issues specific to the Brutalist MCP with Claude Code:

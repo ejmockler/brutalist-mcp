@@ -56,7 +56,7 @@ export class BrutalistServer {
       "roast_codebase",
       "Deploy brutal AI critics to systematically destroy your entire codebase. These AI agents will navigate your directories, read your actual files, and find every architectural disaster, security vulnerability, and maintainability nightmare lurking in your project. They treat this like code that will kill people if it fails.",
       {
-        targetPath: z.string().describe("Path to analyze (file or directory)"),
+        targetPath: z.string().describe("Directory path to your codebase (NOT a single file - analyze the entire project)"),
         context: z.string().optional().describe("Additional context about the codebase purpose"),
         workingDirectory: z.string().optional().describe("Working directory to execute from"),
         enableSandbox: z.boolean().optional().describe("Enable sandbox mode for safe analysis (default: true)"),
@@ -427,9 +427,9 @@ export class BrutalistServer {
     // ROAST_CLI_DEBATE: Adversarial analysis between different CLI agents
     this.server.tool(
       "roast_cli_debate",
-      "Deploy two or more CLI agents in brutal adversarial combat. Watch Claude Code, Codex, and Gemini CLI tear apart your work from different angles, then debate each other's criticisms. The perfect storm of systematic destruction through AI agent disagreement.",
+      "Deploy CLI agents in structured adversarial debate. Agents take opposing positions and systematically challenge each other's reasoning. Perfect for exploring complex topics from multiple perspectives and stress-testing ideas through rigorous intellectual discourse.",
       {
-        targetPath: z.string().describe("Path or concept to analyze"),
+        targetPath: z.string().describe("Topic, question, or concept to debate (NOT a file path - use natural language)"),
         debateRounds: z.number().optional().describe("Number of debate rounds (default: 2, max: 10)"),
         context: z.string().optional().describe("Additional context for the debate"),
         workingDirectory: z.string().optional().describe("Working directory for analysis"),
@@ -545,34 +545,57 @@ export class BrutalistServer {
       // Initialize transcript for each agent
       availableAgents.forEach(agent => fullDebateTranscript.set(agent, []));
       
-      // Round 1: Initial positions from all agents
+      // Assign opposing positions to each agent based on the debate topic
+      const agentPositions = new Map<string, string>();
+      const positions = [
+        "PRO-POSITION: Argue strongly FOR the proposed action/idea",
+        "CONTRA-POSITION: Argue strongly AGAINST the proposed action/idea"
+      ];
+      
+      availableAgents.forEach((agent, index) => {
+        agentPositions.set(agent, positions[index % positions.length]);
+      });
+      
+      // Round 1: Initial positions with assigned stances
       logger.debug(`Starting debate round 1: Initial positions`);
       
-      const initialPrompt = `You are in a brutal adversarial debate about: ${targetPath}\n\n${context || ''}
+      for (const [agent, position] of agentPositions.entries()) {
+        const assignedPrompt = `You are ${agent.toUpperCase()}, a PASSIONATE ADVOCATE who strongly believes in this position: ${position}
 
-Provide your INITIAL POSITION with devastating critique. Be specific about flaws and problems. Take a clear stance.`;
-      
-      const initialResponses = await this.cliOrchestrator.executeBrutalistAnalysis(
-        'debate',
-        targetPath,
-        initialPrompt,
-        '',
-        {
-          workingDirectory: workingDirectory || this.config.workingDirectory,
-          sandbox: enableSandbox ?? this.config.enableSandbox,
-          timeout: (this.config.defaultTimeout || 60000) * 2,
-          analysisType: 'debate',
-          models
-        }
-      );
-      
-      // Store initial positions
-      initialResponses.forEach(response => {
+DEBATE TOPIC: ${targetPath}
+CONTEXT: ${context || ''}
+
+You are completely convinced your position is correct and critically important. You will argue forcefully and never concede ground to the opposing view.
+
+YOUR MISSION:
+1. Present devastating critiques of the opposing position
+2. Show why alternative approaches lead to serious problems
+3. Use sharp, direct language - call out flawed reasoning and poor assumptions
+4. Never hedge or qualify your stance
+5. Be completely confident in your position
+6. Treat this as an intellectually crucial debate
+
+Remember: You are ${agent.toUpperCase()}, the passionate champion of ${position.split(':')[0]}. Argue with conviction.`;
+        
+        logger.info(`🎭 ${agent.toUpperCase()} preparing initial position: ${position.split(':')[0]}`);
+        
+        const response = await this.cliOrchestrator.executeSingleCLI(
+          agent as 'claude' | 'codex' | 'gemini',
+          assignedPrompt,
+          assignedPrompt,
+          {
+            workingDirectory: workingDirectory || this.config.workingDirectory,
+            sandbox: enableSandbox ?? this.config.enableSandbox,
+            timeout: (this.config.defaultTimeout || 60000) * 2,
+            models: models ? { [agent]: models[agent as keyof typeof models] } : undefined
+          }
+        );
+        
         if (response.success) {
           debateContext.push(response);
-          fullDebateTranscript.get(response.agent)?.push(response.output);
+          fullDebateTranscript.get(agent)?.push(response.output);
         }
-      });
+      }
       
       // Subsequent rounds: Turn-based responses attacking specific arguments
       for (let round = 2; round <= debateRounds; round++) {
@@ -586,34 +609,40 @@ Provide your INITIAL POSITION with devastating critique. Be specific about flaws
           })
           .join('\n\n---\n\n');
         
-        // Execute turn-based responses
-        for (const currentAgent of availableAgents) {
-          const opponents = availableAgents.filter(a => a !== currentAgent);
+        // Execute turn-based responses with fixed positions
+        for (const [currentAgent, assignedPosition] of agentPositions.entries()) {
+          const opponents = Array.from(agentPositions.entries()).filter(([a, _]) => a !== currentAgent);
           const opponentPositions = opponents
-            .map(opponent => {
+            .map(([opponent, oppPosition]) => {
               const transcript = fullDebateTranscript.get(opponent) || [];
               const latestPosition = transcript[transcript.length - 1] || 'No position stated';
-              return `${opponent.toUpperCase()}'s position:\n${latestPosition}`;
+              return `${opponent.toUpperCase()} (arguing ${oppPosition.split(':')[0]}):\n${latestPosition}`;
             })
-            .join('\n\n');
+            .join('\n\n---\n\n');
           
-          const confrontationalPrompt = `You are ${currentAgent.toUpperCase()} in round ${round} of a brutal debate.
+          const confrontationalPrompt = `You are ${currentAgent.toUpperCase()}, PASSIONATE ADVOCATE for ${assignedPosition.split(':')[0]} (Round ${round})
 
-YOUR OPPONENTS' POSITIONS:
+YOUR OPPONENTS HAVE ARGUED:
 ${opponentPositions}
 
-YOUR TASK:
-1. DIRECTLY ATTACK the specific arguments made by ${opponents.map(o => o.toUpperCase()).join(' and ')}
-2. Point out logical flaws, missing evidence, and contradictions IN THEIR ACTUAL ARGUMENTS
-3. Defend your position against their attacks
-4. Present NEW evidence or arguments they haven't addressed
+You strongly disagree with their reasoning and conclusions.
 
-Be specific. Quote their actual claims. Show why they're wrong about: ${targetPath}`;
+YOUR RESPONSE TASK:
+1. QUOTE their specific claims and systematically refute them
+2. Point out flawed logic, poor assumptions, and dangerous consequences
+3. Show why their approach leads to serious problems
+4. Use direct, forceful language to make your case
+5. Never concede any ground to their arguments
+6. Demonstrate why your position is the only sound choice
+
+Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assignedPosition.split(':')[0]}. Argue with conviction.`;
+          
+          logger.info(`🔥 Round ${round}: ${currentAgent.toUpperCase()} responding to opponents (${assignedPosition.split(':')[0]})`);
           
           const response = await this.cliOrchestrator.executeSingleCLI(
-            currentAgent,
+            currentAgent as 'claude' | 'codex' | 'gemini',
             confrontationalPrompt,
-            confrontationalPrompt, // Using same prompt as both user and system prompt
+            confrontationalPrompt,
             {
               workingDirectory: workingDirectory || this.config.workingDirectory,
               sandbox: enableSandbox ?? this.config.enableSandbox,
@@ -629,7 +658,7 @@ Be specific. Quote their actual claims. Show why they're wrong about: ${targetPa
         }
       }
 
-      const synthesis = this.synthesizeDebate(debateContext, targetPath, debateRounds);
+      const synthesis = this.synthesizeDebate(debateContext, targetPath, debateRounds, agentPositions);
 
       return {
         success: debateContext.some(r => r.success),
@@ -644,7 +673,7 @@ Be specific. Quote their actual claims. Show why they're wrong about: ${targetPa
     }
   }
 
-  private synthesizeDebate(responses: CLIAgentResponse[], targetPath: string, rounds: number): string {
+  private synthesizeDebate(responses: CLIAgentResponse[], targetPath: string, rounds: number, agentPositions?: Map<string, string>): string {
     const successfulResponses = responses.filter(r => r.success);
     
     if (successfulResponses.length === 0) {
@@ -654,17 +683,26 @@ Be specific. Quote their actual claims. Show why they're wrong about: ${targetPa
     let synthesis = `# Brutalist CLI Agent Debate Results\n\n`;
     synthesis += `**Target:** ${targetPath}\n`;
     synthesis += `**Rounds:** ${rounds}\n`;
-    synthesis += `**Participants:** ${Array.from(new Set(successfulResponses.map(r => r.agent))).join(', ')}\n\n`;
+    
+    if (agentPositions) {
+      synthesis += `**Debaters and Positions:**\n`;
+      Array.from(agentPositions.entries()).forEach(([agent, position]) => {
+        synthesis += `- **${agent.toUpperCase()}**: ${position}\n`;
+      });
+      synthesis += '\n';
+    } else {
+      synthesis += `**Participants:** ${Array.from(new Set(successfulResponses.map(r => r.agent))).join(', ')}\n\n`;
+    }
 
     // Identify key points of conflict
     const agents = Array.from(new Set(successfulResponses.map(r => r.agent)));
-    const agentPositions = new Map<string, string[]>();
+    const agentOutputs = new Map<string, string[]>();
     
     successfulResponses.forEach(response => {
-      if (!agentPositions.has(response.agent)) {
-        agentPositions.set(response.agent, []);
+      if (!agentOutputs.has(response.agent)) {
+        agentOutputs.set(response.agent, []);
       }
-      agentPositions.get(response.agent)?.push(response.output);
+      agentOutputs.get(response.agent)?.push(response.output);
     });
     
     synthesis += `## Key Points of Conflict\n\n`;
@@ -673,10 +711,10 @@ Be specific. Quote their actual claims. Show why they're wrong about: ${targetPa
     const conflictIndicators = ['wrong', 'incorrect', 'flawed', 'fails', 'ignores', 'misses', 'overlooks', 'contradicts', 'however', 'but', 'actually', 'contrary'];
     const conflicts: string[] = [];
     
-    agentPositions.forEach((positions, agent) => {
-      positions.forEach(position => {
+    agentOutputs.forEach((positions, agent) => {
+      positions.forEach((position: string) => {
         const lines = position.split('\n');
-        lines.forEach(line => {
+        lines.forEach((line: string) => {
           if (conflictIndicators.some(indicator => line.toLowerCase().includes(indicator))) {
             conflicts.push(`**${agent.toUpperCase()}:** ${line.trim()}`);
           }
@@ -703,7 +741,9 @@ Be specific. Quote their actual claims. Show why they're wrong about: ${targetPa
       synthesis += `### Round ${i + 1}: ${i === 0 ? 'Initial Positions' : `Adversarial Engagement ${i}`}\n\n`;
       
       roundResponses.forEach((response) => {
-        synthesis += `#### ${response.agent.toUpperCase()} speaks (${response.executionTime}ms):\n\n`;
+        const agentPosition = agentPositions?.get(response.agent);
+        const positionLabel = agentPosition ? ` [${agentPosition.split(':')[0]}]` : '';
+        synthesis += `#### ${response.agent.toUpperCase()}${positionLabel} speaks (${response.executionTime}ms):\n\n`;
         synthesis += `${response.output}\n\n`;
         synthesis += `---\n\n`;
       });

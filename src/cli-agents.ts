@@ -58,6 +58,7 @@ async function spawnAsync(
     maxBuffer?: number;
     input?: string;
     env?: Record<string, string>;
+    onProgress?: (chunk: string, type: 'stdout' | 'stderr') => void;
   } = {}
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -106,7 +107,14 @@ async function spawnAsync(
     // NOTE: maxBuffer (default 10MB) can lead to high memory usage if CLI agents produce large outputs.
     // Consider making this configurable or dynamically adjusting based on expected output size.
     child.stdout?.on('data', (data) => {
-      stdout += data.toString();
+      const chunk = data.toString();
+      stdout += chunk;
+      
+      // Call progress callback if provided
+      if (options.onProgress) {
+        options.onProgress(chunk, 'stdout');
+      }
+      
       if (options.maxBuffer && stdout.length > options.maxBuffer) {
         child.kill('SIGTERM');
         reject(new Error(`stdout exceeded maxBuffer size: ${options.maxBuffer}`));
@@ -114,7 +122,14 @@ async function spawnAsync(
     });
 
     child.stderr?.on('data', (data) => {
-      stderr += data.toString();
+      const chunk = data.toString();
+      stderr += chunk;
+      
+      // Call progress callback if provided
+      if (options.onProgress) {
+        options.onProgress(chunk, 'stderr');
+      }
+      
       // Apply same buffer limit to stderr to prevent DoS
       if (options.maxBuffer && stderr.length > options.maxBuffer) {
         child.kill('SIGTERM');
@@ -352,7 +367,15 @@ export class CLIAgentOrchestrator {
         timeout: timeout,
         maxBuffer: MAX_BUFFER_SIZE, // Configurable buffer for model outputs
         env: env,
-        input: input
+        input: input,
+        onProgress: (chunk: string, type: 'stdout' | 'stderr') => {
+          // Stream output in real-time with agent identification
+          if (type === 'stdout' && chunk.trim()) {
+            logger.info(`🤖 ${cliName.toUpperCase()}: ${chunk.trim()}`);
+          } else if (type === 'stderr' && chunk.trim()) {
+            logger.warn(`⚠️ ${cliName.toUpperCase()} stderr: ${chunk.trim()}`);
+          }
+        }
       });
 
       logger.info(`✅ ${cliName.toUpperCase()} completed (${Date.now() - startTime}ms)`);

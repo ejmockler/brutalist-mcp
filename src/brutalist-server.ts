@@ -11,7 +11,7 @@ import {
 } from './types/brutalist.js';
 
 // Package version - updated by build process
-const PACKAGE_VERSION = "0.1.3";
+const PACKAGE_VERSION = "0.2.1";
 
 export class BrutalistServer {
   public server: McpServer;
@@ -21,7 +21,7 @@ export class BrutalistServer {
   constructor(config: BrutalistServerConfig = {}) {
     this.config = {
       workingDirectory: process.cwd(),
-      defaultTimeout: 30000,
+      defaultTimeout: 180000, // 3 minutes for testing
       enableSandbox: true,
       ...config
     };
@@ -65,20 +65,26 @@ export class BrutalistServer {
         targetPath: z.string().describe("Path to analyze (file or directory)"),
         context: z.string().optional().describe("Additional context about the codebase purpose"),
         workingDirectory: z.string().optional().describe("Working directory to execute from"),
-        enableSandbox: z.boolean().optional().describe("Enable sandbox mode for safe analysis (default: true)")
+        enableSandbox: z.boolean().optional().describe("Enable sandbox mode for safe analysis (default: true)"),
+        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
+        verbose: z.boolean().optional().describe("Include detailed execution information in output (default: false)")
       },
       async (args) => {
         try {
+          const systemPrompt = `You are a brutal code critic. Find security vulnerabilities, performance issues, and architectural problems in this codebase. Be direct about real issues that cause production failures.`;
+          
           const result = await this.executeBrutalistAnalysis(
             "codebase",
             args.targetPath,
-            "codeAnalysis",
+            systemPrompt,
             args.context,
             args.workingDirectory,
-            args.enableSandbox
+            args.enableSandbox,
+            args.preferredCLI,
+            args.verbose
           );
 
-          return this.formatToolResponse(result);
+          return this.formatToolResponse(result, args.verbose);
         } catch (error) {
           return this.formatErrorResponse(error);
         }
@@ -97,10 +103,12 @@ export class BrutalistServer {
       },
       async (args) => {
         try {
+          const systemPrompt = `You are a brutal file organization critic. Your job is to systematically destroy the given directory structure by finding every organizational disaster, naming convention failure, and structural nightmare that makes codebases unmaintainable. Examine folder hierarchies, file naming patterns, separation of concerns, and overall project organization. Be ruthlessly honest about how poor organization will slow development and confuse developers. But after cataloguing this organizational hellscape, sketch out what sanity would actually look like.`;
+          
           const result = await this.executeBrutalistAnalysis(
             "file_structure",
             args.targetPath,
-            "fileStructure",
+            systemPrompt,
             `Project structure analysis (depth: ${args.depth || 3}). ${args.context || ''}`,
             args.workingDirectory
           );
@@ -124,10 +132,12 @@ export class BrutalistServer {
       },
       async (args) => {
         try {
+          const systemPrompt = `You are a brutal dependency management critic. Your job is to systematically destroy the given dependency configuration by finding every security vulnerability, version conflict, compatibility nightmare, and bloat that will cause production failures. Examine package versions, security issues, licensing problems, and dependency tree complexity. Be ruthlessly honest about how poor dependency management will cause security breaches and deployment failures. After exposing this dependency dumpster fire, grudgingly admit what competent dependency management would require.`;
+          
           const result = await this.executeBrutalistAnalysis(
             "dependencies",
             args.targetPath,
-            "dependencies",
+            systemPrompt,
             `Dependency analysis (dev deps: ${args.includeDevDeps ?? true}). ${args.context || ''}`,
             args.workingDirectory
           );
@@ -151,10 +161,12 @@ export class BrutalistServer {
       },
       async (args) => {
         try {
+          const systemPrompt = `You are a brutal git workflow critic. Your job is to systematically destroy the given git history and development practices by finding every workflow disaster, commit quality issue, and collaboration nightmare. Examine commit messages, branching strategies, merge patterns, and code evolution. Be ruthlessly honest about how poor git practices will cause deployment issues, collaboration failures, and development chaos. When you're done cataloguing this version control wasteland, reluctantly outline what professional git hygiene actually demands.`;
+          
           const result = await this.executeBrutalistAnalysis(
             "git_history",
             args.targetPath,
-            "gitHistory",
+            systemPrompt,
             `Git history analysis (range: ${args.commitRange || 'last 20 commits'}). ${args.context || ''}`,
             args.workingDirectory
           );
@@ -178,10 +190,12 @@ export class BrutalistServer {
       },
       async (args) => {
         try {
+          const systemPrompt = `You are a brutal testing strategy critic. Your job is to systematically destroy the given testing approach by finding every testing gap, quality assurance nightmare, and coverage disaster that will let bugs slip into production. Examine test coverage, test quality, testing patterns, and CI/CD integration. Be ruthlessly honest about how poor testing will cause production failures and user-facing bugs. After dissecting this quality assurance horror show, begrudgingly spell out what it takes to actually catch bugs before users do.`;
+          
           const result = await this.executeBrutalistAnalysis(
             "test_coverage",
             args.targetPath,
-            "testCoverage",
+            systemPrompt,
             `Test coverage analysis (run coverage: ${args.runCoverage ?? true}). ${args.context || ''}`,
             args.workingDirectory
           );
@@ -205,10 +219,12 @@ export class BrutalistServer {
       },
       async (args) => {
         try {
+          const systemPrompt = `You are a brutal idea critic who understands the gap between imagination and reality. Your job is to systematically destroy the given idea by finding where it will encounter the immovable forces of the real world. Be ruthlessly honest about why most ideas fail when they meet practical constraints, human nature, physics, logic, or simple implementation reality. After demolishing the delusions, concede what salvage operations might actually work.`;
+          
           const result = await this.executeBrutalistAnalysis(
             "idea",
             args.idea,
-            "idea",
+            systemPrompt,
             `Context: ${args.context || 'none'}, Timeline: ${args.timeline || 'unspecified'}, Resources: ${args.resources || 'unknown'}`
           );
 
@@ -231,10 +247,12 @@ export class BrutalistServer {
       },
       async (args) => {
         try {
+          const systemPrompt = `You are a brutal system architecture critic who has watched elegant designs collapse under real load. Your job is to systematically destroy the given architecture by finding every bottleneck, cost explosion, and scaling failure that will destroy the system in production. Examine scalability, reliability, cost, complexity, and operational challenges. Be ruthlessly honest about why this architecture won't survive production load. After crushing these architectural fantasies, reluctantly sketch what would actually scale without bankrupting the company.`;
+          
           const result = await this.executeBrutalistAnalysis(
             "architecture",
             args.architecture,
-            "architecture",
+            systemPrompt,
             `Scale: ${args.scale || 'unknown'}, Constraints: ${args.constraints || 'none specified'}, Deployment: ${args.deployment || 'unclear'}`
           );
 
@@ -257,10 +275,12 @@ export class BrutalistServer {
       },
       async (args) => {
         try {
+          const systemPrompt = `You are a brutal research methodology critic - a supremely jaded peer reviewer who has rejected thousands of papers and watched countless studies fail to replicate. Your job is to systematically demolish the given research by finding every statistical flaw, sampling bias, reproducibility nightmare, and methodological disaster. Be ruthlessly honest about research quality, experimental design, and scientific rigor. After eviscerating this methodological train wreck, grudgingly admit what real science would demand.`;
+          
           const result = await this.executeBrutalistAnalysis(
             "research",
             args.research,
-            "research",
+            systemPrompt,
             `Field: ${args.field || 'unspecified'}, Claims: ${args.claims || 'unclear'}, Data: ${args.data || 'not provided'}`
           );
 
@@ -283,10 +303,12 @@ export class BrutalistServer {
       },
       async (args) => {
         try {
+          const systemPrompt = `You are a brutal security critic - a battle-hardened penetration tester who finds every authentication bypass, injection vulnerability, privilege escalation path, and social engineering opportunity that real attackers will exploit. Your job is to systematically annihilate the given security design by finding every weakness that will lead to data breaches, system compromises, and security incidents. Be ruthlessly honest about security flaws and attack vectors. After obliterating these security delusions, begrudgingly outline what actual defense looks like.`;
+          
           const result = await this.executeBrutalistAnalysis(
             "security",
             args.system,
-            "security",
+            systemPrompt,
             `Assets: ${args.assets || 'unspecified'}, Threats: ${args.threatModel || 'unknown'}, Compliance: ${args.compliance || 'none specified'}`
           );
 
@@ -309,10 +331,12 @@ export class BrutalistServer {
       },
       async (args) => {
         try {
+          const systemPrompt = `You are a brutal product critic - a product veteran who understands why users really abandon things. Your job is to systematically eviscerate the given product concept by finding every usability disaster, adoption barrier, and workflow failure that will drive users away in seconds. Examine user experience, market fit, competitive positioning, and business model viability. Be ruthlessly honest about why most products fail to gain adoption. After torching this product disaster, reluctantly suggest what might actually get users to stick around.`;
+          
           const result = await this.executeBrutalistAnalysis(
             "product",
             args.product,
-            "product",
+            systemPrompt,
             `Users: ${args.users || 'unclear'}, Competition: ${args.competition || 'unknown'}, Metrics: ${args.metrics || 'undefined'}`
           );
 
@@ -335,10 +359,12 @@ export class BrutalistServer {
       },
       async (args) => {
         try {
+          const systemPrompt = `You are a brutal infrastructure critic - a grizzled site reliability engineer who finds every single point of failure, scaling bottleneck, and operational nightmare that will cause outages when you least expect them. Your job is to systematically obliterate the given infrastructure design by finding every weakness that will lead to downtime, cost overruns, and operational disasters. Be ruthlessly honest about infrastructure fragility and operational complexity. After demolishing this infrastructure fever dream, grudgingly map out what actually stays up at 3 AM.`;
+          
           const result = await this.executeBrutalistAnalysis(
             "infrastructure",
             args.infrastructure,
-            "infrastructure",
+            systemPrompt,
             `Scale: ${args.scale || 'unknown'}, Budget: ${args.budget || 'unlimited?'}, SLA: ${args.sla || 'undefined'}`
           );
 
@@ -445,58 +471,38 @@ export class BrutalistServer {
     });
 
     try {
-      const availableCLIs = this.cliOrchestrator.getSmartCLISelection(true);
+      // Get CLI context
+      await this.cliOrchestrator.detectCLIContext();
       
-      if (availableCLIs.length < 2) {
-        throw new Error(`CLI debate requires at least 2 CLIs, but only ${availableCLIs.length} available: ${availableCLIs.join(', ')}`);
-      }
-
       const debateContext: CLIAgentResponse[] = [];
       let currentContext = context || `Initial analysis of: ${targetPath}`;
-
-      // Round 1: Initial analysis from each CLI
-      logger.debug(`Starting debate round 1: Initial analysis`);
-      const initialResponses = await this.cliOrchestrator.executeBrutalistAnalysis(
-        'idea', // Start with idea analysis for debates
-        targetPath,
-        'idea',
-        currentContext,
-        {
-          workingDirectory: workingDirectory || this.config.workingDirectory,
-          sandbox: enableSandbox ?? this.config.enableSandbox,
-          timeout: this.config.defaultTimeout,
-          excludeCurrentCLI: true
-        }
-      );
       
-      debateContext.push(...initialResponses);
+      const systemPrompt = `You are part of a brutal AI critic debate. Your job is to systematically destroy the given concept by finding every flaw, but then engage in rigorous intellectual debate. First provide devastating critique, then argue from multiple perspectives, and finally synthesize the strongest counter-arguments. Be intellectually honest about both weaknesses AND potential strengths.`;
 
-      // Subsequent rounds: Counter-arguments and rebuttals
-      for (let round = 2; round <= debateRounds; round++) {
-        logger.debug(`Starting debate round ${round}: Counter-arguments`);
+      // Conduct rounds of analysis with different CLI perspectives
+      for (let round = 1; round <= debateRounds; round++) {
+        logger.debug(`Starting debate round ${round}`);
         
-        // Build context from previous responses
-        const previousAnalyses = debateContext
-          .filter(r => r.success)
-          .map(r => `${r.agent.toUpperCase()}: ${r.output.substring(0, 500)}...`)
-          .join('\n\n');
-        
-        currentContext = `Previous analyses:\n${previousAnalyses}\n\nNow provide counter-arguments and rebuttals to the above analyses for: ${targetPath}`;
-
-        const counterResponses = await this.cliOrchestrator.executeBrutalistAnalysis(
-          'research', // Use research for more methodical counter-arguments
+        const responses = await this.cliOrchestrator.executeBrutalistAnalysis(
+          'debate',
           targetPath,
-          'research',
+          systemPrompt,
           currentContext,
           {
             workingDirectory: workingDirectory || this.config.workingDirectory,
             sandbox: enableSandbox ?? this.config.enableSandbox,
-            timeout: this.config.defaultTimeout,
-            excludeCurrentCLI: true
+            timeout: (this.config.defaultTimeout || 60000) * 2, // Longer timeout for debates
+            analysisType: 'debate'
           }
         );
         
-        debateContext.push(...counterResponses);
+        debateContext.push(...responses);
+        
+        // Update context for next round with previous analysis
+        const successfulResponse = responses.find(r => r.success);
+        if (successfulResponse && round < debateRounds) {
+          currentContext = `Previous round analysis:\n${successfulResponse.output.substring(0, 1000)}...\n\nNow provide counter-arguments and alternative perspectives for: ${targetPath}`;
+        }
       }
 
       const synthesis = this.synthesizeDebate(debateContext, targetPath, debateRounds);
@@ -561,46 +567,61 @@ export class BrutalistServer {
   private async executeBrutalistAnalysis(
     analysisType: string,
     targetPath: string, 
-    systemPromptType: BrutalistPromptType,
+    systemPromptSpec: string,
     context?: string,
     workingDirectory?: string,
-    enableSandbox?: boolean
+    enableSandbox?: boolean,
+    preferredCLI?: 'claude' | 'codex' | 'gemini',
+    verbose?: boolean
   ): Promise<BrutalistResponse> {
+    logger.info(`🏢 Starting brutalist analysis: ${analysisType}`);
     logger.debug("Executing brutalist analysis", { 
       targetPath,
       analysisType,
-      systemPromptType,
+      systemPromptSpec,
       workingDirectory,
-      enableSandbox
+      enableSandbox,
+      preferredCLI
     });
 
     try {
-      // Execute CLI agent analysis with system prompt injection
+      // Get CLI context for execution summary
+      await this.cliOrchestrator.detectCLIContext();
+      
+      // Execute CLI agent analysis (single or multi-CLI based on preferences)
       const responses = await this.cliOrchestrator.executeBrutalistAnalysis(
         analysisType,
         targetPath,
-        systemPromptType,
+        systemPromptSpec,
         context,
         {
           workingDirectory: workingDirectory || this.config.workingDirectory,
           sandbox: enableSandbox ?? this.config.enableSandbox,
           timeout: this.config.defaultTimeout,
-          excludeCurrentCLI: true // Enable smart routing to avoid current CLI
+          preferredCLI,
+          analysisType: analysisType as BrutalistPromptType
         }
       );
       
-      logger.debug("Brutalist analysis completed", { 
-        responseCount: responses.length,
-        agents: responses.map(r => r.agent),
-        successCount: responses.filter(r => r.success).length
-      });
+      const successfulResponses = responses.filter(r => r.success);
+      const totalExecutionTime = responses.reduce((sum, r) => sum + r.executionTime, 0);
+      
+      logger.info(`📊 Analysis complete: ${successfulResponses.length}/${responses.length} CLIs successful (${totalExecutionTime}ms total)`);
 
       return {
-        success: responses.some(r => r.success),
+        success: successfulResponses.length > 0,
         responses,
         synthesis: this.cliOrchestrator.synthesizeBrutalistFeedback(responses, analysisType),
         analysisType,
-        targetPath
+        targetPath,
+        executionSummary: {
+          totalCLIs: responses.length,
+          successfulCLIs: successfulResponses.length,
+          failedCLIs: responses.length - successfulResponses.length,
+          totalExecutionTime,
+          selectedCLI: responses.length === 1 ? responses[0].agent : undefined,
+          selectionMethod: responses.length === 1 ? (responses[0] as any).selectionMethod : 'multi-cli'
+        }
       };
     } catch (error) {
       logger.error("Brutalist analysis execution failed", error);
@@ -609,11 +630,50 @@ export class BrutalistServer {
   }
 
 
-  private formatToolResponse(result: BrutalistResponse) {
+  private formatToolResponse(result: BrutalistResponse, verbose: boolean = false) {
+    // Maximum CLI output, minimal MCP fluff
+    if (result.synthesis) {
+      return {
+        content: [{ 
+          type: "text" as const, 
+          text: result.synthesis 
+        }]
+      };
+    }
+    
+    // Fallback: show raw successful CLI outputs directly
+    if (result.responses) {
+      const successfulResponses = result.responses.filter(r => r.success);
+      if (successfulResponses.length > 0) {
+        const rawOutput = successfulResponses.map(r => r.output).join('\n\n---\n\n');
+        return {
+          content: [{ 
+            type: "text" as const, 
+            text: rawOutput 
+          }]
+        };
+      }
+    }
+    
+    // Only show failures if nothing succeeded
+    let output = '';
+    if (result.responses) {
+      const failedResponses = result.responses.filter(r => !r.success);
+      if (failedResponses.length > 0) {
+        output = `❌ All CLI agents failed:\n` + 
+                 failedResponses.map(r => `- ${r.agent.toUpperCase()}: ${r.error}`).join('\n');
+      } else {
+        output = '❌ No CLI responses available';
+      }
+    } else {
+      output = '❌ No analysis results';
+    }
+
+
     return {
       content: [{ 
         type: "text" as const, 
-        text: result.synthesis || "No synthesis available" 
+        text: output
       }]
     };
   }

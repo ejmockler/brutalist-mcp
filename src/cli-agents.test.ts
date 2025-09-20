@@ -80,29 +80,22 @@ describe.skip('CLIAgentOrchestrator', () => {
       process.env = originalEnv;
     });
 
-    it('should exclude current CLI by default', () => {
-      const selected = orchestrator.getSmartCLISelection(true);
+    it('should select a CLI when preferred CLI is provided', () => {
+      const selected = orchestrator.selectSingleCLI('codex');
       
-      expect(selected).toEqual(['codex', 'gemini']);
-      expect(selected).not.toContain('claude');
+      expect(selected).toBe('codex');
     });
 
-    it('should include all CLIs when excludeCurrentCLI is false', () => {
-      const selected = orchestrator.getSmartCLISelection(false);
+    it('should auto-select CLI when no preference provided', () => {
+      const selected = orchestrator.selectSingleCLI();
       
-      expect(selected).toEqual(['claude', 'codex', 'gemini']);
+      expect(['claude', 'codex', 'gemini']).toContain(selected);
     });
 
-    it('should fallback to all CLIs if no alternatives available', () => {
-      // Setup context with only current CLI available
-      (orchestrator as any).cliContext = {
-        currentCLI: 'claude',
-        availableCLIs: ['claude']
-      };
-
-      const selected = orchestrator.getSmartCLISelection(true);
+    it('should select based on analysis type preference', () => {
+      const selected = orchestrator.selectSingleCLI(undefined, 'code');
       
-      expect(selected).toEqual(['claude']);
+      expect(['claude', 'codex', 'gemini']).toContain(selected);
     });
   });
 
@@ -240,8 +233,8 @@ describe.skip('CLIAgentOrchestrator', () => {
 
   describe('Brutalist Analysis Integration', () => {
     beforeEach(() => {
-      // Mock smart CLI selection to return available CLIs
-      jest.spyOn(orchestrator, 'getSmartCLISelection').mockReturnValue(['codex', 'gemini']);
+      // Mock selectSingleCLI to return a specific CLI
+      jest.spyOn(orchestrator, 'selectSingleCLI').mockReturnValue('codex');
     });
 
     it('should execute analysis with multiple CLI agents', async () => {
@@ -310,7 +303,7 @@ describe.skip('CLIAgentOrchestrator', () => {
   describe('System Prompt Library', () => {
     it('should have distinct prompts for each analysis type', () => {
       const promptTypes: BrutalistPromptType[] = [
-        'codeAnalysis', 'architecture', 'idea', 'research', 'security',
+        'codebase', 'architecture', 'idea', 'research', 'security',
         'product', 'infrastructure', 'fileStructure', 'dependencies',
         'gitHistory', 'testCoverage'
       ];

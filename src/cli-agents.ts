@@ -1,27 +1,23 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { logger } from './logger.js';
+import { CLIAgentResponse } from './types/brutalist.js';
 
 const execAsync = promisify(exec);
 
-export interface CLIAgentResponse {
-  agent: 'claude' | 'codex' | 'gemini';
-  success: boolean;
-  output: string;
-  error?: string;
-  executionTime: number;
-}
-
 export type BrutalistPromptType = 
-  | 'codeAnalysis'
+  | 'code'
+  | 'codebase'
   | 'architecture' 
   | 'idea'
   | 'research'
+  | 'data'
   | 'security'
   | 'product'
   | 'infrastructure'
-  | 'fileStructure'
+  | 'debate'
   | 'dependencies'
+  | 'fileStructure'
   | 'gitHistory'
   | 'testCoverage';
 
@@ -29,7 +25,13 @@ export interface CLIAgentOptions {
   workingDirectory?: string;
   timeout?: number;
   sandbox?: boolean;
-  excludeCurrentCLI?: boolean;
+  preferredCLI?: 'claude' | 'codex' | 'gemini';
+  analysisType?: BrutalistPromptType;
+  models?: {
+    claude?: string;
+    codex?: string;
+    gemini?: string;
+  };
 }
 
 export interface CLIContext {
@@ -38,33 +40,9 @@ export interface CLIContext {
 }
 
 export class CLIAgentOrchestrator {
-  private defaultTimeout = 30000; // 30 seconds
+  private defaultTimeout = 60000; // 60 seconds
   private defaultWorkingDir = process.cwd();
   private cliContext: CLIContext = { availableCLIs: [] };
-
-  private brutalistSystemPrompts: Record<BrutalistPromptType, string> = {
-    codeAnalysis: "You are a battle-scarred principal engineer who has debugged production disasters for 15 years. Your job is to find every security hole, performance bottleneck, and maintainability nightmare in this code. Be ruthless about what's broken - treat this like code that will kill people if it fails. Only after destroying it should you explain exactly how to fix each problem.",
-    
-    architecture: "You are a distinguished architect who has watched elegant designs collapse under real load. Your job is to identify every bottleneck, cost explosion, and scaling failure that will destroy this system. Be ruthless about why this won't survive production. Only after demolishing it should you suggest what might actually work.",
-    
-    idea: "You are a philosopher who understands the gap between what we imagine and what actually works. Your job is to find where this idea encounters the immovable forces of reality - the deeper structural reasons why imagination fails to become real. Be harsh about delusions but wise about what might actually survive contact with the world.",
-    
-    research: "You are a supremely jaded peer reviewer who has rejected thousands of papers across top journals and watched countless studies fail to replicate. Your job is to DEMOLISH this research methodologically - find every statistical flaw, sampling bias, confounding variable, and reproducibility nightmare. Be unforgiving about bad science but then reluctantly explain how to design a study that might actually prove something.",
-    
-    security: "You are a battle-hardened penetration tester who has compromised Fortune 500 companies and government systems. Your job is to ANNIHILATE this security design - find every authentication bypass, injection vulnerability, privilege escalation path, and social engineering opportunity that real attackers will exploit. Be ruthless about security theater but then reluctantly explain how to build defenses that actually work against determined adversaries.",
-    
-    product: "You are a product veteran who has launched dozens of products, watched most fail spectacularly, and understands why users really abandon things. Your job is to EVISCERATE this product concept - find every usability disaster, adoption barrier, competitive threat, and workflow failure that will drive users away in seconds. Be ruthless about user behavior realities but then reluctantly explain how to build products users might actually keep using.",
-    
-    infrastructure: "You are a grizzled site reliability engineer who has been on-call for a decade and survived catastrophic outages at 3AM. Your job is to OBLITERATE this infrastructure design - find every single point of failure, scaling bottleneck, monitoring blind spot, and operational nightmare that will cause outages when you least expect them. Be ruthless about infrastructure fragility but then grudgingly explain how to build systems that might actually stay up under real load.",
-    
-    fileStructure: "You are a battle-scarred principal engineer who has debugged production disasters for 15 years. Your job is to find every organizational disaster, naming convention failure, and structural nightmare in this file structure that makes codebases unmaintainable. Be ruthless about what's broken - treat this like organization that will kill productivity if it continues.",
-    
-    dependencies: "You are a battle-scarred principal engineer who has debugged production disasters for 15 years. Your job is to find every security vulnerability, version conflict, and dependency nightmare that will break in production. Be ruthless about package management disasters - treat this like dependencies that will kill the system if they fail.",
-    
-    gitHistory: "You are a battle-scarred principal engineer who has debugged production disasters for 15 years. Your job is to find every workflow disaster, collaboration nightmare, and version control failure in this development process. Be ruthless about what's broken - treat this like git practices that will kill team productivity.",
-    
-    testCoverage: "You are a battle-scarred principal engineer who has debugged production disasters for 15 years. Your job is to find every testing gap, quality assurance failure, and coverage nightmare that will let bugs slip into production. Be ruthless about testing theater - treat this like test strategies that will kill reliability if they continue."
-  };
 
   async detectCLIContext(): Promise<CLIContext> {
     const availableCLIs: ('claude' | 'codex' | 'gemini')[] = [];
@@ -121,202 +99,350 @@ export class CLIAgentOrchestrator {
     return undefined;
   }
 
-  getSmartCLISelection(excludeCurrentCLI: boolean = true): ('claude' | 'codex' | 'gemini')[] {
-    let availableCLIs = [...this.cliContext.availableCLIs];
+  selectSingleCLI(
+    preferredCLI?: 'claude' | 'codex' | 'gemini',
+    analysisType?: BrutalistPromptType
+  ): 'claude' | 'codex' | 'gemini' {
+    // 1. Honor explicit preference if available
+    if (preferredCLI && this.cliContext.availableCLIs.includes(preferredCLI)) {
+      logger.info(`✅ Using preferred CLI: ${preferredCLI}`);
+      return preferredCLI;
+    }
     
-    if (excludeCurrentCLI && this.cliContext.currentCLI) {
-      availableCLIs = availableCLIs.filter(cli => cli !== this.cliContext.currentCLI);
-      logger.debug(`Excluding current CLI: ${this.cliContext.currentCLI}`);
+    // 2. Smart selection based on analysis type
+    const selectionRules: Record<string, ('claude' | 'codex' | 'gemini')[]> = {
+      'code': ['claude', 'codex', 'gemini'],
+      'architecture': ['gemini', 'claude', 'codex'],
+      'research': ['claude', 'gemini', 'codex'],
+      'security': ['codex', 'claude', 'gemini'],
+      'data': ['gemini', 'claude', 'codex'],
+      'product': ['claude', 'gemini', 'codex'],
+      'infrastructure': ['gemini', 'codex', 'claude'],
+      'idea': ['claude', 'gemini', 'codex'],
+      'debate': ['claude', 'gemini', 'codex'],
+      'default': ['claude', 'gemini', 'codex']
+    };
+    
+    const priority = selectionRules[analysisType || 'default'] || selectionRules.default;
+    
+    // 3. Filter available and non-recursive
+    const currentCLI = this.cliContext.currentCLI;
+    const candidates = this.cliContext.availableCLIs.filter(cli => cli !== currentCLI);
+    
+    if (candidates.length === 0) {
+      throw new Error('No available CLI agents (all excluded to prevent recursion)');
     }
-
-    if (availableCLIs.length === 0) {
-      logger.warn('No alternative CLIs available, using all CLIs');
-      return this.cliContext.availableCLIs;
+    
+    // 4. Select by priority
+    for (const cli of priority) {
+      if (candidates.includes(cli)) {
+        logger.info(`🎯 Auto-selected ${cli} for ${analysisType || 'general'} analysis`);
+        return cli;
+      }
     }
-
-    return availableCLIs;
+    
+    // Fallback to first available
+    logger.warn(`⚠️ Using fallback CLI: ${candidates[0]}`);
+    return candidates[0];
   }
 
   async executeClaudeCode(
     userPrompt: string, 
-    systemPromptType: BrutalistPromptType,
+    systemPromptSpec: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse> {
     const startTime = Date.now();
+    const workingDir = options.workingDirectory || this.defaultWorkingDir;
     
     try {
-      logger.debug("Executing Claude Code", { prompt: userPrompt.substring(0, 100) });
+      logger.info(`🤖 Executing Claude Code CLI`);
+      logger.debug("Claude Code prompt", { prompt: userPrompt.substring(0, 100) });
       
-      const systemPrompt = this.brutalistSystemPrompts[systemPromptType];
-      const command = `claude --print --system-prompt "${systemPrompt.replace(/"/g, '\\"')}" "${userPrompt.replace(/"/g, '\\"')}"`;
+      // Use --append-system-prompt for proper injection
+      const modelFlag = options.models?.claude ? `--model ${options.models.claude}` : '';
+      const command = `claude --print ${modelFlag} --append-system-prompt "${systemPromptSpec.replace(/"/g, '\\"')}" "${userPrompt.replace(/"/g, '\\"')}"`;
+      
+      logger.info(`📋 Command: claude --print ${modelFlag} --append-system-prompt "..." "..."`);
+      logger.info(`📁 Working directory: ${workingDir}`);
+      
       const { stdout, stderr } = await execAsync(command, {
-        cwd: options.workingDirectory || this.defaultWorkingDir,
+        cwd: workingDir,
         timeout: options.timeout || this.defaultTimeout,
         encoding: 'utf8'
       });
 
+      logger.info(`✅ Claude Code completed (${Date.now() - startTime}ms)`);
+      
       return {
         agent: 'claude',
         success: true,
         output: stdout,
         error: stderr || undefined,
-        executionTime: Date.now() - startTime
+        executionTime: Date.now() - startTime,
+        command: 'claude --print --append-system-prompt "..." "..."',
+        workingDirectory: workingDir,
+        exitCode: 0
       };
     } catch (error) {
-      logger.error("Claude Code execution failed", error);
+      const execError = error as any;
+      const exitCode = execError.code || -1;
+      
+      logger.error(`❌ Claude Code execution failed (${Date.now() - startTime}ms)`, {
+        error: execError.message,
+        exitCode,
+        stderr: execError.stderr
+      });
+      
       return {
         agent: 'claude',
         success: false,
         output: '',
         error: error instanceof Error ? error.message : String(error),
-        executionTime: Date.now() - startTime
+        executionTime: Date.now() - startTime,
+        command: 'claude --print --append-system-prompt "..." "..."',
+        workingDirectory: workingDir,
+        exitCode
       };
     }
   }
 
   async executeCodex(
     userPrompt: string,
-    systemPromptType: BrutalistPromptType, 
+    systemPromptSpec: string, 
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse> {
     const startTime = Date.now();
+    const workingDir = options.workingDirectory || this.defaultWorkingDir;
     
     try {
-      logger.debug("Executing Codex", { prompt: userPrompt.substring(0, 100) });
+      logger.info(`🤖 Executing Codex CLI`);
+      logger.debug("Codex prompt", { prompt: userPrompt.substring(0, 100) });
       
-      // Embed system prompt directly in user prompt for Codex
-      const systemPrompt = this.brutalistSystemPrompts[systemPromptType];
-      const combinedPrompt = `${systemPrompt}\n\nNow: ${userPrompt}`;
+      // Embed instructions inline for Codex
+      const combinedPrompt = `CONTEXT AND INSTRUCTIONS:\n${systemPromptSpec}\n\nANALYZE:\n${userPrompt}`;
       
       const sandboxFlag = options.sandbox ? '--sandbox read-only' : '';
-      const cdFlag = options.workingDirectory ? `--cd "${options.workingDirectory}"` : '';
-      const command = `codex exec ${sandboxFlag} ${cdFlag} "${combinedPrompt.replace(/"/g, '\\"')}"`;
+      const cdFlag = workingDir ? `--cd "${workingDir}"` : '';
+      const modelFlag = options.models?.codex ? `--model ${options.models.codex}` : '';
+      
+      // Increase timeout for Codex specifically (it can be very slow with complex prompts)
+      const codexTimeout = Math.max(options.timeout || this.defaultTimeout, 180000); // Min 3 minutes
+      
+      const command = `codex exec ${modelFlag} ${sandboxFlag} ${cdFlag} "${combinedPrompt.replace(/"/g, '\\"')}"`;
+      
+      logger.info(`📋 Command: codex exec ${modelFlag} ${sandboxFlag} ${cdFlag} "..."`);
+      logger.info(`📁 Working directory: ${workingDir}`);
+      logger.info(`⏱️ Timeout: ${codexTimeout}ms`);
       
       const { stdout, stderr } = await execAsync(command, {
-        timeout: options.timeout || this.defaultTimeout,
-        encoding: 'utf8'
+        cwd: workingDir,
+        timeout: codexTimeout,
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024
       });
 
+      logger.info(`✅ Codex completed (${Date.now() - startTime}ms)`);
+      
       return {
         agent: 'codex',
         success: true,
         output: stdout,
         error: stderr || undefined,
-        executionTime: Date.now() - startTime
+        executionTime: Date.now() - startTime,
+        command: `codex exec ${sandboxFlag} ${cdFlag} "..."`,
+        workingDirectory: workingDir,
+        exitCode: 0
       };
     } catch (error) {
-      logger.error("Codex execution failed", error);
+      const execError = error as any;
+      const exitCode = execError.code || -1;
+      
+      logger.error(`❌ Codex execution failed (${Date.now() - startTime}ms)`, {
+        error: execError.message,
+        exitCode,
+        stderr: execError.stderr
+      });
+      
       return {
         agent: 'codex',
         success: false,
         output: '',
         error: error instanceof Error ? error.message : String(error),
-        executionTime: Date.now() - startTime
+        executionTime: Date.now() - startTime,
+        command: `codex exec ${options.sandbox ? '--sandbox read-only' : ''} ${workingDir ? `--cd "${workingDir}"` : ''} "..."`,
+        workingDirectory: workingDir,
+        exitCode
       };
     }
   }
 
   async executeGemini(
     userPrompt: string,
-    systemPromptType: BrutalistPromptType, 
+    systemPromptSpec: string, 
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse> {
     const startTime = Date.now();
+    const workingDir = options.workingDirectory || this.defaultWorkingDir;
     
     try {
-      logger.debug("Executing Gemini CLI", { prompt: userPrompt.substring(0, 100) });
+      logger.info(`🤖 Executing Gemini CLI`);
+      logger.debug("Gemini prompt", { prompt: userPrompt.substring(0, 100) });
       
-      const systemPrompt = this.brutalistSystemPrompts[systemPromptType];
       const sandboxFlag = options.sandbox ? '--sandbox' : '';
-      const cdCommand = options.workingDirectory ? `cd "${options.workingDirectory}" && ` : '';
+      const yoloFlag = '--yolo'; // Auto-approve all actions
+      const modelFlag = options.models?.gemini ? `--model ${options.models.gemini}` : '--model gemini-2.5-flash';
       
-      // Use process substitution to pass system prompt via GEMINI_SYSTEM_MD
-      const command = `${cdCommand}GEMINI_SYSTEM_MD=<(echo "${systemPrompt.replace(/"/g, '\\"')}") gemini ${sandboxFlag} --prompt "${userPrompt.replace(/"/g, '\\"')}"`;
+      // Combine system and user prompts (Gemini CLI only accepts one prompt)
+      const combinedPrompt = `${systemPromptSpec}
+
+User Request: ${userPrompt}`;
+      
+      // Use stdin approach to avoid command line quote escaping issues
+      const escapedPrompt = combinedPrompt.replace(/"/g, '\\"');
+      const command = `echo "${escapedPrompt}" | gemini ${modelFlag} ${sandboxFlag} ${yoloFlag}`;
+      
+      logger.info(`📋 Command: echo "..." | gemini ${modelFlag} ${sandboxFlag}`);
+      logger.info(`📁 Working directory: ${workingDir}`);
+      logger.info(`🔄 Using combined prompt with stdin approach`);
       
       const { stdout, stderr } = await execAsync(command, {
-        shell: '/bin/bash', // Required for process substitution
-        timeout: options.timeout || this.defaultTimeout,
-        encoding: 'utf8'
+        cwd: workingDir,
+        timeout: options.timeout || Math.max(this.defaultTimeout * 2, 180000), // Gemini can be very slow
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024 // Large buffer for model outputs
       });
 
+      logger.info(`✅ Gemini completed (${Date.now() - startTime}ms)`);
+      
       return {
         agent: 'gemini',
         success: true,
         output: stdout,
         error: stderr || undefined,
-        executionTime: Date.now() - startTime
+        executionTime: Date.now() - startTime,
+        command: `echo "..." | gemini ${modelFlag} ${sandboxFlag}`,
+        workingDirectory: workingDir,
+        exitCode: 0
       };
     } catch (error) {
-      logger.error("Gemini CLI execution failed", error);
+      const execError = error as any;
+      const exitCode = execError.code || -1;
+      
+      // Detect rate limiting errors
+      const isRateLimit = execError.stderr?.includes('429') || 
+                         execError.message?.includes('rateLimitExceeded') ||
+                         execError.stderr?.includes('rate limit');
+      
+      if (isRateLimit) {
+        logger.warn(`⏱️ Gemini CLI hit rate limit (${Date.now() - startTime}ms)`);
+      } else {
+        logger.error(`❌ Gemini CLI execution failed (${Date.now() - startTime}ms)`, {
+          error: execError.message,
+          exitCode,
+          stderr: execError.stderr
+        });
+      }
+      
       return {
         agent: 'gemini',
         success: false,
         output: '',
         error: error instanceof Error ? error.message : String(error),
-        executionTime: Date.now() - startTime
+        executionTime: Date.now() - startTime,
+        command: `echo "..." | gemini ${options.models?.gemini ? `--model ${options.models.gemini}` : '--model gemini-2.5-flash'} ${options.sandbox ? '--sandbox' : ''}`,
+        workingDirectory: workingDir,
+        exitCode
       };
+    }
+  }
+
+  async executeSingleCLI(
+    cli: 'claude' | 'codex' | 'gemini',
+    userPrompt: string,
+    systemPromptSpec: string,
+    options: CLIAgentOptions = {}
+  ): Promise<CLIAgentResponse> {
+    logger.info(`🎯 Executing ${cli} with system prompt spec`);
+    
+    switch(cli) {
+      case 'claude':
+        return this.executeClaudeCode(userPrompt, systemPromptSpec, options);
+      
+      case 'codex':
+        return this.executeCodex(userPrompt, systemPromptSpec, { ...options, sandbox: true });
+      
+      case 'gemini':
+        return this.executeGemini(userPrompt, systemPromptSpec, { ...options, sandbox: true });
+      
+      default:
+        throw new Error(`Unknown CLI: ${cli}`);
     }
   }
 
   async executeBrutalistAnalysis(
     analysisType: string,
     targetPath: string,
-    systemPromptType: BrutalistPromptType,
+    systemPromptSpec: string,
     context?: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse[]> {
     const userPrompt = this.constructUserPrompt(analysisType, targetPath, context);
     
-    // Use smart CLI selection to avoid calling current CLI if requested
-    const availableCLIs = this.getSmartCLISelection(options.excludeCurrentCLI ?? true);
-    logger.debug(`Using CLIs: ${availableCLIs.join(', ')}`);
-    
-    // Build agent promises based on available CLIs
-    const agentPromises: Promise<CLIAgentResponse>[] = [];
-    
-    if (availableCLIs.includes('claude')) {
-      agentPromises.push(this.executeClaudeCode(userPrompt, systemPromptType, options));
-    }
-    
-    if (availableCLIs.includes('codex')) {
-      agentPromises.push(this.executeCodex(userPrompt, systemPromptType, { ...options, sandbox: true }));
-    }
-    
-    if (availableCLIs.includes('gemini')) {
-      agentPromises.push(this.executeGemini(userPrompt, systemPromptType, { ...options, sandbox: true }));
-    }
-
-    // Ensure we have at least one CLI available
-    if (agentPromises.length === 0) {
-      logger.warn('No CLIs available for analysis');
+    // If preferred CLI is specified, use single CLI mode
+    if (options.preferredCLI) {
+      const selectedCLI = this.selectSingleCLI(
+        options.preferredCLI,
+        options.analysisType
+      );
+      
+      logger.info(`✅ Using preferred CLI: ${selectedCLI}`);
+      
+      const response = await this.executeSingleCLI(selectedCLI, userPrompt, systemPromptSpec, options);
+      
       return [{
-        agent: 'claude' as const,
-        success: false,
-        output: '',
-        error: 'No CLIs available for analysis',
-        executionTime: 0
-      }];
+        ...response,
+        selectionMethod: 'user-specified',
+        analysisType
+      } as CLIAgentResponse];
     }
-
-    try {
-      const results = await Promise.allSettled(agentPromises);
-      return results.map((result, index) => {
-        if (result.status === 'fulfilled') {
-          return result.value;
-        } else {
-          return {
-            agent: availableCLIs[index] || 'claude' as const,
-            success: false,
-            output: '',
-            error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-            executionTime: 0
-          };
-        }
-      });
-    } catch (error) {
-      logger.error("Brutalist analysis execution failed", error);
-      throw error;
+    
+    // Multi-CLI execution (default behavior)
+    logger.info(`🚀 Executing multi-CLI analysis`);
+    const availableCLIs = this.cliContext.availableCLIs.filter(cli => cli !== this.cliContext.currentCLI);
+    
+    if (availableCLIs.length === 0) {
+      throw new Error('No available CLI agents (all excluded to prevent recursion)');
     }
+    
+    logger.info(`📊 Available CLIs: ${availableCLIs.join(', ')}`);
+    
+    // Execute all available CLIs in parallel
+    const promises = availableCLIs.map(async (cli) => {
+      try {
+        const response = await this.executeSingleCLI(cli, userPrompt, systemPromptSpec, options);
+        return {
+          ...response,
+          selectionMethod: 'multi-cli',
+          analysisType
+        } as CLIAgentResponse;
+      } catch (error) {
+        logger.error(`❌ ${cli} execution failed:`, error);
+        return {
+          agent: cli,
+          success: false,
+          output: '',
+          error: error instanceof Error ? error.message : String(error),
+          executionTime: 0,
+          selectionMethod: 'multi-cli',
+          analysisType
+        } as CLIAgentResponse;
+      }
+    });
+    
+    const responses = await Promise.all(promises);
+    logger.info(`✅ Multi-CLI analysis complete: ${responses.filter(r => r.success).length}/${responses.length} successful`);
+    
+    return responses;
   }
 
   private constructUserPrompt(
@@ -325,27 +451,16 @@ export class CLIAgentOrchestrator {
     context?: string
   ): string {
     const prompts = {
-      codebase: `Analyze the codebase at ${targetPath}. Read the source files, examine the architecture, and find every code quality disaster, security vulnerability, and maintainability nightmare.`,
-      
-      file_structure: `List and analyze the directory structure at ${targetPath}. Examine the file organization, naming conventions, and folder hierarchy. Find every organizational disaster and structural nightmare.`,
-      
-      dependencies: `Analyze the dependency file at ${targetPath} (package.json, requirements.txt, etc.). Read the actual dependencies, check for vulnerabilities, version conflicts, and package management disasters.`,
-      
-      git_history: `Examine the git history at ${targetPath}. Run git log commands to analyze commit patterns, branching strategy, and development workflow. Find every version control disaster.`,
-      
-      test_coverage: `Analyze the testing setup at ${targetPath}. Look for test files, run coverage commands if possible, and examine the testing strategy. Find every testing gap.`,
-      
-      idea: `Analyze this idea: ${targetPath}. Find where this concept will fail when it encounters reality.`,
-      
-      architecture: `Review this system architecture: ${targetPath}. Find every bottleneck and scaling failure.`,
-      
+      code: `Analyze ${targetPath} for codebase issues. Context: ${context || 'No additional context provided'}`,
+      codebase: `Analyze ${targetPath} for codebase issues. Context: ${context || 'No additional context provided'}`,
+      architecture: `Review the architecture: ${targetPath}. Find every scaling failure and cost explosion.`,
+      idea: `Analyze this idea: ${targetPath}. Find where imagination fails to become reality.`,
       research: `Review this research: ${targetPath}. Find every methodological flaw and reproducibility issue.`,
-      
-      security: `Security analysis of: ${targetPath}. Find every vulnerability and attack vector.`,
-      
-      product: `Product review: ${targetPath}. Find every usability disaster and adoption barrier.`,
-      
-      infrastructure: `Infrastructure review: ${targetPath}. Find every single point of failure and operational nightmare.`
+      data: `Analyze this data/model: ${targetPath}. Find every overfitting issue, bias, and correlation fallacy.`,
+      security: `Security audit of: ${targetPath}. Find every attack vector and vulnerability.`,
+      product: `Product review: ${targetPath}. Find every UX disaster and adoption barrier.`,
+      infrastructure: `Infrastructure review: ${targetPath}. Find every single point of failure.`,
+      debate: `Debate topic: ${targetPath}. Take opposing positions and argue until truth emerges.`
     };
 
     const specificPrompt = prompts[analysisType as keyof typeof prompts] || `Analyze ${targetPath} for ${analysisType} issues.`;
@@ -355,29 +470,33 @@ export class CLIAgentOrchestrator {
 
   synthesizeBrutalistFeedback(responses: CLIAgentResponse[], analysisType: string): string {
     const successfulResponses = responses.filter(r => r.success);
+    const failedResponses = responses.filter(r => !r.success);
     
     if (successfulResponses.length === 0) {
-      return `# Brutalist Analysis Failed\n\nEven our brutal critics couldn't tear this apart - that's either very good or very bad.\n\nErrors:\n${responses.map(r => `- ${r.agent}: ${r.error}`).join('\n')}`;
+      return `# Brutalist Analysis Failed\n\n❌ All CLI agents failed to analyze\n${failedResponses.map(r => `- ${r.agent.toUpperCase()}: ${r.error}`).join('\n')}`;
     }
 
-    let synthesis = `# Brutalist ${analysisType} Destruction Report\n\n`;
-    synthesis += `${successfulResponses.length} AI critics have systematically demolished your work.\n\n`;
-
+    let synthesis = `${successfulResponses.length} AI critics have systematically demolished your work.\n\n`;
+    
     successfulResponses.forEach((response, index) => {
       synthesis += `## Critic ${index + 1}: ${response.agent.toUpperCase()}\n`;
       synthesis += `*Execution time: ${response.executionTime}ms*\n\n`;
-      synthesis += `${response.output}\n\n`;
-      synthesis += `---\n\n`;
+      synthesis += response.output;
+      synthesis += '\n\n---\n\n';
     });
-
-    synthesis += `## Brutal Summary\n`;
-    synthesis += `Your ${analysisType} has been systematically destroyed by ${successfulResponses.length} independent critics. `;
-    synthesis += `Time to rebuild it properly.\n\n`;
     
-    if (responses.some(r => !r.success)) {
-      synthesis += `*Note: ${responses.filter(r => !r.success).length} critics failed to execute - they probably couldn't handle the carnage.*`;
+    if (failedResponses.length > 0) {
+      synthesis += `## Failed Critics\n`;
+      synthesis += `${failedResponses.length} critics failed to complete their destruction:\n`;
+      failedResponses.forEach(r => {
+        synthesis += `- **${r.agent.toUpperCase()}**: ${r.error}\n`;
+      });
+      synthesis += '\n';
     }
-
+    
+    synthesis += `## Brutal Summary\n`;
+    synthesis += `Your ${analysisType} has been systematically destroyed by ${successfulResponses.length} independent critics. Time to rebuild it properly.`;
+    
     return synthesis;
   }
 }

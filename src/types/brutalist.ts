@@ -10,6 +10,10 @@ export interface CLIAgentResponse {
   output: string;
   error?: string;
   executionTime: number;
+  command?: string;
+  systemPromptType?: string;
+  workingDirectory?: string;
+  exitCode?: number;
 }
 
 export interface BrutalistResponse {
@@ -19,6 +23,14 @@ export interface BrutalistResponse {
   error?: string;
   analysisType?: string;
   targetPath?: string;
+  executionSummary?: {
+    totalCLIs: number;
+    successfulCLIs: number;
+    failedCLIs: number;
+    totalExecutionTime: number;
+    selectedCLI?: string;
+    selectionMethod?: string;
+  };
 }
 
 export interface RoastOptions {

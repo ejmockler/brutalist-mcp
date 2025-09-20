@@ -61,7 +61,12 @@ export class BrutalistServer {
         workingDirectory: z.string().optional().describe("Working directory to execute from"),
         enableSandbox: z.boolean().optional().describe("Enable sandbox mode for safe analysis (default: true)"),
         preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
-        verbose: z.boolean().optional().describe("Include detailed execution information in output (default: false)")
+        verbose: z.boolean().optional().describe("Include detailed execution information in output (default: false)"),
+        models: z.object({
+          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
+          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
+          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+        }).optional().describe("Specific models to use for each CLI agent (defaults: codex=gpt-5, gemini=gemini-2.5-flash)")
       },
       async (args) => {
         try {
@@ -75,7 +80,8 @@ export class BrutalistServer {
             args.workingDirectory,
             args.enableSandbox,
             args.preferredCLI,
-            args.verbose
+            args.verbose,
+            args.models
           );
 
           return this.formatToolResponse(result, args.verbose);
@@ -93,7 +99,12 @@ export class BrutalistServer {
         targetPath: z.string().describe("Directory path to analyze"),
         depth: z.number().optional().describe("Maximum directory depth to analyze (default: 3)"),
         context: z.string().optional().describe("Additional context about the project structure"),
-        workingDirectory: z.string().optional().describe("Working directory to execute from")
+        workingDirectory: z.string().optional().describe("Working directory to execute from"),
+        models: z.object({
+          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
+          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
+          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+        }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {
         try {
@@ -104,7 +115,11 @@ export class BrutalistServer {
             args.targetPath,
             systemPrompt,
             `Project structure analysis (depth: ${args.depth || 3}). ${args.context || ''}`,
-            args.workingDirectory
+            args.workingDirectory,
+            undefined, // enableSandbox
+            undefined, // preferredCLI
+            undefined, // verbose
+            args.models
           );
 
           return this.formatToolResponse(result);
@@ -209,7 +224,12 @@ export class BrutalistServer {
         idea: z.string().describe("ANY idea to analyze and demolish - business, technical, creative, or otherwise"),
         context: z.string().optional().describe("Additional context about goals, constraints, or background"),
         timeline: z.string().optional().describe("Expected timeline or deadline"),
-        resources: z.string().optional().describe("Available resources (budget, team, time, skills)")
+        resources: z.string().optional().describe("Available resources (budget, team, time, skills)"),
+        models: z.object({
+          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
+          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
+          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+        }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {
         try {
@@ -219,7 +239,12 @@ export class BrutalistServer {
             "idea",
             args.idea,
             systemPrompt,
-            `Context: ${args.context || 'none'}, Timeline: ${args.timeline || 'unspecified'}, Resources: ${args.resources || 'unknown'}`
+            `Context: ${args.context || 'none'}, Timeline: ${args.timeline || 'unspecified'}, Resources: ${args.resources || 'unknown'}`,
+            undefined, // workingDirectory
+            undefined, // enableSandbox
+            undefined, // preferredCLI
+            undefined, // verbose
+            args.models
           );
 
           return this.formatToolResponse(result);
@@ -237,7 +262,12 @@ export class BrutalistServer {
         architecture: z.string().describe("Architecture description, diagram, or design document"),
         scale: z.string().optional().describe("Expected scale/load (users, requests, data)"),
         constraints: z.string().optional().describe("Budget, timeline, or technical constraints"),
-        deployment: z.string().optional().describe("Deployment environment and strategy")
+        deployment: z.string().optional().describe("Deployment environment and strategy"),
+        models: z.object({
+          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
+          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
+          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+        }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {
         try {
@@ -247,7 +277,12 @@ export class BrutalistServer {
             "architecture",
             args.architecture,
             systemPrompt,
-            `Scale: ${args.scale || 'unknown'}, Constraints: ${args.constraints || 'none specified'}, Deployment: ${args.deployment || 'unclear'}`
+            `Scale: ${args.scale || 'unknown'}, Constraints: ${args.constraints || 'none specified'}, Deployment: ${args.deployment || 'unclear'}`,
+            undefined, // workingDirectory
+            undefined, // enableSandbox
+            undefined, // preferredCLI
+            undefined, // verbose
+            args.models
           );
 
           return this.formatToolResponse(result);
@@ -265,7 +300,12 @@ export class BrutalistServer {
         research: z.string().describe("Research description, methodology, or paper draft"),
         field: z.string().optional().describe("Research field (ML, systems, theory, etc.)"),
         claims: z.string().optional().describe("Main claims or contributions"),
-        data: z.string().optional().describe("Data sources, datasets, or experimental setup")
+        data: z.string().optional().describe("Data sources, datasets, or experimental setup"),
+        models: z.object({
+          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
+          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
+          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+        }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {
         try {
@@ -275,7 +315,12 @@ export class BrutalistServer {
             "research",
             args.research,
             systemPrompt,
-            `Field: ${args.field || 'unspecified'}, Claims: ${args.claims || 'unclear'}, Data: ${args.data || 'not provided'}`
+            `Field: ${args.field || 'unspecified'}, Claims: ${args.claims || 'unclear'}, Data: ${args.data || 'not provided'}`,
+            undefined, // workingDirectory
+            undefined, // enableSandbox
+            undefined, // preferredCLI
+            undefined, // verbose
+            args.models
           );
 
           return this.formatToolResponse(result);
@@ -293,7 +338,12 @@ export class BrutalistServer {
         system: z.string().describe("System, application, or security design to analyze"),
         assets: z.string().optional().describe("Critical assets or data to protect"),
         threatModel: z.string().optional().describe("Known threats or attack vectors to consider"),
-        compliance: z.string().optional().describe("Compliance requirements (GDPR, HIPAA, etc.)")
+        compliance: z.string().optional().describe("Compliance requirements (GDPR, HIPAA, etc.)"),
+        models: z.object({
+          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
+          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
+          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+        }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {
         try {
@@ -303,7 +353,12 @@ export class BrutalistServer {
             "security",
             args.system,
             systemPrompt,
-            `Assets: ${args.assets || 'unspecified'}, Threats: ${args.threatModel || 'unknown'}, Compliance: ${args.compliance || 'none specified'}`
+            `Assets: ${args.assets || 'unspecified'}, Threats: ${args.threatModel || 'unknown'}, Compliance: ${args.compliance || 'none specified'}`,
+            undefined, // workingDirectory
+            undefined, // enableSandbox
+            undefined, // preferredCLI
+            undefined, // verbose
+            args.models
           );
 
           return this.formatToolResponse(result);
@@ -378,7 +433,12 @@ export class BrutalistServer {
         debateRounds: z.number().optional().describe("Number of debate rounds (default: 2, max: 10)"),
         context: z.string().optional().describe("Additional context for the debate"),
         workingDirectory: z.string().optional().describe("Working directory for analysis"),
-        enableSandbox: z.boolean().optional().describe("Enable sandbox mode for security")
+        enableSandbox: z.boolean().optional().describe("Enable sandbox mode for security"),
+        models: z.object({
+          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
+          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
+          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+        }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {
         return this.handleToolExecution(async () => {
@@ -388,7 +448,8 @@ export class BrutalistServer {
             debateRounds,
             args.context,
             args.workingDirectory,
-            args.enableSandbox
+            args.enableSandbox,
+            args.models
           );
           return responses;
         });
@@ -455,7 +516,12 @@ export class BrutalistServer {
     debateRounds: number,
     context?: string,
     workingDirectory?: string,
-    enableSandbox?: boolean
+    enableSandbox?: boolean,
+    models?: {
+      claude?: string;
+      codex?: string;
+      gemini?: string;
+    }
   ): Promise<BrutalistResponse> {
     logger.debug("Executing CLI debate", { 
       targetPath,
@@ -486,7 +552,8 @@ export class BrutalistServer {
             workingDirectory: workingDirectory || this.config.workingDirectory,
             sandbox: enableSandbox ?? this.config.enableSandbox,
             timeout: (this.config.defaultTimeout || 60000) * 2, // Longer timeout for debates
-            analysisType: 'debate'
+            analysisType: 'debate',
+            models
           }
         );
         
@@ -566,7 +633,12 @@ export class BrutalistServer {
     workingDirectory?: string,
     enableSandbox?: boolean,
     preferredCLI?: 'claude' | 'codex' | 'gemini',
-    verbose?: boolean
+    verbose?: boolean,
+    models?: {
+      claude?: string;
+      codex?: string;
+      gemini?: string;
+    }
   ): Promise<BrutalistResponse> {
     logger.info(`🏢 Starting brutalist analysis: ${analysisType}`);
     logger.debug("Executing brutalist analysis", { 
@@ -594,7 +666,8 @@ export class BrutalistServer {
           sandbox: enableSandbox ?? this.config.enableSandbox,
           timeout: this.config.defaultTimeout,
           preferredCLI,
-          analysisType: analysisType as BrutalistPromptType
+          analysisType: analysisType as BrutalistPromptType,
+          models
         }
       );
       

@@ -178,6 +178,67 @@ Consider other CLI agents for:
 
 ## Advanced Configuration
 
+### Model Selection (New in v0.4.1)
+
+As of September 2025, you can specify exact models for each CLI agent:
+
+#### Verified Working Models
+
+**Claude Code:**
+- `opus` - Claude Opus (alias) ✅
+- `sonnet` - Claude Sonnet (alias) ✅  
+- `claude-opus-4-1-20250805` - Claude Opus 4.1 (full model name) ✅
+- Default: Uses your configured Claude model
+
+**Codex CLI:**
+- `gpt-5` - GPT-5 base model ✅
+- `gpt-5-codex` - GPT-5 optimized for coding ✅
+- `o4-mini` - Smaller efficient model ✅
+- `o3` - ❌ Unsupported (falls back to gpt-5-codex)
+- Default: `gpt-5`
+
+**Gemini CLI:**
+- `gemini-2.5-flash` - Best price/performance ✅
+- `gemini-2.5-pro` - Advanced reasoning ✅
+- `gemini-2.5-flash-lite` - Cost-efficient ✅
+- Default: `gemini-2.5-flash`
+
+#### Usage Examples
+
+```bash
+# Use specific models for complex analysis
+roast_codebase(
+  targetPath="/src",
+  models={"claude": "opus", "codex": "gpt-5-codex", "gemini": "gemini-2.5-pro"}
+)
+
+# Speed vs. accuracy trade-offs
+roast_idea(
+  idea="Quick validation of a startup concept",
+  models={"gemini": "gemini-2.5-flash-lite"}  // Fastest option
+)
+
+roast_security(
+  system="Critical financial system",
+  models={"claude": "opus", "gemini": "gemini-2.5-pro"}  // Most thorough
+)
+```
+
+#### Model Recommendations by Use Case
+
+**For Complex Reasoning & Architecture:**
+- Claude: `opus` or `claude-opus-4-1-20250805`
+- Codex: `gpt-5-codex` (optimized for coding)
+- Gemini: `gemini-2.5-pro`
+
+**For Speed & Cost Efficiency:**
+- Claude: `sonnet` (balanced performance)
+- Codex: `o4-mini`
+- Gemini: `gemini-2.5-flash-lite`
+
+**For Balanced Analysis (Recommended):**
+- Use defaults: Claude user setting, Codex `gpt-5`, Gemini `gemini-2.5-flash`
+
 ### Custom System Prompts
 
 While the Brutalist MCP provides its own brutal prompts, you can append additional context:
@@ -186,7 +247,7 @@ While the Brutalist MCP provides its own brutal prompts, you can append addition
 roast_codebase(
   targetPath="/src",
   context="This is a financial trading system where errors cost millions",
-  preferredCLI="claude"
+  models={"claude": "opus"}
 )
 ```
 

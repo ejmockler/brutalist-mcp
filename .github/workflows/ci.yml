@@ -59,3 +59,23 @@ jobs:
         run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: |
+            ## Changes in this release
+            See [CHANGELOG](https://github.com/${{ github.repository }}/compare/v0.4.2...${{ github.ref_name }}) for details.
+            
+            ## Installation
+            ```bash
+            npm install @brutalist/mcp@${{ github.ref_name }}
+            ```
+            
+            Published to NPM: https://www.npmjs.com/package/@brutalist/mcp/v/${{ github.ref_name }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

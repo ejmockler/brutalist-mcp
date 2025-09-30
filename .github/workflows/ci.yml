@@ -38,6 +38,8 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write  # Required for creating releases
     
     steps:
       - uses: actions/checkout@v4
@@ -61,21 +63,20 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          body: |
-            ## Changes in this release
-            See [CHANGELOG](https://github.com/${{ github.repository }}/compare/v0.4.2...${{ github.ref_name }}) for details.
-            
-            ## Installation
-            ```bash
-            npm install @brutalist/mcp@${{ github.ref_name }}
-            ```
-            
-            Published to NPM: https://www.npmjs.com/package/@brutalist/mcp/v/${{ github.ref_name }}
-          draft: false
-          prerelease: false
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --notes "$(cat <<'EOF'
+          ## Changes in this release
+          See [CHANGELOG](https://github.com/${{ github.repository }}/compare/v0.4.4...${{ github.ref_name }}) for details.
+          
+          ## Installation
+          \`\`\`bash
+          npm install @brutalist/mcp@${{ github.ref_name }}
+          \`\`\`
+          
+          Published to NPM: https://www.npmjs.com/package/@brutalist/mcp/v/${{ github.ref_name }}
+          EOF
+          )"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

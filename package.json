@@ -1,7 +1,7 @@
 {
   "name": "@brutalist/mcp",
-  "version": "0.4.4",
-  "description": "Deploy Claude, Codex & Gemini CLI agents to demolish your work before users do. Real file analysis. Brutal honesty.",
+  "version": "0.5.0",
+  "description": "Deploy Claude, Codex & Gemini CLI agents to demolish your work before users do. Real file analysis. Brutal honesty. Now with intelligent pagination.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -51,7 +51,11 @@
     "production-ready",
     "honest-ai",
     "no-lies",
-    "disaster-prevention"
+    "disaster-prevention",
+    "pagination",
+    "chunking",
+    "token-limit",
+    "large-responses"
   ],
   "author": "Claude Code",
   "license": "MIT",

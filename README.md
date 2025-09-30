@@ -12,7 +12,7 @@ Three brutal CLI agents. Zero sugar-coating. Maximum carnage.
 
 Three brutal CLI agents that can analyze anything. Each agent brings different perspectives to demolish your work from every angle.
 
-Real file-system analysis. Actual brutal prompts. No participation trophies.
+Real file-system analysis. Actual brutal prompts. Intelligent pagination for enterprise codebases. No participation trophies.
 
 ## Brutalist Workflows
 
@@ -174,6 +174,27 @@ Add to `~/.codeium/windsurf/mcp_config.json` or use **Plugin Store**
 }
 ```
 </details>
+
+## 📄 Pagination Support (v0.5.0+)
+
+Handle enterprise-scale analyses that exceed Claude Code's 25K token limit:
+
+```bash
+# Enable pagination for large codebases
+roast_codebase({targetPath: "/monorepo", limit: 20000})
+
+# Continue reading from where you left off
+roast_codebase({targetPath: "/monorepo", offset: 20000, limit: 20000})
+
+# Smart chunking preserves readability
+roast_codebase({targetPath: "/complex-system", cursor: "offset:25000"})
+```
+
+**Features:**
+- **Smart Boundary Detection** - Preserves paragraphs and sentences
+- **Token Estimation** - Real-time cost awareness (~4 chars = 1 token)
+- **Rich Metadata** - Progress indicators and continuation instructions
+- **Configurable Chunks** - 1K to 100K characters per response
 
 ## Tools
 

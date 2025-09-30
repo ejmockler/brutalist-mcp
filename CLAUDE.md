@@ -6,23 +6,37 @@ The Brutalist MCP server integrates seamlessly with Claude Code to provide bruta
 
 ## Installation
 
-### Quick Setup
+### Quick Setup (Recommended)
 
 ```bash
+# Install for user scope - available across all projects
 claude mcp add brutalist --scope user -- npx -y @brutalist/mcp
 ```
 
-### Manual Configuration
+### Manual Configuration (Advanced)
 
-Add to your Claude Code MCP configuration:
+For direct configuration file editing, add to `~/.claude.json`:
 
 ```json
 {
-  "brutalist": {
-    "command": "npx",
-    "args": ["-y", "@brutalist/mcp"]
+  "mcpServers": {
+    "brutalist": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@brutalist/mcp"]
+    }
   }
 }
+```
+
+### Verification
+
+```bash
+# Verify installation
+claude mcp list
+
+# Test the server
+claude mcp get brutalist
 ```
 
 ## Claude-Specific Features
@@ -176,9 +190,72 @@ Consider other CLI agents for:
 - **Infrastructure**: Gemini excels at cloud architecture analysis
 - **Quick checks**: Gemini tends to be faster for simple validations
 
+## Response Pagination (New in v0.5.0)
+
+### Solving the 25K Token Limit
+
+The brutalist MCP now supports intelligent pagination to handle responses larger than Claude Code's default 25,000 token limit:
+
+```bash
+# Default behavior (no pagination)
+roast_codebase({targetPath: "/src"})
+
+# Enable pagination with custom chunk size
+roast_codebase({targetPath: "/src", limit: 15000})
+
+# Continue reading from offset
+roast_codebase({targetPath: "/src", offset: 15000, limit: 15000})
+
+# Use cursor-based navigation
+roast_codebase({targetPath: "/src", cursor: "offset:15000"})
+```
+
+### Pagination Parameters
+
+All brutalist tools now support:
+- **offset**: Character position to start from (default: 0)
+- **limit**: Maximum characters per chunk (1,000 - 100,000, default: 25,000)
+- **cursor**: Navigation token from previous response
+
+### Smart Chunking Features
+
+- **Boundary Detection**: Preserves paragraphs, sentences, and word boundaries
+- **Token Estimation**: Real-time token count (~4 chars = 1 token)
+- **Rich Metadata**: Progress indicators and continuation instructions
+- **Overlap Support**: Configurable context preservation between chunks
+
+### Response Format
+
+Paginated responses include navigation metadata:
+
+```markdown
+# Brutalist Analysis Results
+
+**📊 Pagination Status:** Part 1/3: chars 0-25,000 of 75,000 • Use offset parameter to continue
+**🔢 Token Estimate:** ~6,250 tokens (chunk) / ~18,750 tokens (total)
+
+**⏭️ Continue Reading:** Use `offset: 25000` for next chunk
+
+---
+[ANALYSIS CONTENT]
+---
+
+🔄 To continue: Use same tool with `offset: 25000`
+```
+
+### Environment Configuration
+
+```bash
+# Increase Claude Code's token limit (recommended)
+export MAX_MCP_OUTPUT_TOKENS=100000
+
+# Start Claude Code with higher limits
+claude
+```
+
 ## Advanced Configuration
 
-### Model Selection (New in v0.4.1)
+### Model Selection (Updated in v0.5.0)
 
 As of September 2025, you can specify exact models for each CLI agent:
 

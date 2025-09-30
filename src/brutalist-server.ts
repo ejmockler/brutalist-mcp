@@ -10,8 +10,18 @@ import {
   BrutalistServerConfig, 
   BrutalistResponse, 
   RoastOptions, 
-  CLIAgentResponse 
+  CLIAgentResponse,
+  PaginationParams
 } from './types/brutalist.js';
+import { 
+  extractPaginationParams, 
+  parseCursor,
+  PAGINATION_DEFAULTS,
+  ResponseChunker,
+  createPaginationMetadata,
+  formatPaginationStatus,
+  estimateTokenCount
+} from './utils/pagination.js';
 // Use environment variable or fallback to manual version
 const PACKAGE_VERSION = process.env.npm_package_version || "0.4.4";
 
@@ -190,7 +200,11 @@ export class BrutalistServer {
           claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
           codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
           gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
-        }).optional().describe("Specific models to use for each CLI agent (defaults: codex=gpt-5, gemini=gemini-2.5-flash)")
+        }).optional().describe("Specific models to use for each CLI agent (defaults: codex=gpt-5, gemini=gemini-2.5-flash)"),
+        // Pagination parameters for large responses
+        offset: z.number().min(0).optional().describe("Character offset for response pagination (default: 0)"),
+        limit: z.number().min(1000).max(100000).optional().describe("Maximum characters per response chunk (default: 25000, max: 100000)"),
+        cursor: z.string().optional().describe("Pagination cursor from previous response (alternative to offset/limit)")
       },
       async (args, extra) => {
         try {
@@ -198,6 +212,13 @@ export class BrutalistServer {
           
           // Extract progressToken from request metadata for real-time streaming
           const progressToken = extra._meta?.progressToken;
+          
+          // Extract pagination parameters
+          const paginationParams = extractPaginationParams(args);
+          if (args.cursor) {
+            const cursorParams = parseCursor(args.cursor);
+            Object.assign(paginationParams, cursorParams);
+          }
           
           const result = await this.executeBrutalistAnalysis(
             "codebase",
@@ -212,7 +233,7 @@ export class BrutalistServer {
             progressToken
           );
 
-          return this.formatToolResponse(result, args.verbose);
+          return this.formatToolResponse(result, args.verbose, paginationParams);
         } catch (error) {
           return this.formatErrorResponse(error);
         }
@@ -1033,54 +1054,130 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
   }
 
 
-  private formatToolResponse(result: BrutalistResponse, verbose: boolean = false) {
+  private formatToolResponse(result: BrutalistResponse, verbose: boolean = false, paginationParams?: PaginationParams) {
     logger.info(`🔧 DEBUG: formatToolResponse called with synthesis length: ${result.synthesis?.length || 0}`);
     logger.info(`🔧 DEBUG: result.success=${result.success}, responses.length=${result.responses?.length || 0}`);
+    logger.info(`🔧 DEBUG: pagination params:`, paginationParams);
     
-    // Maximum CLI output, minimal MCP fluff
+    // Get the primary content to paginate
+    let primaryContent = '';
+    
     if (result.synthesis) {
-      logger.info(`🔧 DEBUG: Returning synthesis of ${result.synthesis.length} characters`);
+      primaryContent = result.synthesis;
+      logger.info(`🔧 DEBUG: Using synthesis content (${primaryContent.length} characters)`);
+    } else if (result.responses) {
+      const successfulResponses = result.responses.filter(r => r.success);
+      if (successfulResponses.length > 0) {
+        primaryContent = successfulResponses.map(r => r.output).join('\n\n---\n\n');
+        logger.info(`🔧 DEBUG: Using raw CLI output (${primaryContent.length} characters)`);
+      }
+    }
+    
+    // Handle pagination if params provided and content is substantial
+    if (paginationParams && primaryContent) {
+      return this.formatPaginatedResponse(primaryContent, paginationParams, result, verbose);
+    }
+    
+    // Non-paginated response (legacy behavior)
+    if (primaryContent) {
       return {
         content: [{ 
           type: "text" as const, 
-          text: result.synthesis 
+          text: primaryContent 
         }]
       };
     }
     
-    // Fallback: show raw successful CLI outputs directly
-    if (result.responses) {
-      const successfulResponses = result.responses.filter(r => r.success);
-      if (successfulResponses.length > 0) {
-        const rawOutput = successfulResponses.map(r => r.output).join('\n\n---\n\n');
-        return {
-          content: [{ 
-            type: "text" as const, 
-            text: rawOutput 
-          }]
-        };
-      }
-    }
-    
-    // Only show failures if nothing succeeded
-    let output = '';
+    // Error handling - no successful content
+    let errorOutput = '';
     if (result.responses) {
       const failedResponses = result.responses.filter(r => !r.success);
       if (failedResponses.length > 0) {
-        output = `❌ All CLI agents failed:\n` + 
-                 failedResponses.map(r => `- ${r.agent.toUpperCase()}: ${r.error}`).join('\n');
+        errorOutput = `❌ All CLI agents failed:\n` + 
+                     failedResponses.map(r => `- ${r.agent.toUpperCase()}: ${r.error}`).join('\n');
       } else {
-        output = '❌ No CLI responses available';
+        errorOutput = '❌ No CLI responses available';
       }
     } else {
-      output = '❌ No analysis results';
+      errorOutput = '❌ No analysis results';
     }
-
 
     return {
       content: [{ 
         type: "text" as const, 
-        text: output
+        text: errorOutput
+      }]
+    };
+  }
+
+  private formatPaginatedResponse(
+    content: string, 
+    paginationParams: PaginationParams, 
+    result: BrutalistResponse, 
+    verbose: boolean
+  ) {
+    // Using imported pagination utilities
+    
+    const offset = paginationParams.offset || 0;
+    const limit = paginationParams.limit || PAGINATION_DEFAULTS.DEFAULT_LIMIT;
+    
+    logger.info(`🔧 DEBUG: Paginating content - offset: ${offset}, limit: ${limit}, total: ${content.length}`);
+    
+    // Simple character-based pagination for immediate Claude Code compatibility
+    const endOffset = Math.min(offset + limit, content.length);
+    const chunk = content.substring(offset, endOffset);
+    
+    // Create pagination metadata
+    const pagination = createPaginationMetadata(content.length, paginationParams, limit);
+    const statusLine = formatPaginationStatus(pagination);
+    
+    // Estimate token usage for user awareness
+    const chunkTokens = estimateTokenCount(chunk);
+    const totalTokens = estimateTokenCount(content);
+    
+    // Format response with pagination info
+    let paginatedText = '';
+    
+    // Add pagination header
+    paginatedText += `# Brutalist Analysis Results\n\n`;
+    paginatedText += `**📊 Pagination Status:** ${statusLine}\n`;
+    paginatedText += `**🔢 Token Estimate:** ~${chunkTokens.toLocaleString()} tokens (chunk) / ~${totalTokens.toLocaleString()} tokens (total)\n\n`;
+    
+    if (pagination.hasMore) {
+      paginatedText += `**⏭️ Continue Reading:** Use \`offset: ${endOffset}\` for next chunk\n\n`;
+    }
+    
+    paginatedText += `---\n\n`;
+    
+    // Add the actual content chunk
+    paginatedText += chunk;
+    
+    // Add footer for continuation
+    if (pagination.hasMore) {
+      paginatedText += `\n\n---\n\n`;
+      paginatedText += `📖 **End of chunk ${pagination.chunkIndex}/${pagination.totalChunks}**\n`;
+      paginatedText += `🔄 To continue: Use same tool with \`offset: ${endOffset}\``;
+    } else {
+      paginatedText += `\n\n---\n\n`;
+      paginatedText += `✅ **Complete analysis shown** (${content.length.toLocaleString()} characters total)`;
+    }
+    
+    // Add verbose execution details if requested
+    if (verbose && result.executionSummary) {
+      paginatedText += `\n\n### Execution Summary\n`;
+      paginatedText += `- **CLI Agents:** ${result.executionSummary.successfulCLIs}/${result.executionSummary.totalCLIs} successful\n`;
+      paginatedText += `- **Total Time:** ${result.executionSummary.totalExecutionTime}ms\n`;
+      if (result.executionSummary.selectedCLI) {
+        paginatedText += `- **Selected CLI:** ${result.executionSummary.selectedCLI}\n`;
+      }
+    }
+    
+    logger.info(`🔧 DEBUG: Returning paginated chunk - ${chunk.length} chars (${chunkTokens} tokens)`);
+    
+    return {
+      content: [{ 
+        type: "text" as const, 
+        text: paginatedText 
       }]
     };
   }

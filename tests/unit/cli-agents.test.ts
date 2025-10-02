@@ -32,13 +32,25 @@ describe('CLIAgentOrchestrator', () => {
   let mockSpawn: jest.MockedFunction<typeof spawn>;
   let mockChild: MockChildProcess;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
     mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
     mockChild = new MockChildProcess();
-    mockSpawn.mockReturnValue(mockChild as any);
     
+    // Default mock: spawn processes that fail quickly (CLI not found)
+    mockSpawn.mockImplementation(() => {
+      const child = new MockChildProcess();
+      setTimeout(() => {
+        child.emit('error', new Error('Command not found'));
+      }, 1);
+      return child as any;
+    });
+    
+    // Create orchestrator and wait for CLI detection to complete
     orchestrator = new CLIAgentOrchestrator();
+    
+    // Wait a bit for the constructor's detectCLIContext to complete
+    await new Promise(resolve => setTimeout(resolve, 50));
     
     // Mock CLI context with available CLIs for most tests
     (orchestrator as any).cliContext = {
@@ -46,6 +58,11 @@ describe('CLIAgentOrchestrator', () => {
       currentCLI: 'claude'
     };
     (orchestrator as any).cliContextCached = true;
+  });
+
+  afterEach(() => {
+    // Clear all timers to prevent test leaks
+    jest.clearAllTimers();
   });
 
   describe('CLI Context Detection', () => {
@@ -103,6 +120,10 @@ describe('CLIAgentOrchestrator', () => {
     });
 
     it('should handle CLI detection failures gracefully', async () => {
+      // Reset cache to force new detection
+      (orchestrator as any).cliContextCached = false;
+      (orchestrator as any).cliContext = null;
+      
       // Mock all CLIs failing
       mockSpawn.mockImplementation(() => {
         const child = new MockChildProcess();
@@ -446,5 +467,179 @@ describe('CLIAgentOrchestrator', () => {
       // Should have throttled the events (fewer calls than data chunks)
       expect(mockStreamingCallback.mock.calls.length).toBeLessThan(10);
     });
+  });
+
+  describe('Real CLI Execution (Integration)', () => {
+    const shouldRunIntegrationTests = process.env.RUN_INTEGRATION_TESTS === 'true';
+
+    beforeEach(() => {
+      if (!shouldRunIntegrationTests) {
+        return;
+      }
+      
+      // Clear mocks for real execution
+      jest.clearAllMocks();
+      
+      // Create a real orchestrator without mocks
+      orchestrator = new CLIAgentOrchestrator();
+    });
+
+    it('should detect real CLI availability', async () => {
+      if (!shouldRunIntegrationTests) {
+        console.log('Skipping real CLI detection test - set RUN_INTEGRATION_TESTS=true to enable');
+        return;
+      }
+
+      jest.setTimeout(60000); // 60 seconds for real CLI detection
+
+      const context = await orchestrator.detectCLIContext();
+
+      expect(context).toBeDefined();
+      expect(Array.isArray(context.availableCLIs)).toBe(true);
+      
+      console.log('Real CLI context detected:', {
+        availableCLIs: context.availableCLIs,
+        currentCLI: context.currentCLI
+      });
+
+      // In CI, we might not have any CLIs installed
+      if (process.env.CI !== 'true') {
+        expect(context.availableCLIs.length).toBeGreaterThan(0);
+      }
+    }, 60000);
+
+    it('should execute real CLI with simple prompt', async () => {
+      if (!shouldRunIntegrationTests) {
+        console.log('Skipping real CLI execution test - set RUN_INTEGRATION_TESTS=true to enable');
+        return;
+      }
+
+      jest.setTimeout(60000);
+
+      const context = await orchestrator.detectCLIContext();
+      
+      if (context.availableCLIs.length === 0) {
+        console.log('No CLIs available for real execution test');
+        return;
+      }
+
+      const targetCLI = context.availableCLIs[0];
+      console.log(`Testing real execution with: ${targetCLI}`);
+
+      const responses = await orchestrator.executeBrutalistAnalysis(
+        'idea',
+        'A simple to-do list app',
+        'You are a brutal startup critic. Be harsh but fair.',
+        'Integration test of real CLI execution',
+        {
+          preferredCLI: targetCLI,
+          timeout: 45000,
+          sandbox: true
+        }
+      );
+
+      expect(Array.isArray(responses)).toBe(true);
+      expect(responses.length).toBeGreaterThan(0);
+
+      const response = responses[0];
+      expect(response).toHaveProperty('agent');
+      expect(response).toHaveProperty('success');
+      expect(response).toHaveProperty('executionTime');
+      expect(typeof response.executionTime).toBe('number');
+
+      if (response.success) {
+        expect(response.output).toBeTruthy();
+        expect(typeof response.output).toBe('string');
+        console.log(`${targetCLI} execution succeeded in ${response.executionTime}ms`);
+        console.log('Output preview:', response.output.substring(0, 200) + '...');
+      } else {
+        console.log(`${targetCLI} execution failed:`, response.error);
+        expect(response.error).toBeTruthy();
+      }
+    }, 60000);
+
+    it('should handle real CLI timeout gracefully', async () => {
+      if (!shouldRunIntegrationTests) {
+        console.log('Skipping real CLI timeout test - set RUN_INTEGRATION_TESTS=true to enable');
+        return;
+      }
+
+      jest.setTimeout(15000); // Test should complete within 15 seconds
+
+      const context = await orchestrator.detectCLIContext();
+      
+      if (context.availableCLIs.length === 0) {
+        console.log('No CLIs available for timeout test');
+        return;
+      }
+
+      const startTime = Date.now();
+
+      const responses = await orchestrator.executeBrutalistAnalysis(
+        'codebase',
+        '/tmp/nonexistent-large-project',
+        'Perform an extremely detailed analysis of this entire codebase including every file, dependency, security vulnerability, performance issue, and architectural problem. Write a 10,000 word detailed report.',
+        'Timeout test with complex prompt',
+        {
+          preferredCLI: context.availableCLIs[0],
+          timeout: 2000, // 2 second timeout should cause timeout
+          sandbox: true
+        }
+      );
+
+      const duration = Date.now() - startTime;
+      
+      expect(duration).toBeLessThan(8000); // Should complete much faster than full timeout
+      expect(Array.isArray(responses)).toBe(true);
+      expect(responses.length).toBeGreaterThan(0);
+
+      const response = responses[0];
+      if (!response.success) {
+        expect(response.error).toContain('timed out');
+      }
+
+      console.log(`Timeout test completed in ${duration}ms`);
+    }, 15000);
+
+    it('should synthesize real CLI responses into brutal feedback', async () => {
+      if (!shouldRunIntegrationTests) {
+        console.log('Skipping real CLI synthesis test - set RUN_INTEGRATION_TESTS=true to enable');
+        return;
+      }
+
+      jest.setTimeout(90000); // 90 seconds for multi-CLI execution
+
+      const context = await orchestrator.detectCLIContext();
+      
+      if (context.availableCLIs.length === 0) {
+        console.log('No CLIs available for synthesis test');
+        return;
+      }
+
+      const responses = await orchestrator.executeBrutalistAnalysis(
+        'security',
+        'JWT authentication system with HMAC-SHA256',
+        'You are security experts. Find every possible vulnerability.',
+        'Real CLI synthesis test',
+        {
+          timeout: 60000,
+          sandbox: true
+        }
+      );
+
+      expect(Array.isArray(responses)).toBe(true);
+
+      const synthesis = orchestrator.synthesizeBrutalistFeedback(responses, 'security');
+
+      expect(synthesis).toBeTruthy();
+      expect(typeof synthesis).toBe('string');
+      expect(synthesis.length).toBeGreaterThan(100);
+
+      // Should mention the analysis
+      expect(synthesis.toLowerCase()).toMatch(/ai critic|brutal|analysis|security|jwt/i);
+
+      console.log('Real synthesis preview:', synthesis.substring(0, 300) + '...');
+      console.log('Total synthesis length:', synthesis.length);
+    }, 90000);
   });
 });

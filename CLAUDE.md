@@ -358,19 +358,24 @@ await spawnAsync('claude', args, {
 });
 ```
 
-#### Codex CLI (Working)  
+#### Codex CLI (Working - Verbose Output Suppressed)  
 ```javascript
-// Uses exec with context and sandbox
+// Uses exec with --json flag to suppress thinking steps
 const args = ['exec'];
+args.push('--model', model);
 if (sandbox) args.push('--sandbox', 'read-only');
+args.push('--json'); // CRITICAL: Outputs structured JSON, suppresses verbose thinking
 const combinedPrompt = `CONTEXT AND INSTRUCTIONS:\n${systemPrompt}\n\nANALYZE:\n${userPrompt}`;
-args.push(combinedPrompt);
 
 await spawnAsync('codex', args, {
   cwd: workingDir,
   timeout: 300000, // 5 minutes minimum  
-  maxBuffer: 10 * 1024 * 1024
+  maxBuffer: 10 * 1024 * 1024,
+  input: combinedPrompt // Using stdin to avoid ARG_MAX limits
 });
+
+// Post-processing: Extract only assistant messages from JSON
+const assistantMessages = parseCodexJsonOutput(stdout);
 ```
 
 #### Gemini CLI (Working - Security Compromises Required)
@@ -470,6 +475,22 @@ args.push('--append-system-prompt', systemPrompt); // Times out
 - **GEMINI_SYSTEM_MD**: Environment variable expects file path, not content
 - **--yolo removal**: Gemini waits for file access approval that never comes
 - **Claude --append-system-prompt**: Flag causes timeout issues in spawn context
+
+## Codex Output Improvements (v0.5.2)
+
+### Clean Output Without Thinking Steps
+
+As of v0.5.2, Codex output has been significantly improved:
+
+**Before:** Codex would show all thinking steps, file reads, and internal reasoning
+**After:** Only the final assistant response is shown
+
+This is achieved by:
+1. Adding the `--json` flag to Codex execution
+2. Parsing the JSON output to extract only `assistant` type messages
+3. Filtering out `thinking`, `file_read`, and other verbose message types
+
+The verbose output is still available in debug logs if needed for troubleshooting.
 
 ## Known Limitations
 

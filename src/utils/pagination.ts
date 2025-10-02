@@ -8,7 +8,7 @@ import {
 
 // Default pagination configuration
 export const PAGINATION_DEFAULTS = {
-  DEFAULT_LIMIT: 25000, // 25K tokens - matches Claude Code default
+  DEFAULT_LIMIT: 90000, // ~22.5K tokens - optimized for Claude Code's 25K window with headroom
   MAX_LIMIT: 100000,    // 100K tokens - reasonable upper bound
   MIN_LIMIT: 1000,      // 1K tokens - minimum meaningful chunk
   CHUNK_OVERLAP: 200    // Character overlap between chunks for context
@@ -28,7 +28,7 @@ export class ResponseChunker {
   private readonly chunkSize: number;
   private readonly overlap: number;
 
-  constructor(chunkSize = PAGINATION_DEFAULTS.DEFAULT_LIMIT, overlap = PAGINATION_DEFAULTS.CHUNK_OVERLAP) {
+  constructor(chunkSize: number = PAGINATION_DEFAULTS.DEFAULT_LIMIT, overlap: number = PAGINATION_DEFAULTS.CHUNK_OVERLAP) {
     this.chunkSize = Math.max(chunkSize, PAGINATION_DEFAULTS.MIN_LIMIT);
     this.overlap = Math.min(overlap, Math.floor(chunkSize * 0.1)); // Max 10% overlap
   }

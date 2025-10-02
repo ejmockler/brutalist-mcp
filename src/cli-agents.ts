@@ -80,12 +80,13 @@ async function spawnAsync(
 
     // Set up timeout with SIGKILL escalation
     const timeoutMs = options.timeout || DEFAULT_TIMEOUT;
+    let killTimer: NodeJS.Timeout | undefined;
     const timer = setTimeout(() => {
       timedOut = true;
       // First try SIGTERM
       child.kill('SIGTERM');
       // If still running after 5 seconds, escalate to SIGKILL
-      setTimeout(() => {
+      killTimer = setTimeout(() => {
         if (!killed) {
           try {
             if (command === 'gemini' || process.platform === 'win32') {
@@ -141,6 +142,7 @@ async function spawnAsync(
     child.on('close', (code) => {
       killed = true;
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       if (!timedOut) {
         if (code === 0) {
           resolve({ stdout, stderr });
@@ -156,6 +158,7 @@ async function spawnAsync(
 
     child.on('error', (error) => {
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       reject(error);
     });
 
@@ -297,6 +300,38 @@ export class CLIAgentOrchestrator {
     }
     
     return textParts.join('');
+  }
+
+  // Extract only the agent messages from Codex JSON output (no thinking, no file reads, no commands)
+  private extractCodexAgentMessage(jsonOutput: string): string {
+    if (!jsonOutput || !jsonOutput.trim()) {
+      return '';
+    }
+    
+    const agentMessages: string[] = [];
+    const lines = jsonOutput.split('\n');
+    
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      
+      try {
+        const event = JSON.parse(line);
+        
+        // Only extract agent_message type - this is the actual response
+        if (event.msg?.type === 'agent_message' && event.msg?.message) {
+          agentMessages.push(event.msg.message);
+        } else if (event.msg?.type === 'error' && event.msg?.message) {
+          // Include error messages
+          agentMessages.push(`Error: ${event.msg.message}`);
+        }
+        // Skip all other types: agent_reasoning, exec, token_count, task_started, etc.
+      } catch {
+        // Skip non-JSON lines (config output, prompts, etc.)
+        continue;
+      }
+    }
+    
+    return agentMessages.join('\n').trim();
   }
 
   private emitThrottledStreamingEvent(
@@ -555,12 +590,20 @@ export class CLIAgentOrchestrator {
         });
       }
 
-      // Post-process Claude stream-json output if needed
+      // Post-process CLI output if needed
       let finalOutput = stdout;
       
       // If Claude was run with stream-json format, decode the NDJSON to extract text
       if (cliName === 'claude' && args.includes('--output-format') && args.includes('stream-json')) {
         const decodedText = this.decodeClaudeStreamJson(stdout);
+        if (decodedText) {
+          finalOutput = decodedText;
+        }
+      }
+      
+      // If Codex was run with --json flag, extract only the agent messages
+      if (cliName === 'codex' && args.includes('--json')) {
+        const decodedText = this.extractCodexAgentMessage(stdout);
         if (decodedText) {
           finalOutput = decodedText;
         }
@@ -686,6 +729,8 @@ export class CLIAgentOrchestrator {
         if (options.sandbox) {
           args.push('--sandbox', 'read-only');
         }
+        // Add JSON flag to get structured output without verbose details
+        args.push('--json');
         // Use stdin for the prompt instead of argv to avoid ARG_MAX limits
         return { 
           command: 'codex', 

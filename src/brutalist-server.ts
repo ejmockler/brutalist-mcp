@@ -6,6 +6,8 @@ import express, { Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { CLIAgentOrchestrator, BrutalistPromptType, StreamingEvent } from './cli-agents.js';
 import { logger } from './logger.js';
+import { ToolConfig, BASE_ROAST_SCHEMA } from './types/tool-config.js';
+import { TOOL_CONFIGS } from './tool-definitions.js';
 import { 
   BrutalistServerConfig, 
   BrutalistResponse, 
@@ -22,6 +24,7 @@ import {
   formatPaginationStatus,
   estimateTokenCount
 } from './utils/pagination.js';
+import { ResponseCache } from './utils/response-cache.js';
 // Use environment variable or fallback to manual version
 const PACKAGE_VERSION = process.env.npm_package_version || "0.4.4";
 
@@ -30,6 +33,7 @@ export class BrutalistServer {
   public config: BrutalistServerConfig;
   private cliOrchestrator: CLIAgentOrchestrator;
   private httpTransport?: StreamableHTTPServerTransport;
+  private responseCache: ResponseCache;
 
   constructor(config: BrutalistServerConfig = {}) {
     this.config = {
@@ -43,6 +47,17 @@ export class BrutalistServer {
 
     logger.debug("Initializing CLI Agent Orchestrator");
     this.cliOrchestrator = new CLIAgentOrchestrator();
+    
+    // Initialize response cache with configurable TTL
+    const cacheTTLHours = parseInt(process.env.BRUTALIST_CACHE_TTL_HOURS || '2', 10);
+    this.responseCache = new ResponseCache({
+      ttlHours: cacheTTLHours,
+      maxEntries: 50,
+      maxTotalSizeMB: 500,
+      maxEntrySizeMB: 10,
+      compressionThresholdMB: 1
+    });
+    logger.info(`📦 Response cache initialized with ${cacheTTLHours} hour TTL`);
 
     this.server = new McpServer({
       name: "brutalist-mcp",
@@ -185,451 +200,26 @@ export class BrutalistServer {
   }
 
   private registerTools() {
-    // ROAST_CODEBASE: Systematic destruction of entire codebase
-    this.server.tool(
-      "roast_codebase",
-      "Deploy brutal AI critics to systematically destroy your entire codebase. These AI agents will navigate your directories, read your actual files, and find every architectural disaster, security vulnerability, and maintainability nightmare lurking in your project. They treat this like code that will kill people if it fails.",
-      {
-        targetPath: z.string().describe("Directory path to your codebase (NOT a single file - analyze the entire project)"),
-        context: z.string().optional().describe("Additional context about the codebase purpose"),
-        workingDirectory: z.string().optional().describe("Working directory to execute from"),
-        enableSandbox: z.boolean().optional().describe("Enable sandbox mode for safe analysis (default: true)"),
-        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
-        verbose: z.boolean().optional().describe("Include detailed execution information in output (default: false)"),
-        models: z.object({
-          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
-          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
-        }).optional().describe("Specific models to use for each CLI agent (defaults: codex=gpt-5, gemini=gemini-2.5-flash)"),
-        // Pagination parameters for large responses
-        offset: z.number().min(0).optional().describe("Character offset for response pagination (default: 0)"),
-        limit: z.number().min(1000).max(100000).optional().describe("Maximum characters per response chunk (default: 25000, max: 100000)"),
-        cursor: z.string().optional().describe("Pagination cursor from previous response (alternative to offset/limit)")
-      },
-      async (args, extra) => {
-        try {
-          const systemPrompt = `You are a battle-scarred principal engineer who has debugged production disasters for 15 years. Find security holes, performance bottlenecks, and maintainability nightmares in this codebase. Be brutal about what's broken but specific about what would actually work. Treat this like code that will kill people if it fails.`;
-          
-          // Extract progressToken from request metadata for real-time streaming
-          const progressToken = extra._meta?.progressToken;
-          
-          // Extract pagination parameters
-          const paginationParams = extractPaginationParams(args);
-          if (args.cursor) {
-            const cursorParams = parseCursor(args.cursor);
-            Object.assign(paginationParams, cursorParams);
-          }
-          
-          const result = await this.executeBrutalistAnalysis(
-            "codebase",
-            args.targetPath,
-            systemPrompt,
-            args.context,
-            args.workingDirectory,
-            args.enableSandbox,
-            args.preferredCLI,
-            args.verbose,
-            args.models,
-            progressToken
-          );
+    // Register all roast tools using unified handler - DRY principle
+    TOOL_CONFIGS.forEach(config => {
+      const schema = {
+        ...config.schemaExtensions,
+        ...BASE_ROAST_SCHEMA
+      };
+      
+      this.server.tool(
+        config.name,
+        config.description,
+        schema,
+        async (args, extra) => this.handleRoastTool(config, args, extra)
+      );
+    });
 
-          return this.formatToolResponse(result, args.verbose, paginationParams);
-        } catch (error) {
-          return this.formatErrorResponse(error);
-        }
-      }
-    );
+    // Register special tools that don't follow the pattern
+    this.registerSpecialTools();
+  }
 
-    // ROAST_FILE_STRUCTURE: Directory hierarchy demolition
-    this.server.tool(
-      "roast_file_structure",
-      "Deploy brutal AI critics to systematically destroy your file organization. These agents will navigate your actual directory structure and expose every organizational disaster, naming convention failure, and structural nightmare that makes your codebase unmaintainable.",
-      {
-        targetPath: z.string().describe("Directory path to analyze"),
-        depth: z.number().optional().describe("Maximum directory depth to analyze (default: 3)"),
-        context: z.string().optional().describe("Additional context about the project structure"),
-        workingDirectory: z.string().optional().describe("Working directory to execute from"),
-        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
-        models: z.object({
-          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
-          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
-        }).optional().describe("Specific models to use for each CLI agent")
-      },
-      async (args) => {
-        try {
-          const systemPrompt = `You are a brutal file organization critic. Your job is to systematically destroy the given directory structure by finding every organizational disaster, naming convention failure, and structural nightmare that makes codebases unmaintainable. Examine folder hierarchies, file naming patterns, separation of concerns, and overall project organization. Be ruthlessly honest about how poor organization will slow development and confuse developers. But after cataloguing this organizational hellscape, sketch out what sanity would actually look like.`;
-          
-          const result = await this.executeBrutalistAnalysis(
-            "fileStructure",
-            args.targetPath,
-            systemPrompt,
-            `Project structure analysis (depth: ${args.depth || 3}). ${args.context || ''}`,
-            args.workingDirectory,
-            undefined, // enableSandbox
-            args.preferredCLI,
-            undefined, // verbose
-            args.models
-          );
-
-          return this.formatToolResponse(result);
-        } catch (error) {
-          return this.formatErrorResponse(error);
-        }
-      }
-    );
-
-    // ROAST_DEPENDENCIES: Package management demolition
-    this.server.tool(
-      "roast_dependencies",
-      "Deploy brutal AI critics to systematically destroy your dependency management. These agents will read your actual package files, analyze version conflicts, and expose every security vulnerability and compatibility nightmare in your dependency tree.",
-      {
-        targetPath: z.string().describe("Path to package file (package.json, requirements.txt, Cargo.toml, etc.)"),
-        includeDevDeps: z.boolean().optional().describe("Include development dependencies in analysis (default: true)"),
-        context: z.string().optional().describe("Additional context about the project dependencies"),
-        workingDirectory: z.string().optional().describe("Working directory to execute from"),
-        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
-        models: z.object({
-          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
-          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
-        }).optional().describe("Specific models to use for each CLI agent")
-      },
-      async (args) => {
-        try {
-          const systemPrompt = `You are a brutal dependency management critic. Your job is to systematically destroy the given dependency configuration by finding every security vulnerability, version conflict, compatibility nightmare, and bloat that will cause production failures. Examine package versions, security issues, licensing problems, and dependency tree complexity. Be ruthlessly honest about how poor dependency management will cause security breaches and deployment failures. After exposing this dependency dumpster fire, grudgingly admit what competent dependency management would require.`;
-          
-          const result = await this.executeBrutalistAnalysis(
-            "dependencies",
-            args.targetPath,
-            systemPrompt,
-            `Dependency analysis (dev deps: ${args.includeDevDeps ?? true}). ${args.context || ''}`,
-            args.workingDirectory,
-            undefined, // enableSandbox
-            args.preferredCLI,
-            undefined, // verbose
-            args.models
-          );
-
-          return this.formatToolResponse(result);
-        } catch (error) {
-          return this.formatErrorResponse(error);
-        }
-      }
-    );
-
-    // ROAST_GIT_HISTORY: Version control demolition
-    this.server.tool(
-      "roast_git_history",
-      "Deploy brutal AI critics to systematically destroy your git history and development practices. These agents will analyze your actual commit history, branching strategy, and code evolution to expose every workflow disaster and collaboration nightmare.",
-      {
-        targetPath: z.string().describe("Git repository path to analyze"),
-        commitRange: z.string().optional().describe("Commit range to analyze (e.g., 'HEAD~10..HEAD', default: last 20 commits)"),
-        context: z.string().optional().describe("Additional context about the development workflow"),
-        workingDirectory: z.string().optional().describe("Working directory to execute from"),
-        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
-        models: z.object({
-          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
-          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
-        }).optional().describe("Specific models to use for each CLI agent")
-      },
-      async (args) => {
-        try {
-          const systemPrompt = `You are a brutal git workflow critic. Your job is to systematically destroy the given git history and development practices by finding every workflow disaster, commit quality issue, and collaboration nightmare. Examine commit messages, branching strategies, merge patterns, and code evolution. Be ruthlessly honest about how poor git practices will cause deployment issues, collaboration failures, and development chaos. When you're done cataloguing this version control wasteland, reluctantly outline what professional git hygiene actually demands.`;
-          
-          const result = await this.executeBrutalistAnalysis(
-            "gitHistory",
-            args.targetPath,
-            systemPrompt,
-            `Git history analysis (range: ${args.commitRange || 'last 20 commits'}). ${args.context || ''}`,
-            args.workingDirectory,
-            undefined, // enableSandbox
-            args.preferredCLI,
-            undefined, // verbose
-            args.models
-          );
-
-          return this.formatToolResponse(result);
-        } catch (error) {
-          return this.formatErrorResponse(error);
-        }
-      }
-    );
-
-    // ROAST_TEST_COVERAGE: Testing infrastructure demolition
-    this.server.tool(
-      "roast_test_coverage",
-      "Deploy brutal AI critics to systematically destroy your testing strategy. These agents will analyze your actual test files, run coverage reports, and expose every testing gap and quality assurance nightmare that will let bugs slip into production.",
-      {
-        targetPath: z.string().describe("Path to test directory or test configuration file"),
-        runCoverage: z.boolean().optional().describe("Attempt to run coverage analysis (default: true)"),
-        context: z.string().optional().describe("Additional context about the testing strategy"),
-        workingDirectory: z.string().optional().describe("Working directory to execute from"),
-        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
-        models: z.object({
-          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
-          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
-        }).optional().describe("Specific models to use for each CLI agent")
-      },
-      async (args) => {
-        try {
-          const systemPrompt = `You are a brutal testing strategy critic. Your job is to systematically destroy the given testing approach by finding every testing gap, quality assurance nightmare, and coverage disaster that will let bugs slip into production. Examine test coverage, test quality, testing patterns, and CI/CD integration. Be ruthlessly honest about how poor testing will cause production failures and user-facing bugs. After dissecting this quality assurance horror show, begrudgingly spell out what it takes to actually catch bugs before users do.`;
-          
-          const result = await this.executeBrutalistAnalysis(
-            "testCoverage",
-            args.targetPath,
-            systemPrompt,
-            `Test coverage analysis (run coverage: ${args.runCoverage ?? true}). ${args.context || ''}`,
-            args.workingDirectory,
-            undefined, // enableSandbox
-            args.preferredCLI,
-            undefined, // verbose
-            args.models
-          );
-
-          return this.formatToolResponse(result);
-        } catch (error) {
-          return this.formatErrorResponse(error);
-        }
-      }
-    );
-
-    // ROAST_IDEA: Any idea destruction
-    this.server.tool(
-      "roast_idea",
-      "Deploy brutal AI critics to systematically destroy ANY idea - business, technical, creative, or otherwise. These critics understand the gap between imagination and reality, finding where your concept will encounter the immovable forces of the world. They are harsh about delusions but wise about what might actually survive.",
-      {
-        idea: z.string().describe("ANY idea to analyze and demolish - business, technical, creative, or otherwise"),
-        context: z.string().optional().describe("Additional context about goals, constraints, or background"),
-        timeline: z.string().optional().describe("Expected timeline or deadline"),
-        resources: z.string().optional().describe("Available resources (budget, team, time, skills)"),
-        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
-        models: z.object({
-          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
-          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
-        }).optional().describe("Specific models to use for each CLI agent")
-      },
-      async (args) => {
-        try {
-          const systemPrompt = `You are a brutal idea critic who understands the gap between imagination and reality. Your job is to systematically destroy the given idea by finding where it will encounter the immovable forces of the real world. Be ruthlessly honest about why most ideas fail when they meet practical constraints, human nature, physics, logic, or simple implementation reality. After demolishing the delusions, concede what salvage operations might actually work.`;
-          
-          const result = await this.executeBrutalistAnalysis(
-            "idea",
-            args.idea,
-            systemPrompt,
-            `Context: ${args.context || 'none'}, Timeline: ${args.timeline || 'unspecified'}, Resources: ${args.resources || 'unknown'}`,
-            undefined, // workingDirectory
-            undefined, // enableSandbox
-            args.preferredCLI,
-            undefined, // verbose
-            args.models
-          );
-
-          return this.formatToolResponse(result);
-        } catch (error) {
-          return this.formatErrorResponse(error);
-        }
-      }
-    );
-
-    // ROAST_ARCHITECTURE: System design demolition
-    this.server.tool(
-      "roast_architecture", 
-      "Deploy brutal AI critics to systematically destroy your system architecture. These critics have watched elegant designs collapse under real load, identifying every bottleneck, cost explosion, and scaling failure that will destroy your system. They are ruthless about why this won't survive production.",
-      {
-        architecture: z.string().describe("Architecture description, diagram, or design document"),
-        scale: z.string().optional().describe("Expected scale/load (users, requests, data)"),
-        constraints: z.string().optional().describe("Budget, timeline, or technical constraints"),
-        deployment: z.string().optional().describe("Deployment environment and strategy"),
-        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
-        models: z.object({
-          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
-          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
-        }).optional().describe("Specific models to use for each CLI agent")
-      },
-      async (args) => {
-        try {
-          const systemPrompt = `You are a brutal system architecture critic who has watched elegant designs collapse under real load. Your job is to systematically destroy the given architecture by finding every bottleneck, cost explosion, and scaling failure that will destroy the system in production. Examine scalability, reliability, cost, complexity, and operational challenges. Be ruthlessly honest about why this architecture won't survive production load. After crushing these architectural fantasies, reluctantly sketch what would actually scale without bankrupting the company.`;
-          
-          const result = await this.executeBrutalistAnalysis(
-            "architecture",
-            args.architecture,
-            systemPrompt,
-            `Scale: ${args.scale || 'unknown'}, Constraints: ${args.constraints || 'none specified'}, Deployment: ${args.deployment || 'unclear'}`,
-            undefined, // workingDirectory
-            undefined, // enableSandbox
-            args.preferredCLI,
-            undefined, // verbose
-            args.models
-          );
-
-          return this.formatToolResponse(result);
-        } catch (error) {
-          return this.formatErrorResponse(error);
-        }
-      }
-    );
-
-    // ROAST_RESEARCH: Academic project demolition  
-    this.server.tool(
-      "roast_research",
-      "Deploy brutal AI critics to systematically demolish your research methodology. These critics are supremely jaded peer reviewers who have rejected thousands of papers and watched countless studies fail to replicate. They find every statistical flaw, sampling bias, and reproducibility nightmare.",
-      {
-        research: z.string().describe("Research description, methodology, or paper draft"),
-        field: z.string().optional().describe("Research field (ML, systems, theory, etc.)"),
-        claims: z.string().optional().describe("Main claims or contributions"),
-        data: z.string().optional().describe("Data sources, datasets, or experimental setup"),
-        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
-        models: z.object({
-          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
-          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
-        }).optional().describe("Specific models to use for each CLI agent")
-      },
-      async (args) => {
-        try {
-          const systemPrompt = `You are a brutal research methodology critic - a supremely jaded peer reviewer who has rejected thousands of papers and watched countless studies fail to replicate. Your job is to systematically demolish the given research by finding every statistical flaw, sampling bias, reproducibility nightmare, and methodological disaster. Be ruthlessly honest about research quality, experimental design, and scientific rigor. After eviscerating this methodological train wreck, grudgingly admit what real science would demand.`;
-          
-          const result = await this.executeBrutalistAnalysis(
-            "research",
-            args.research,
-            systemPrompt,
-            `Field: ${args.field || 'unspecified'}, Claims: ${args.claims || 'unclear'}, Data: ${args.data || 'not provided'}`,
-            undefined, // workingDirectory
-            undefined, // enableSandbox
-            args.preferredCLI,
-            undefined, // verbose
-            args.models
-          );
-
-          return this.formatToolResponse(result);
-        } catch (error) {
-          return this.formatErrorResponse(error);
-        }
-      }
-    );
-
-    // ROAST_SECURITY: Security-focused attack vector analysis
-    this.server.tool(
-      "roast_security",
-      "Deploy brutal AI critics to systematically annihilate your security design. These critics are battle-hardened penetration testers who find every authentication bypass, injection vulnerability, privilege escalation path, and social engineering opportunity that real attackers will exploit.",
-      {
-        system: z.string().describe("System, application, or security design to analyze"),
-        assets: z.string().optional().describe("Critical assets or data to protect"),
-        threatModel: z.string().optional().describe("Known threats or attack vectors to consider"),
-        compliance: z.string().optional().describe("Compliance requirements (GDPR, HIPAA, etc.)"),
-        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
-        models: z.object({
-          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
-          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
-        }).optional().describe("Specific models to use for each CLI agent")
-      },
-      async (args) => {
-        try {
-          const systemPrompt = `You are a brutal security critic - a battle-hardened penetration tester who finds every authentication bypass, injection vulnerability, privilege escalation path, and social engineering opportunity that real attackers will exploit. Your job is to systematically annihilate the given security design by finding every weakness that will lead to data breaches, system compromises, and security incidents. Be ruthlessly honest about security flaws and attack vectors. After obliterating these security delusions, begrudgingly outline what actual defense looks like.`;
-          
-          const result = await this.executeBrutalistAnalysis(
-            "security",
-            args.system,
-            systemPrompt,
-            `Assets: ${args.assets || 'unspecified'}, Threats: ${args.threatModel || 'unknown'}, Compliance: ${args.compliance || 'none specified'}`,
-            undefined, // workingDirectory
-            undefined, // enableSandbox
-            args.preferredCLI,
-            undefined, // verbose
-            args.models
-          );
-
-          return this.formatToolResponse(result);
-        } catch (error) {
-          return this.formatErrorResponse(error);
-        }
-      }
-    );
-
-    // ROAST_PRODUCT: UX and market reality criticism
-    this.server.tool(
-      "roast_product",
-      "Deploy brutal AI critics to systematically eviscerate your product concept. These critics are product veterans who understand why users really abandon things, finding every usability disaster, adoption barrier, and workflow failure that will drive users away in seconds.",
-      {
-        product: z.string().describe("Product description, features, or user experience to analyze"),
-        users: z.string().optional().describe("Target users or user personas"),
-        competition: z.string().optional().describe("Competitive landscape or alternatives"),
-        metrics: z.string().optional().describe("Success metrics or KPIs"),
-        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
-        models: z.object({
-          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
-          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
-        }).optional().describe("Specific models to use for each CLI agent")
-      },
-      async (args) => {
-        try {
-          const systemPrompt = `You are a brutal product critic - a product veteran who understands why users really abandon things. Your job is to systematically eviscerate the given product concept by finding every usability disaster, adoption barrier, and workflow failure that will drive users away in seconds. Examine user experience, market fit, competitive positioning, and business model viability. Be ruthlessly honest about why most products fail to gain adoption. After torching this product disaster, reluctantly suggest what might actually get users to stick around.`;
-          
-          const result = await this.executeBrutalistAnalysis(
-            "product",
-            args.product,
-            systemPrompt,
-            `Users: ${args.users || 'unclear'}, Competition: ${args.competition || 'unknown'}, Metrics: ${args.metrics || 'undefined'}`,
-            undefined, // workingDirectory
-            undefined, // enableSandbox
-            args.preferredCLI,
-            undefined, // verbose
-            args.models
-          );
-
-          return this.formatToolResponse(result);
-        } catch (error) {
-          return this.formatErrorResponse(error);
-        }
-      }
-    );
-
-    // ROAST_INFRASTRUCTURE: DevOps and operations demolition
-    this.server.tool(
-      "roast_infrastructure",
-      "Deploy brutal AI critics to systematically obliterate your infrastructure design. These critics are grizzled site reliability engineers who find every single point of failure, scaling bottleneck, and operational nightmare that will cause outages when you least expect them.",
-      {
-        infrastructure: z.string().describe("Infrastructure setup, deployment strategy, or operations plan"),
-        scale: z.string().optional().describe("Expected scale and load patterns"),
-        budget: z.string().optional().describe("Infrastructure budget or cost constraints"),
-        sla: z.string().optional().describe("SLA requirements or uptime targets"),
-        preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
-        models: z.object({
-          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
-          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
-        }).optional().describe("Specific models to use for each CLI agent")
-      },
-      async (args) => {
-        try {
-          const systemPrompt = `You are a brutal infrastructure critic - a grizzled site reliability engineer who finds every single point of failure, scaling bottleneck, and operational nightmare that will cause outages when you least expect them. Your job is to systematically obliterate the given infrastructure design by finding every weakness that will lead to downtime, cost overruns, and operational disasters. Be ruthlessly honest about infrastructure fragility and operational complexity. After demolishing this infrastructure fever dream, grudgingly map out what actually stays up at 3 AM.`;
-          
-          const result = await this.executeBrutalistAnalysis(
-            "infrastructure",
-            args.infrastructure,
-            systemPrompt,
-            `Scale: ${args.scale || 'unknown'}, Budget: ${args.budget || 'unlimited?'}, SLA: ${args.sla || 'undefined'}`,
-            undefined, // workingDirectory
-            undefined, // enableSandbox
-            args.preferredCLI,
-            undefined, // verbose
-            args.models
-          );
-
-          return this.formatToolResponse(result);
-        } catch (error) {
-          return this.formatErrorResponse(error);
-        }
-      }
-    );
-
+  private registerSpecialTools() {
     // ROAST_CLI_DEBATE: Adversarial analysis between different CLI agents
     this.server.tool(
       "roast_cli_debate",
@@ -703,6 +293,13 @@ export class BrutalistServer {
           roster += `**Current CLI:** ${cliContext.currentCLI || 'Unknown'}\n`;
           roster += `**Smart Routing:** ${cliContext.currentCLI ? `Excludes ${cliContext.currentCLI} for analysis` : 'Uses all available CLIs'}\n\n`;
           
+          roster += "## Pagination Support (NEW in v0.5.2)\n";
+          roster += "**All tools now support intelligent pagination:**\n";
+          roster += "- Analysis results are cached with 2-hour TTL\n";
+          roster += "- Use `analysis_id` from response to paginate without re-running\n";
+          roster += "- Smart text chunking preserves readability\n";
+          roster += "- Example: `roast_codebase(analysis_id: 'a3f5c2d8', offset: 25000)`\n\n";
+          
           roster += "## Brutalist Philosophy\n";
           roster += "*All tools use CLI agents with brutal system prompts for maximum reality-based criticism.*\n";
           
@@ -714,7 +311,116 @@ export class BrutalistServer {
         }
       }
     );
-
+  }
+  /**
+   * Unified handler for all roast tools - DRY principle
+   */
+  private async handleRoastTool(
+    config: ToolConfig,
+    args: any,
+    extra: any
+  ): Promise<any> {
+    try {
+      const progressToken = extra._meta?.progressToken;
+      
+      // Extract pagination parameters
+      const paginationParams = extractPaginationParams(args);
+      if (args.cursor) {
+        const cursorParams = parseCursor(args.cursor);
+        Object.assign(paginationParams, cursorParams);
+      }
+      
+      // Check cache if analysis_id provided
+      if (args.analysis_id && !args.force_refresh) {
+        const cachedContent = await this.responseCache.get(args.analysis_id);
+        if (cachedContent) {
+          logger.info(`🎯 Using cached result for analysis_id: ${args.analysis_id}`);
+          const cachedResult: BrutalistResponse = {
+            success: true,
+            responses: [{
+              agent: 'cached' as any,
+              success: true,
+              output: cachedContent,
+              executionTime: 0
+            }]
+          };
+          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, args.analysis_id);
+        }
+      }
+      
+      // Generate cache key for this request
+      const cacheKey = this.responseCache.generateCacheKey(
+        config.cacheKeyFields.reduce((acc, field) => {
+          acc.tool = config.name;
+          if (args[field] !== undefined) acc[field] = args[field];
+          return acc;
+        }, {} as Record<string, any>)
+      );
+      
+      // Check if we have a cached result (unless forcing refresh)
+      if (!args.force_refresh) {
+        const cachedContent = await this.responseCache.get(cacheKey);
+        if (cachedContent) {
+          const analysisId = this.responseCache.generateAnalysisId(cacheKey);
+          logger.info(`🎯 Cache hit for new request, using analysis_id: ${analysisId}`);
+          const cachedResult: BrutalistResponse = {
+            success: true,
+            responses: [{
+              agent: 'cached' as any,
+              success: true,
+              output: cachedContent,
+              executionTime: 0
+            }]
+          };
+          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, analysisId);
+        }
+      }
+      
+      // Build context with custom builder if available
+      const context = config.contextBuilder ? config.contextBuilder(args) : args.context;
+      
+      // Get the primary argument (targetPath, idea, architecture, etc.)
+      const primaryArg = args[config.primaryArgField];
+      
+      // Run the analysis
+      const result = await this.executeBrutalistAnalysis(
+        config.analysisType,
+        primaryArg,
+        config.systemPrompt,
+        context,
+        args.workingDirectory,
+        args.enableSandbox,
+        args.preferredCLI,
+        args.verbose,
+        args.models,
+        progressToken
+      );
+      
+      // Cache the result if successful
+      let analysisId: string | undefined;
+      if (result.success && result.responses.length > 0) {
+        const fullContent = this.extractFullContent(result);
+        if (fullContent) {
+          const cacheData = config.cacheKeyFields.reduce((acc, field) => {
+            acc.tool = config.name;
+            if (args[field] !== undefined) acc[field] = args[field];
+            return acc;
+          }, {} as Record<string, any>);
+          
+          const { analysisId: newId } = await this.responseCache.set(
+            cacheData,
+            fullContent,
+            cacheKey
+          );
+          analysisId = newId;
+          logger.info(`✅ Cached analysis result with ID: ${analysisId}`);
+        }
+      }
+      
+      return this.formatToolResponse(result, args.verbose, paginationParams, analysisId);
+    } catch (error) {
+      return this.formatErrorResponse(error);
+    }
   }
 
   private async executeCLIDebate(
@@ -1054,7 +760,34 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
   }
 
 
-  private formatToolResponse(result: BrutalistResponse, verbose: boolean = false, paginationParams?: PaginationParams) {
+  /**
+   * Extract full content from analysis result for caching
+   */
+  private extractFullContent(result: BrutalistResponse): string | null {
+    if (result.synthesis) {
+      return result.synthesis;
+    } else if (result.responses && result.responses.length > 0) {
+      const successfulResponses = result.responses.filter(r => r.success);
+      if (successfulResponses.length > 0) {
+        let output = `${successfulResponses.length} AI critics have systematically demolished your work.\n\n`;
+        
+        successfulResponses.forEach((response, index) => {
+          output += `## Critic ${index + 1}: ${response.agent.toUpperCase()}\n`;
+          output += `*Execution time: ${response.executionTime}ms*\n\n`;
+          output += response.output;
+          // Only add separator between critics, not after the last one
+          if (index < successfulResponses.length - 1) {
+            output += '\n\n---\n\n';
+          }
+        });
+        
+        return output;
+      }
+    }
+    return null;
+  }
+
+  private formatToolResponse(result: BrutalistResponse, verbose: boolean = false, paginationParams?: PaginationParams, analysisId?: string) {
     logger.info(`🔧 DEBUG: formatToolResponse called with synthesis length: ${result.synthesis?.length || 0}`);
     logger.info(`🔧 DEBUG: result.success=${result.success}, responses.length=${result.responses?.length || 0}`);
     logger.info(`🔧 DEBUG: pagination params:`, paginationParams);
@@ -1075,7 +808,7 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     
     // Handle pagination if params provided and content is substantial
     if (paginationParams && primaryContent) {
-      return this.formatPaginatedResponse(primaryContent, paginationParams, result, verbose);
+      return this.formatPaginatedResponse(primaryContent, paginationParams, result, verbose, analysisId);
     }
     
     // Non-paginated response (legacy behavior)
@@ -1114,7 +847,8 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     content: string, 
     paginationParams: PaginationParams, 
     result: BrutalistResponse, 
-    verbose: boolean
+    verbose: boolean,
+    analysisId?: string
   ) {
     // Using imported pagination utilities
     
@@ -1123,40 +857,67 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     
     logger.info(`🔧 DEBUG: Paginating content - offset: ${offset}, limit: ${limit}, total: ${content.length}`);
     
-    // Simple character-based pagination for immediate Claude Code compatibility
-    const endOffset = Math.min(offset + limit, content.length);
-    const chunk = content.substring(offset, endOffset);
+    // Use ResponseChunker for intelligent boundary detection
+    const chunker = new ResponseChunker(limit, 200); // 200 char overlap
+    const chunks = chunker.chunkText(content);
+    
+    // Find the appropriate chunk based on offset
+    let targetChunk = chunks[0]; // Default to first chunk
+    let currentOffset = 0;
+    
+    for (const chunk of chunks) {
+      if (offset >= chunk.startOffset && offset < chunk.endOffset) {
+        targetChunk = chunk;
+        break;
+      }
+      currentOffset = chunk.endOffset;
+    }
+    
+    const chunkContent = targetChunk.content;
+    const actualOffset = targetChunk.startOffset;
+    const endOffset = targetChunk.endOffset;
     
     // Create pagination metadata
     const pagination = createPaginationMetadata(content.length, paginationParams, limit);
     const statusLine = formatPaginationStatus(pagination);
     
     // Estimate token usage for user awareness
-    const chunkTokens = estimateTokenCount(chunk);
+    const chunkTokens = estimateTokenCount(chunkContent);
     const totalTokens = estimateTokenCount(content);
     
     // Format response with pagination info
     let paginatedText = '';
     
-    // Add pagination header
+    // Add pagination header with analysis ID
     paginatedText += `# Brutalist Analysis Results\n\n`;
     paginatedText += `**📊 Pagination Status:** ${statusLine}\n`;
+    if (analysisId) {
+      paginatedText += `**🔑 Analysis ID:** ${analysisId}\n`;
+    }
     paginatedText += `**🔢 Token Estimate:** ~${chunkTokens.toLocaleString()} tokens (chunk) / ~${totalTokens.toLocaleString()} tokens (total)\n\n`;
     
     if (pagination.hasMore) {
-      paginatedText += `**⏭️ Continue Reading:** Use \`offset: ${endOffset}\` for next chunk\n\n`;
+      if (analysisId) {
+        paginatedText += `**⏭️ Continue Reading:** Use \`analysis_id: "${analysisId}", offset: ${endOffset}\`\n\n`;
+      } else {
+        paginatedText += `**⏭️ Continue Reading:** Use \`offset: ${endOffset}\` for next chunk\n\n`;
+      }
     }
     
     paginatedText += `---\n\n`;
     
     // Add the actual content chunk
-    paginatedText += chunk;
+    paginatedText += chunkContent;
     
     // Add footer for continuation
     if (pagination.hasMore) {
       paginatedText += `\n\n---\n\n`;
       paginatedText += `📖 **End of chunk ${pagination.chunkIndex}/${pagination.totalChunks}**\n`;
-      paginatedText += `🔄 To continue: Use same tool with \`offset: ${endOffset}\``;
+      if (analysisId) {
+        paginatedText += `🔄 To continue: Include \`analysis_id: "${analysisId}"\` with \`offset: ${endOffset}\` in next request`;
+      } else {
+        paginatedText += `🔄 To continue: Use same tool with \`offset: ${endOffset}\``;
+      }
     } else {
       paginatedText += `\n\n---\n\n`;
       paginatedText += `✅ **Complete analysis shown** (${content.length.toLocaleString()} characters total)`;
@@ -1172,7 +933,7 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
       }
     }
     
-    logger.info(`🔧 DEBUG: Returning paginated chunk - ${chunk.length} chars (${chunkTokens} tokens)`);
+    logger.info(`🔧 DEBUG: Returning paginated chunk - ${chunkContent.length} chars (${chunkTokens} tokens)`);
     
     return {
       content: [{ 

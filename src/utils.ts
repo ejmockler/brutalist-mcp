@@ -15,16 +15,39 @@ export function resolveAndValidatePath(
   userPath: string,
   mustExist: boolean = false
 ): string {
+  // Check for null byte injection before any path operations
+  if (userPath.includes('\0')) {
+    throw new Error(`Path traversal detected`);
+  }
+
   const absoluteProjectRoot = realpathSync(projectRoot);
+  
+  // For absolute paths, check if they start outside project root immediately
+  if (resolve(userPath) === userPath) { // userPath is absolute
+    if (!userPath.startsWith(absoluteProjectRoot + sep) && userPath !== absoluteProjectRoot) {
+      throw new Error(`Path traversal detected`);
+    }
+  }
+  
   const resolvedPath = resolve(absoluteProjectRoot, userPath);
-  const absoluteResolvedPath = realpathSync(resolvedPath);
+  
+  let absoluteResolvedPath: string;
+  const pathExists = existsSync(resolvedPath);
+  
+  if (pathExists) {
+    // Use realpathSync to resolve symlinks and detect traversal for existing paths
+    absoluteResolvedPath = realpathSync(resolvedPath);
+  } else {
+    // For non-existent paths, use logical resolution for traversal detection
+    absoluteResolvedPath = resolvedPath;
+  }
 
   // Ensure the resolved path is a sub-path of the project root
   if (!absoluteResolvedPath.startsWith(absoluteProjectRoot + sep) && absoluteResolvedPath !== absoluteProjectRoot) {
-    throw new Error(`Path traversal detected: ${userPath} resolves outside project root.`);
+    throw new Error(`Path traversal detected`);
   }
 
-  if (mustExist && !existsSync(absoluteResolvedPath)) {
+  if (mustExist && !pathExists) {
     throw new Error(`Path does not exist: ${userPath}`);
   }
 

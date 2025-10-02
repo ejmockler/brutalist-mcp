@@ -18,23 +18,6 @@ export interface CLIAgentResponse {
   exitCode?: number;
 }
 
-export interface BrutalistResponse {
-  success: boolean;
-  responses: CLIAgentResponse[];
-  synthesis?: string;
-  error?: string;
-  analysisType?: string;
-  targetPath?: string;
-  executionSummary?: {
-    totalCLIs: number;
-    successfulCLIs: number;
-    failedCLIs: number;
-    totalExecutionTime: number;
-    selectedCLI?: string;
-    selectionMethod?: string;
-  };
-}
-
 export interface RoastOptions {
   targetPath: string;
   analysisType: string;

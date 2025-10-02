@@ -14,6 +14,69 @@ Three brutal CLI agents that can analyze anything. Each agent brings different p
 
 Real file-system analysis. Actual brutal prompts. Intelligent pagination for enterprise codebases. No participation trophies.
 
+### Prerequisites
+
+Install at least one CLI agent:
+- **Claude Code**: `npm install -g claude` (or via Claude desktop app)
+- **Codex**: Install from [OpenAI Codex](https://github.com/openai/codex-cli)
+- **Gemini**: `npm install -g @google/gemini-cli` or authenticate via `gemini auth`
+
+### Setup
+
+<details>
+<summary><strong>Claude Code</strong> — One-liner</summary>
+
+```bash
+claude mcp add brutalist --scope user -- npx -y @brutalist/mcp
+```
+</details>
+
+<details>
+<summary><strong>VS Code / Cline</strong> — Manual config</summary>
+
+```bash
+code --add-mcp '{"name":"brutalist","command":"npx","args":["-y","@brutalist/mcp"]}'
+```
+</details>
+
+<details>
+<summary><strong>Gemini CLI</strong> — One-liner</summary>
+
+```bash
+gemini mcp add brutalist -- npx -y @brutalist/mcp
+```
+</details>
+
+<details>
+<summary><strong>Cursor</strong> — Manual config</summary>
+
+Add to `~/.cursor/mcp.json` or use **Settings → MCP & Integrations**
+
+```json
+{
+  "brutalist": {
+    "command": "npx",
+    "args": ["-y", "@brutalist/mcp"]
+  }
+}
+```
+</details>
+
+<details>
+<summary><strong>Windsurf</strong> — Manual config</summary>
+
+Add to `~/.codeium/windsurf/mcp_config.json` or use **Plugin Store**
+
+```json
+{
+  "brutalist": {
+    "command": "npx",
+    "args": ["-y", "@brutalist/mcp"]
+  }
+}
+```
+</details>
+
 ## Brutalist Workflows
 
 ### 🔍 **Codebase Destruction**
@@ -111,69 +174,6 @@ This MCP server orchestrates brutal feedback from locally installed CLI agents:
 Each agent runs locally on your machine with custom brutal prompts to find real problems before production fails.
 
 **⏱️ Analysis Timeout:** 25 minutes default - thorough analysis takes time to find real issues. Complex codebases and architectural reviews need deep analysis to catch subtle problems that quick scans miss.
-
-## Setup
-
-### Prerequisites
-
-Install at least one CLI agent:
-- **Claude Code**: `npm install -g claude` (or via Claude desktop app)
-- **Codex**: Install from [OpenAI Codex](https://github.com/openai/codex-cli)
-- **Gemini**: `npm install -g @google/gemini-cli` or authenticate via `gemini auth`
-
-<details>
-<summary><strong>Claude Code</strong> — One-liner</summary>
-
-```bash
-claude mcp add brutalist --scope user -- npx -y @brutalist/mcp
-```
-</details>
-
-<details>
-<summary><strong>VS Code / Cline</strong> — Manual config</summary>
-
-```bash
-code --add-mcp '{"name":"brutalist","command":"npx","args":["-y","@brutalist/mcp"]}'
-```
-</details>
-
-<details>
-<summary><strong>Gemini CLI</strong> — One-liner</summary>
-
-```bash
-gemini mcp add brutalist -- npx -y @brutalist/mcp
-```
-</details>
-
-<details>
-<summary><strong>Cursor</strong> — Manual config</summary>
-
-Add to `~/.cursor/mcp.json` or use **Settings → MCP & Integrations**
-
-```json
-{
-  "brutalist": {
-    "command": "npx",
-    "args": ["-y", "@brutalist/mcp"]
-  }
-}
-```
-</details>
-
-<details>
-<summary><strong>Windsurf</strong> — Manual config</summary>
-
-Add to `~/.codeium/windsurf/mcp_config.json` or use **Plugin Store**
-
-```json
-{
-  "brutalist": {
-    "command": "npx",
-    "args": ["-y", "@brutalist/mcp"]
-  }
-}
-```
-</details>
 
 ## 📄 Pagination Support (v0.5.0+)
 

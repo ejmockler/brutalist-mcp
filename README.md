@@ -14,6 +14,8 @@ Three brutal CLI agents that can analyze anything. Each agent brings different p
 
 Real file-system analysis. Actual brutal prompts. Intelligent pagination for enterprise codebases. No participation trophies.
 
+## Setup
+
 ### Prerequisites
 
 Install at least one CLI agent:
@@ -21,7 +23,7 @@ Install at least one CLI agent:
 - **Codex**: Install from [OpenAI Codex](https://github.com/openai/codex-cli)
 - **Gemini**: `npm install -g @google/gemini-cli` or authenticate via `gemini auth`
 
-### Setup
+### Installation
 
 <details>
 <summary><strong>Claude Code</strong> — One-liner</summary>

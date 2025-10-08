@@ -3,15 +3,13 @@ export default {
   testEnvironment: 'node',
   setupFiles: ['<rootDir>/jest.setup.js'],
   setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
-  roots: ['<rootDir>/tests/unit', '<rootDir>/src'],
+  roots: ['<rootDir>/tests', '<rootDir>/src'],
   testPathIgnorePatterns: [
-    '<rootDir>/tests/integration/',
-    '<rootDir>/tests/e2e/',
     '<rootDir>/node_modules/'
   ],
   testMatch: [
-    '<rootDir>/tests/unit/**/*.test.ts',
-    '<rootDir>/tests/unit/**/*.spec.ts'
+    '<rootDir>/tests/**/*.test.ts',
+    '<rootDir>/tests/**/*.spec.ts'
   ],
   collectCoverageFrom: [
     'src/**/*.ts',

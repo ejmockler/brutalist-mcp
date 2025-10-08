@@ -378,12 +378,11 @@ await spawnAsync('codex', args, {
 const assistantMessages = parseCodexJsonOutput(stdout);
 ```
 
-#### Gemini CLI (Working - Security Compromises Required)
+#### Gemini CLI (Working)
 ```javascript
-// CRITICAL: Uses --yolo flag and combined prompt as positional argument
+// Uses combined prompt as positional argument
 const args = ['--model', 'gemini-2.5-flash'];
 if (sandbox) args.push('--sandbox');
-args.push('--yolo'); // REQUIRED: Auto-approves file operations
 const combinedPrompt = `${systemPrompt}\n\n${userPrompt}`;
 args.push(combinedPrompt); // Positional argument, NOT stdin
 
@@ -403,12 +402,6 @@ await spawnAsync('gemini', args, {
 
 ### Security Compromises Made
 
-**YOLO Mode (Gemini)**:
-- `--yolo` flag auto-approves ALL file operations without user consent
-- This is required because MCP runs in non-interactive context
-- Sandbox mode provides some protection but not complete isolation
-- **Risk**: Prompt injection could lead to arbitrary file access
-
 **Environment Inheritance**:
 - All CLI agents inherit full parent environment variables
 - **Risk**: API keys and secrets exposed to spawned processes
@@ -423,9 +416,9 @@ await spawnAsync('gemini', args, {
 
 **Gemini Hanging Issues**:
 1. Check `detached: false` is set for Gemini specifically
-2. Ensure `--yolo` flag is present
-3. Use positional argument, NOT `--prompt` flag or stdin
-4. Environment variables must include `TERM: 'dumb'`
+2. Use positional argument, NOT `--prompt` flag or stdin
+3. Environment variables must include `TERM: 'dumb'`
+4. Avoid large prompts that may hit argument length limits
 
 **Timeout Issues**:
 - Claude: Minimum 10 minutes for complex analysis
@@ -473,7 +466,7 @@ args.push('--append-system-prompt', systemPrompt); // Times out
 - **Gemini + stdin**: CLI expects interactive terminal, hangs in non-TTY context
 - **Gemini + detached**: macOS sandbox conflicts with detached process groups
 - **GEMINI_SYSTEM_MD**: Environment variable expects file path, not content
-- **--yolo removal**: Gemini waits for file access approval that never comes
+- **Large prompts**: Gemini may exit early with very large combined prompts
 - **Claude --append-system-prompt**: Flag causes timeout issues in spawn context
 
 ## Codex Output Improvements (v0.5.2)

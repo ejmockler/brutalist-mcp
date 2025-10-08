@@ -37,7 +37,6 @@ export const BASE_ROAST_SCHEMA = {
   // Context and execution parameters
   context: z.string().optional().describe("Additional context about the analysis"),
   workingDirectory: z.string().optional().describe("Working directory to execute from"),
-  enableSandbox: z.boolean().optional().describe("Enable sandbox mode for safe analysis (default: true)"),
   preferredCLI: z.enum(["claude", "codex", "gemini"]).optional().describe("Preferred CLI agent to use (default: use all available CLIs)"),
   verbose: z.boolean().optional().describe("Include detailed execution information in output (default: false)"),
   

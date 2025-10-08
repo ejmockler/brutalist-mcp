@@ -15,7 +15,6 @@ interface RoastCodebaseParams {
   targetPath: string;
   context?: string;
   workingDirectory?: string;
-  enableSandbox?: boolean;
   preferredCLI?: "claude" | "codex" | "gemini";
   verbose?: boolean;
   models?: {
@@ -176,7 +175,6 @@ describe('BrutalistServer', () => {
       
       expect(server.config.workingDirectory).toBe(process.cwd());
       expect(server.config.defaultTimeout).toBe(1500000);
-      expect(server.config.enableSandbox).toBe(true);
       expect(server.config.transport).toBe('stdio');
       expect(server.config.httpPort).toBe(3000);
     });
@@ -186,7 +184,6 @@ describe('BrutalistServer', () => {
       
       expect(server.config.workingDirectory).toBe('/tmp/test');
       expect(server.config.defaultTimeout).toBe(5000);
-      expect(server.config.enableSandbox).toBe(true);
     });
 
     it('should initialize MCP server with correct metadata', () => {
@@ -266,7 +263,6 @@ describe('BrutalistServer', () => {
         // Should have optional parameters
         expect(schema).toHaveProperty('context');
         expect(schema).toHaveProperty('workingDirectory');
-        expect(schema).toHaveProperty('enableSandbox');
       }
     });
   });
@@ -310,7 +306,6 @@ describe('BrutalistServer', () => {
           'You are a battle-scarred principal engineer who has debugged production disasters for 15 years.',
           'Critical production system',
           '/tmp/test',
-          true, // enableSandbox
           undefined, // preferredCLI
           false, // verbose
           undefined, // models
@@ -324,7 +319,7 @@ describe('BrutalistServer', () => {
           'Critical production system',
           expect.objectContaining({
             workingDirectory: '/tmp/test',
-            sandbox: true,
+            analysisType: 'codebase',
             timeout: 5000
           })
         );
@@ -356,7 +351,7 @@ describe('BrutalistServer', () => {
           undefined,
           expect.objectContaining({
             workingDirectory: '/tmp/test',
-            sandbox: true,
+            analysisType: 'codebase',
             timeout: 5000
           })
         );
@@ -372,7 +367,6 @@ describe('BrutalistServer', () => {
           'System prompt',
           undefined,
           '/tmp/test',
-          true,
           'codex',
           false,
           { codex: 'gpt-5-codex', gemini: 'gemini-2.5-pro' },
@@ -558,8 +552,8 @@ describe('BrutalistServer', () => {
     });
 
     it('should respect sandbox settings', () => {
-      const server = new BrutalistServer({ enableSandbox: false });
-      expect(server.config.enableSandbox).toBe(false);
+      const server = new BrutalistServer({ transport: 'stdio' });
+      expect(server.config.transport).toBe('stdio');
     });
 
     it('should configure HTTP transport when specified', () => {

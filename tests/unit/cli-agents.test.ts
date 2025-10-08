@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { tmpdir } from 'os';
 import { CLIAgentOrchestrator, BrutalistPromptType } from '../../src/cli-agents.js';
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
@@ -360,12 +361,14 @@ describe('CLIAgentOrchestrator', () => {
 
     it('should handle CLI timeout', async () => {
       // Test very short timeout to force timeout behavior
+      // Create a valid temp directory for testing
+      const tempDir = tmpdir();
       const responses = await orchestrator.executeBrutalistAnalysis(
-        'codebase',
-        '/very/large/path/that/would/take/forever',
+        'idea',
+        'A complex startup idea that would require extensive analysis',
         'test prompt',
         undefined,
-        { timeout: 50 } // 50ms timeout should force timeout
+        { timeout: 50, workingDirectory: tempDir } // 50ms timeout should force timeout
       );
 
       expect(Array.isArray(responses)).toBe(true);
@@ -534,7 +537,6 @@ describe('CLIAgentOrchestrator', () => {
         {
           preferredCLI: targetCLI,
           timeout: 45000,
-          sandbox: true
         }
       );
 
@@ -551,7 +553,7 @@ describe('CLIAgentOrchestrator', () => {
         expect(response.output).toBeTruthy();
         expect(typeof response.output).toBe('string');
         console.log(`${targetCLI} execution succeeded in ${response.executionTime}ms`);
-        console.log('Output preview:', response.output.substring(0, 200) + '...');
+        console.log('Output preview:', response.output?.substring(0, 200) + '...');
       } else {
         console.log(`${targetCLI} execution failed:`, response.error);
         expect(response.error).toBeTruthy();
@@ -583,7 +585,6 @@ describe('CLIAgentOrchestrator', () => {
         {
           preferredCLI: context.availableCLIs[0],
           timeout: 2000, // 2 second timeout should cause timeout
-          sandbox: true
         }
       );
 
@@ -623,7 +624,6 @@ describe('CLIAgentOrchestrator', () => {
         'Real CLI synthesis test',
         {
           timeout: 60000,
-          sandbox: true
         }
       );
 

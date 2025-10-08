@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { gzip, gunzip } from 'zlib';
 import { promisify } from 'util';
 import { logger } from '../logger.js';
@@ -14,6 +14,27 @@ export interface CachedResponse {
   requestParams: Record<string, unknown>;
   compressed: boolean;
   size: number;
+  sessionId?: string; // Session binding for security
+  requestId?: string; // Request tracking
+}
+
+// Analysis ID mapping for secure lookup
+interface AnalysisIdMapping {
+  cacheKey: string;
+  sessionId: string;
+  created: number;
+}
+
+// Cache entry with session context
+interface CachedResponseEntry {
+  content: string;
+  metadata: Record<string, unknown>;
+  timestamp: number;
+  accessCount: number;
+  size: number;
+  compressed?: boolean;
+  sessionId?: string;
+  requestId?: string;
 }
 
 export interface CacheStats {
@@ -28,7 +49,8 @@ export interface CacheStats {
  * LRU Response Cache with TTL and memory management
  */
 export class ResponseCache {
-  private cache = new Map<string, CachedResponse>();
+  private entries = new Map<string, CachedResponseEntry>();
+  private analysisIdMap = new Map<string, AnalysisIdMapping>(); // NEW: ID to cache mapping
   private accessOrder: string[] = [];
   private stats: CacheStats = {
     entries: 0,
@@ -94,122 +116,170 @@ export class ResponseCache {
   }
 
   /**
-   * Generate short analysis ID from cache key
+   * Generate secure analysis ID (UUID instead of 8-char hash)
    */
   generateAnalysisId(cacheKey: string): string {
-    return cacheKey.substring(0, 8);
+    return randomUUID(); // Full UUID for security
   }
 
   /**
-   * Store response in cache
+   * Store response with session binding
    */
   async set(
-    params: Record<string, unknown>,
-    content: string,
-    forceKey?: string
-  ): Promise<{ cacheKey: string; analysisId: string }> {
-    const cacheKey = forceKey || this.generateCacheKey(params);
-    const analysisId = this.generateAnalysisId(cacheKey);
-
-    // Check entry size
-    const contentSize = Buffer.byteLength(content, 'utf-8');
-    const sizeMB = contentSize / (1024 * 1024);
+    data: Record<string, any>, 
+    content: string, 
+    cacheKey?: string,
+    sessionId?: string,
+    requestId?: string
+  ): Promise<{ analysisId: string; cacheKey: string }> {
+    const finalCacheKey = cacheKey || this.generateCacheKey(data);
+    const analysisId = this.generateAnalysisId(finalCacheKey);
     
-    if (sizeMB > this.maxEntrySizeMB) {
-      logger.warn(`⚠️ Response too large for cache: ${sizeMB.toFixed(2)}MB > ${this.maxEntrySizeMB}MB`);
-      return { cacheKey, analysisId };
+    // Check size limits before compression
+    const sizeInMB = Buffer.byteLength(content, 'utf8') / (1024 * 1024);
+    if (sizeInMB > this.maxEntrySizeMB) {
+      throw new Error(`Response too large: ${sizeInMB.toFixed(2)}MB > ${this.maxEntrySizeMB}MB limit`);
     }
-
+    
     // Compress if needed
     let finalContent = content;
     let compressed = false;
-    
-    if (sizeMB > this.compressionThresholdMB) {
+    if (sizeInMB > this.compressionThresholdMB) {
       try {
-        const compressedBuffer = await gzipAsync(Buffer.from(content, 'utf-8'));
-        const compressedSize = compressedBuffer.length / (1024 * 1024);
-        logger.info(`🗜️ Compressed response: ${sizeMB.toFixed(2)}MB → ${compressedSize.toFixed(2)}MB`);
+        const compressedBuffer = await gzipAsync(Buffer.from(content, 'utf8'));
         finalContent = compressedBuffer.toString('base64');
         compressed = true;
+        logger.debug(`📦 Compressed cache entry: ${sizeInMB.toFixed(2)}MB -> ${(compressedBuffer.length / (1024 * 1024)).toFixed(2)}MB`);
       } catch (error) {
-        logger.error('Compression failed:', error);
+        logger.warn("Failed to compress cache entry, storing uncompressed", error);
       }
     }
-
-    // Check total cache size
-    await this.ensureCapacity(contentSize);
-
-    // Store in cache
-    const entry: CachedResponse = {
+    
+    // Create cache entry with session binding
+    const entry: CachedResponseEntry = {
       content: finalContent,
+      metadata: { 
+        ...data, 
+        sessionId,
+        requestId,
+        originalSize: sizeInMB 
+      },
       timestamp: Date.now(),
-      analysisId,
-      cacheKey,
-      requestParams: params,
+      accessCount: 1,
+      size: Buffer.byteLength(finalContent, 'utf8'),
       compressed,
-      size: compressed ? Buffer.byteLength(finalContent, 'base64') : contentSize
+      sessionId,
+      requestId
     };
-
-    this.cache.set(cacheKey, entry);
-    this.cache.set(analysisId, entry); // Also index by short ID
-    this.updateAccessOrder(cacheKey); // Only track cache key in LRU order
     
-    this.stats.entries = this.cache.size / 2; // Divided by 2 because we store twice
-    this.stats.totalSize += entry.size;
-
-    logger.info(`✅ Cached response: ${analysisId} (${sizeMB.toFixed(2)}MB${compressed ? ' compressed' : ''})`);
+    // Store in cache
+    this.entries.set(finalCacheKey, entry);
     
-    return { cacheKey, analysisId };
+    // Map analysis ID to cache key with session binding
+    this.analysisIdMap.set(analysisId, {
+      cacheKey: finalCacheKey,
+      sessionId: sessionId || 'anonymous',
+      created: Date.now()
+    });
+    
+    // Update access order for LRU
+    this.updateAccessOrder(finalCacheKey);
+    
+    // Update stats
+    this.stats.entries = this.entries.size;
+    this.stats.totalSize = Array.from(this.entries.values()).reduce((sum, e) => sum + e.size, 0);
+    
+    // Ensure capacity limits
+    await this.ensureCapacity();
+    
+    logger.debug(`✅ Cached response with analysis_id: ${analysisId} for session: ${sessionId?.substring(0, 8)}...`);
+    
+    return { analysisId, cacheKey: finalCacheKey };
   }
 
   /**
-   * Retrieve response from cache
+   * Retrieve response with session validation
    */
-  async get(keyOrId: string): Promise<string | null> {
-    const entry = this.cache.get(keyOrId);
+  async get(analysisIdOrCacheKey: string, sessionId?: string): Promise<string | null> {
+    let cacheKey: string;
+    let requiredSessionId: string | undefined;
     
+    // Check if it's an analysis ID first
+    const mapping = this.analysisIdMap.get(analysisIdOrCacheKey);
+    if (mapping) {
+      cacheKey = mapping.cacheKey;
+      requiredSessionId = mapping.sessionId;
+      
+      // Validate session access
+      if (requiredSessionId !== 'anonymous') {
+        if (!sessionId || sessionId !== requiredSessionId) {
+          logger.warn(`🚫 Session mismatch for analysis ${analysisIdOrCacheKey}: ${sessionId?.substring(0, 8) || 'none'} != ${requiredSessionId?.substring(0, 8)}`);
+          this.stats.misses++;
+          return null; // Block cross-session access
+        }
+      }
+    } else {
+      // Direct cache key access (legacy support)
+      cacheKey = analysisIdOrCacheKey;
+    }
+    
+    const entry = this.entries.get(cacheKey);
     if (!entry) {
       this.stats.misses++;
-      logger.debug(`❌ Cache miss: ${keyOrId}`);
       return null;
     }
-
+    
     // Check TTL
-    const age = Date.now() - entry.timestamp;
-    if (age > this.ttlMs) {
-      logger.info(`⏰ Cache expired: ${keyOrId} (age: ${(age / 1000 / 60).toFixed(0)} minutes)`);
-      this.delete(keyOrId);
+    if (Date.now() - entry.timestamp > this.ttlMs) {
+      logger.debug(`⏰ Cache entry expired: ${cacheKey.substring(0, 8)}...`);
+      this.entries.delete(cacheKey);
+      // Also clean up analysis ID mapping
+      if (mapping) {
+        this.analysisIdMap.delete(analysisIdOrCacheKey);
+      }
+      this.stats.misses++;
+      this.stats.evictions++;
+      return null;
+    }
+    
+    // Additional session validation on the entry itself
+    if (sessionId && entry.sessionId && entry.sessionId !== sessionId && entry.sessionId !== 'anonymous') {
+      logger.warn(`🚫 Entry session mismatch for ${cacheKey.substring(0, 8)}: ${sessionId?.substring(0, 8)} != ${entry.sessionId?.substring(0, 8)}`);
       this.stats.misses++;
       return null;
     }
-
-    // Update access order (always use cache key for consistency)
-    this.updateAccessOrder(entry.cacheKey);
+    
+    // Update access tracking
+    entry.accessCount++;
+    this.updateAccessOrder(cacheKey);
     this.stats.hits++;
     
-    logger.info(`✅ Cache hit: ${keyOrId} (age: ${(age / 1000 / 60).toFixed(0)} minutes)`);
-
     // Decompress if needed
+    let content = entry.content;
     if (entry.compressed) {
       try {
-        const buffer = Buffer.from(entry.content, 'base64');
-        const decompressed = await gunzipAsync(buffer);
-        return decompressed.toString('utf-8');
+        const compressedBuffer = Buffer.from(content, 'base64');
+        const decompressedBuffer = await gunzipAsync(compressedBuffer);
+        content = decompressedBuffer.toString('utf8');
       } catch (error) {
-        logger.error('Decompression failed:', error);
-        this.delete(keyOrId);
+        logger.error("Failed to decompress cache entry", error);
         return null;
       }
     }
-
-    return entry.content;
+    
+    logger.debug(`🎯 Cache hit for session ${sessionId?.substring(0, 8)}...: ${cacheKey.substring(0, 8)}...`);
+    return content;
   }
 
   /**
    * Check if key exists in cache
    */
   has(keyOrId: string): boolean {
-    const entry = this.cache.get(keyOrId);
+    // Check analysis ID mapping first
+    const mapping = this.analysisIdMap.get(keyOrId);
+    const cacheKey = mapping ? mapping.cacheKey : keyOrId;
+    
+    const entry = this.entries.get(cacheKey);
     if (!entry) return false;
     
     // Check if expired
@@ -226,15 +296,22 @@ export class ResponseCache {
    * Delete entry from cache
    */
   private delete(keyOrId: string): void {
-    const entry = this.cache.get(keyOrId);
+    // Check analysis ID mapping first
+    const mapping = this.analysisIdMap.get(keyOrId);
+    const cacheKey = mapping ? mapping.cacheKey : keyOrId;
+    
+    const entry = this.entries.get(cacheKey);
     if (entry) {
       this.stats.totalSize -= entry.size;
-      // Delete both the cache key and analysis ID
-      this.cache.delete(entry.cacheKey);
-      this.cache.delete(entry.analysisId);
+      // Delete from entries
+      this.entries.delete(cacheKey);
+      // Remove from analysis ID mapping if it exists
+      if (mapping) {
+        this.analysisIdMap.delete(keyOrId);
+      }
       // Remove cache key from access order
-      this.accessOrder = this.accessOrder.filter(k => k !== entry.cacheKey);
-      this.stats.entries = this.cache.size / 2;
+      this.accessOrder = this.accessOrder.filter(k => k !== cacheKey);
+      this.stats.entries = this.entries.size;
     }
   }
 
@@ -249,11 +326,11 @@ export class ResponseCache {
   /**
    * Ensure cache has capacity for new entry
    */
-  private async ensureCapacity(newEntrySize: number): Promise<void> {
+  private async ensureCapacity(): Promise<void> {
     const maxTotalSize = this.maxTotalSizeMB * 1024 * 1024;
     
     // Check total size limit
-    while (this.stats.totalSize + newEntrySize > maxTotalSize && this.accessOrder.length > 0) {
+    while (this.stats.totalSize > maxTotalSize && this.accessOrder.length > 0) {
       const oldestKey = this.accessOrder[0];
       logger.info(`🗑️ Evicting for size limit: ${oldestKey}`);
       this.delete(oldestKey);
@@ -261,7 +338,7 @@ export class ResponseCache {
     }
 
     // Check entry count limit
-    while (this.cache.size / 2 >= this.maxEntries && this.accessOrder.length > 0) {
+    while (this.entries.size >= this.maxEntries && this.accessOrder.length > 0) {
       const oldestKey = this.accessOrder[0];
       logger.info(`🗑️ Evicting for entry limit: ${oldestKey}`);
       this.delete(oldestKey);
@@ -276,7 +353,7 @@ export class ResponseCache {
     const now = Date.now();
     let cleaned = 0;
     
-    for (const [key, entry] of this.cache.entries()) {
+    for (const [key, entry] of this.entries.entries()) {
       if (now - entry.timestamp > this.ttlMs) {
         this.delete(key);
         cleaned++;
@@ -296,10 +373,77 @@ export class ResponseCache {
   }
 
   /**
+   * Retrieve response by analysis ID, returning full cached response object
+   */
+  async getByAnalysisId(analysisId: string, sessionId?: string): Promise<CachedResponse | null> {
+    const mapping = this.analysisIdMap.get(analysisId);
+    if (!mapping) {
+      this.stats.misses++;
+      logger.debug(`❌ Cache miss by analysis ID: ${analysisId}`);
+      return null;
+    }
+    
+    // Validate session access
+    if (sessionId && mapping.sessionId !== sessionId && mapping.sessionId !== 'anonymous') {
+      logger.warn(`🚫 Session mismatch for analysis ${analysisId}: ${sessionId?.substring(0, 8)} != ${mapping.sessionId?.substring(0, 8)}`);
+      this.stats.misses++;
+      return null;
+    }
+    
+    const entry = this.entries.get(mapping.cacheKey);
+    if (!entry) {
+      this.stats.misses++;
+      return null;
+    }
+
+    // Check TTL
+    const age = Date.now() - entry.timestamp;
+    if (age > this.ttlMs) {
+      logger.info(`⏰ Cache expired: ${analysisId} (age: ${(age / 1000 / 60).toFixed(0)} minutes)`);
+      this.delete(analysisId);
+      this.stats.misses++;
+      return null;
+    }
+
+    // Update access order
+    this.updateAccessOrder(mapping.cacheKey);
+    this.stats.hits++;
+    
+    logger.info(`✅ Cache hit by analysis ID: ${analysisId} (age: ${(age / 1000 / 60).toFixed(0)} minutes)`);
+
+    // Decompress if needed
+    let content = entry.content;
+    if (entry.compressed) {
+      try {
+        const buffer = Buffer.from(entry.content, 'base64');
+        const decompressed = await gunzipAsync(buffer);
+        content = decompressed.toString('utf-8');
+      } catch (error) {
+        logger.error('Decompression failed:', error);
+        this.delete(analysisId);
+        return null;
+      }
+    }
+
+    return {
+      content,
+      timestamp: entry.timestamp,
+      analysisId,
+      cacheKey: mapping.cacheKey,
+      requestParams: entry.metadata,
+      compressed: entry.compressed || false,
+      size: entry.size,
+      sessionId: entry.sessionId,
+      requestId: entry.requestId
+    };
+  }
+
+  /**
    * Clear entire cache
    */
   clear(): void {
-    this.cache.clear();
+    this.entries.clear();
+    this.analysisIdMap.clear();
     this.accessOrder = [];
     this.stats = {
       entries: 0,

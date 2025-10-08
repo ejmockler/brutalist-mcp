@@ -1,15 +1,17 @@
 export interface BrutalistServerConfig {
   workingDirectory?: string;
   defaultTimeout?: number;
-  enableSandbox?: boolean;
   transport?: 'stdio' | 'http';
   httpPort?: number;
+  // CORS configuration for security
+  corsOrigins?: string[]; // Allowed origins
+  allowCORSWildcard?: boolean; // Explicit opt-in for wildcard (dev only)
 }
 
 export interface CLIAgentResponse {
   agent: 'claude' | 'codex' | 'gemini';
   success: boolean;
-  output: string;
+  output?: string;
   error?: string;
   executionTime: number;
   command?: string;
@@ -23,7 +25,6 @@ export interface RoastOptions {
   analysisType: string;
   context?: string;
   workingDirectory?: string;
-  enableSandbox?: boolean;
   agents?: ('claude' | 'codex' | 'gemini')[];
 }
 

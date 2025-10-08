@@ -34,12 +34,19 @@ export class BrutalistServer {
   private cliOrchestrator: CLIAgentOrchestrator;
   private httpTransport?: StreamableHTTPServerTransport;
   private responseCache: ResponseCache;
+  private actualPort?: number;
+  private shutdownHandler?: () => void;
+  // Session tracking for security
+  private activeSessions = new Map<string, {
+    startTime: number;
+    requestCount: number;
+    lastActivity: number;
+  }>();
 
   constructor(config: BrutalistServerConfig = {}) {
     this.config = {
       workingDirectory: process.cwd(),
       defaultTimeout: 1500000, // 25 minutes for thorough CLI analysis
-      enableSandbox: true,
       transport: 'stdio', // Default to stdio for backward compatibility
       httpPort: 3000,
       ...config
@@ -63,7 +70,11 @@ export class BrutalistServer {
       name: "brutalist-mcp",
       version: PACKAGE_VERSION,
       capabilities: {
-        tools: {}
+        tools: {},
+        logging: {},
+        experimental: {
+          streaming: true
+        }
       }
     });
 
@@ -71,41 +82,93 @@ export class BrutalistServer {
   }
 
   private handleStreamingEvent = (event: StreamingEvent) => {
-    // Send streaming event via MCP server (works for both stdio and HTTP transports)
     try {
-      logger.debug(`🔄 Streaming event: ${event.type} from ${event.agent} - ${event.content?.substring(0, 100)}...`);
+      if (!event.sessionId) {
+        logger.warn("⚠️ Streaming event without session ID - dropping for security");
+        return;
+      }
       
-      // Convert streaming event to MCP notification format
-      this.server.sendLoggingMessage({
-        level: 'info',
-        data: event,
-        logger: 'brutalist-mcp-streaming'
-      });
+      logger.debug(`🔄 Session-scoped streaming: ${event.type} from ${event.agent} to session ${event.sessionId.substring(0, 8)}...`);
       
-      logger.debug(`✅ Sent logging message for ${event.type} event`);
+      // For HTTP transport: send session-specific notification
+      if (this.httpTransport) {
+        // Use MCP server's notification system with session context
+        this.server.server.notification({
+          method: "notifications/message",
+          params: {
+            level: 'info',
+            data: {
+              type: 'streaming_event',
+              sessionId: event.sessionId,
+              agent: event.agent,
+              eventType: event.type,
+              content: event.content?.substring(0, 1000), // Truncate for safety
+              timestamp: event.timestamp
+            },
+            logger: 'brutalist-mcp-streaming'
+          }
+        });
+      }
+      // For STDIO transport: still send but with session info
+      else {
+        this.server.sendLoggingMessage({
+          level: 'info',
+          data: {
+            sessionId: event.sessionId,
+            agent: event.agent,
+            type: event.type,
+            content: event.content?.substring(0, 500) // More restrictive for stdio
+          },
+          logger: 'brutalist-mcp-streaming'
+        });
+      }
+      
+      // Update session activity
+      if (this.activeSessions.has(event.sessionId)) {
+        this.activeSessions.get(event.sessionId)!.lastActivity = Date.now();
+      }
+      
     } catch (error) {
-      logger.error("Failed to send streaming event", error);
+      logger.error("💥 Failed to send session-scoped streaming event", {
+        error: error instanceof Error ? error.message : String(error),
+        sessionId: event.sessionId?.substring(0, 8)
+      });
     }
   };
 
-  private handleProgressUpdate = (progressToken: string | number, progress: number, total: number, message: string) => {
+  private handleProgressUpdate = (
+    progressToken: string | number, 
+    progress: number, 
+    total: number, 
+    message: string,
+    sessionId?: string
+  ) => {
     try {
-      logger.debug(`📊 Progress update: ${progress}/${total} - ${message}`);
+      if (!sessionId) {
+        logger.warn("⚠️ Progress update without session ID - dropping for security");
+        return;
+      }
       
-      // Send progress notification via MCP server
+      logger.debug(`📊 Session progress: ${progress}/${total} for session ${sessionId.substring(0, 8)}...`);
+      
+      // Send progress notification with session context
       this.server.server.notification({
         method: "notifications/progress",
         params: {
           progressToken,
           progress,
           total,
-          message
+          message: `[${sessionId.substring(0, 8)}] ${message}`, // Include session prefix
+          sessionId // Include in notification data
         }
       });
       
-      logger.debug(`✅ Sent progress notification: ${progress}/${total}`);
+      logger.debug(`✅ Sent session-scoped progress notification: ${progress}/${total}`);
     } catch (error) {
-      logger.error("Failed to send progress notification", error);
+      logger.error("💥 Failed to send progress notification", {
+        error: error instanceof Error ? error.message : String(error),
+        sessionId: sessionId?.substring(0, 8)
+      });
     }
   };
 
@@ -152,15 +215,62 @@ export class BrutalistServer {
     const app = express();
     app.use(express.json({ limit: '10mb' })); // Add JSON size limit for security
     
-    // Enable CORS for development
+    // Secure CORS implementation
     app.use((req: Request, res: Response, next: NextFunction) => {
-      res.header('Access-Control-Allow-Origin', '*');
-      res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
+      const origin = req.headers.origin;
+      const isProduction = process.env.NODE_ENV === 'production';
+      
+      // Define safe default origins for development
+      const defaultDevOrigins = [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:8080',
+        'http://127.0.0.1:8080',
+        'http://localhost:3001',
+        'http://127.0.0.1:3001'
+      ];
+      
+      // Get allowed origins from config or use defaults
+      const allowedOrigins = this.config.corsOrigins || defaultDevOrigins;
+      const allowWildcard = this.config.allowCORSWildcard === true && !isProduction;
+      
+      // Determine if origin is allowed
+      let allowedOrigin: string | null = null;
+      
+      if (allowWildcard) {
+        // Only in development with explicit opt-in
+        allowedOrigin = '*';
+        logger.warn("⚠️ Using wildcard CORS - only safe in development!");
+      } else if (!origin) {
+        // No origin header (same-origin or direct server access)
+        allowedOrigin = defaultDevOrigins[0]; // Default fallback
+      } else if (allowedOrigins.includes(origin)) {
+        // Explicitly allowed origin
+        allowedOrigin = origin;
+      } else {
+        // Rejected origin
+        logger.warn(`🚫 CORS rejected origin: ${origin}`);
+        allowedOrigin = null;
+      }
+      
+      // Set headers only if origin is allowed
+      if (allowedOrigin) {
+        res.header('Access-Control-Allow-Origin', allowedOrigin);
+        res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.header('Access-Control-Allow-Headers', 'Content-Type, Mcp-Session-Id');
+        // Removed Authorization header for security
+        res.header('Access-Control-Allow-Credentials', 'false'); // Explicit false
+      }
+      
       if (req.method === 'OPTIONS') {
-        res.sendStatus(200);
+        if (allowedOrigin) {
+          res.sendStatus(200);
+        } else {
+          res.sendStatus(403); // Forbidden for disallowed origins
+        }
         return;
       }
+      
       next();
     });
 
@@ -182,21 +292,48 @@ export class BrutalistServer {
     });
 
     // Start the HTTP server - bind to localhost only for security
-    const port = this.config.httpPort || 3000;
-    const server = app.listen(port, '127.0.0.1', () => {
-      logger.info(`HTTP server listening on port ${port}`);
-      logger.info(`MCP endpoint: http://localhost:${port}/mcp`);
-      logger.info(`Health check: http://localhost:${port}/health`);
-    });
-
-    // Handle graceful shutdown
-    process.on('SIGTERM', () => {
-      logger.info('Received SIGTERM, shutting down gracefully');
-      server.close(() => {
-        logger.info('HTTP server closed');
-        process.exit(0);
+    const port = this.config.httpPort ?? 3000;
+    
+    return new Promise<void>((resolve, reject) => {
+      const server = app.listen(port, '127.0.0.1', () => {
+        const actualPort = (server.address() as any)?.port || port;
+        this.actualPort = actualPort;
+        logger.info(`HTTP server listening on port ${actualPort}`);
+        logger.info(`MCP endpoint: http://localhost:${actualPort}/mcp`);
+        logger.info(`Health check: http://localhost:${actualPort}/health`);
+        resolve();
       });
+      
+      server.on('error', (error) => {
+        logger.error('HTTP server failed to start', error);
+        reject(error);
+      });
+
+      // Handle graceful shutdown - avoid duplicate listeners
+      if (!this.shutdownHandler) {
+        this.shutdownHandler = () => {
+          logger.info('Received SIGTERM, shutting down gracefully');
+          server.close(() => {
+            logger.info('HTTP server closed');
+            process.exit(0);
+          });
+        };
+        process.on('SIGTERM', this.shutdownHandler);
+      }
     });
+  }
+
+  // Getter for actual listening port (useful for tests)
+  public getActualPort(): number | undefined {
+    return this.actualPort;
+  }
+
+  // Cleanup method for tests - remove event listeners
+  public cleanup(): void {
+    if (this.shutdownHandler) {
+      process.removeListener('SIGTERM', this.shutdownHandler);
+      this.shutdownHandler = undefined;
+    }
   }
 
   private registerTools() {
@@ -229,7 +366,6 @@ export class BrutalistServer {
         debateRounds: z.number().optional().describe("Number of debate rounds (default: 2, max: 10)"),
         context: z.string().optional().describe("Additional context for the debate"),
         workingDirectory: z.string().optional().describe("Working directory for analysis"),
-        enableSandbox: z.boolean().optional().describe("Enable sandbox mode for security"),
         models: z.object({
           claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
           codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
@@ -244,7 +380,6 @@ export class BrutalistServer {
             debateRounds,
             args.context,
             args.workingDirectory,
-            args.enableSandbox,
             args.models
           );
           return responses;
@@ -283,7 +418,7 @@ export class BrutalistServer {
           
           roster += "## CLI Agent Capabilities\n";
           roster += "**Claude Code** - Advanced analysis with direct system prompt injection\n";
-          roster += "**Codex** - Sandboxed execution with embedded brutal prompts\n";
+          roster += "**Codex** - Secure execution with embedded brutal prompts\n";
           roster += "**Gemini CLI** - Workspace context with environment variable system prompts\n\n";
           
           // Add CLI context information
@@ -323,6 +458,43 @@ export class BrutalistServer {
     try {
       const progressToken = extra._meta?.progressToken;
       
+      // Extract session context for security
+      const sessionId = extra?.sessionId || 
+                        extra?._meta?.sessionId || 
+                        extra?.headers?.['mcp-session-id'] ||
+                        `anonymous-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      
+      const requestId = `${sessionId}-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      
+      logger.debug(`🔐 Processing request with session: ${sessionId.substring(0, 8)}..., request: ${requestId.substring(0, 12)}...`);
+      
+      // Track session activity
+      if (!this.activeSessions.has(sessionId)) {
+        this.activeSessions.set(sessionId, {
+          startTime: Date.now(),
+          requestCount: 0,
+          lastActivity: Date.now()
+        });
+      }
+      const sessionInfo = this.activeSessions.get(sessionId)!;
+      sessionInfo.requestCount++;
+      sessionInfo.lastActivity = Date.now();
+      
+      // Debug logging: Log the received arguments to file
+      const fs = require('fs');
+      const debugLog = `/tmp/brutalist-tool-debug-${Date.now()}.log`;
+      const logMessage = (msg: string) => {
+        try {
+          fs.appendFileSync(debugLog, `${new Date().toISOString()}: ${msg}\n`);
+        } catch (e) {
+          // Ignore filesystem errors
+        }
+      };
+      
+      logMessage(`🔧 ROAST TOOL DEBUG: Tool=${config.name}, primaryArgField=${config.primaryArgField}`);
+      logMessage(`🔧 ROAST TOOL DEBUG: args=${JSON.stringify(args, null, 2)}`);
+      logMessage(`🔧 ROAST TOOL DEBUG: extra=${JSON.stringify(extra, null, 2)}`);
+      
       // Extract pagination parameters
       const paginationParams = extractPaginationParams(args);
       if (args.cursor) {
@@ -332,9 +504,9 @@ export class BrutalistServer {
       
       // Check cache if analysis_id provided
       if (args.analysis_id && !args.force_refresh) {
-        const cachedContent = await this.responseCache.get(args.analysis_id);
+        const cachedContent = await this.responseCache.get(args.analysis_id, sessionId);
         if (cachedContent) {
-          logger.info(`🎯 Using cached result for analysis_id: ${args.analysis_id}`);
+          logger.info(`🎯 Session-validated cache hit for analysis_id: ${args.analysis_id}`);
           const cachedResult: BrutalistResponse = {
             success: true,
             responses: [{
@@ -345,6 +517,8 @@ export class BrutalistServer {
             }]
           };
           return this.formatToolResponse(cachedResult, args.verbose, paginationParams, args.analysis_id);
+        } else {
+          logger.info(`🔍 No valid cache entry for analysis_id: ${args.analysis_id} and session: ${sessionId?.substring(0, 8)}`);
         }
       }
       
@@ -359,7 +533,7 @@ export class BrutalistServer {
       
       // Check if we have a cached result (unless forcing refresh)
       if (!args.force_refresh) {
-        const cachedContent = await this.responseCache.get(cacheKey);
+        const cachedContent = await this.responseCache.get(cacheKey, sessionId);
         if (cachedContent) {
           const analysisId = this.responseCache.generateAnalysisId(cacheKey);
           logger.info(`🎯 Cache hit for new request, using analysis_id: ${analysisId}`);
@@ -382,6 +556,9 @@ export class BrutalistServer {
       // Get the primary argument (targetPath, idea, architecture, etc.)
       const primaryArg = args[config.primaryArgField];
       
+      logMessage(`🔧 PRIMARY ARG DEBUG: primaryArgField=${config.primaryArgField}, primaryArg="${primaryArg}"`);
+      logMessage(`🔧 PRIMARY ARG DEBUG: config.analysisType="${config.analysisType}"`);
+      
       // Run the analysis
       const result = await this.executeBrutalistAnalysis(
         config.analysisType,
@@ -389,11 +566,12 @@ export class BrutalistServer {
         config.systemPrompt,
         context,
         args.workingDirectory,
-        args.enableSandbox,
         args.preferredCLI,
         args.verbose,
         args.models,
-        progressToken
+        progressToken,
+        sessionId,
+        requestId
       );
       
       // Cache the result if successful
@@ -410,10 +588,12 @@ export class BrutalistServer {
           const { analysisId: newId } = await this.responseCache.set(
             cacheData,
             fullContent,
-            cacheKey
+            cacheKey,
+            sessionId,  // NEW: Bind to session
+            requestId   // NEW: Track request
           );
           analysisId = newId;
-          logger.info(`✅ Cached analysis result with ID: ${analysisId}`);
+          logger.info(`✅ Cached analysis result with ID: ${analysisId} for session: ${sessionId?.substring(0, 8)}`);
         }
       }
       
@@ -428,7 +608,6 @@ export class BrutalistServer {
     debateRounds: number,
     context?: string,
     workingDirectory?: string,
-    enableSandbox?: boolean,
     models?: {
       claude?: string;
       codex?: string;
@@ -439,8 +618,7 @@ export class BrutalistServer {
       targetPath,
       debateRounds,
       workingDirectory,
-      enableSandbox
-    });
+          });
 
     try {
       // Get CLI context
@@ -497,7 +675,6 @@ Remember: You are ${agent.toUpperCase()}, the passionate champion of ${position.
           assignedPrompt,
           {
             workingDirectory: workingDirectory || this.config.workingDirectory,
-            sandbox: enableSandbox ?? this.config.enableSandbox,
             timeout: (this.config.defaultTimeout || 60000) * 2,
             models: models ? { [agent]: models[agent as keyof typeof models] } : undefined
           }
@@ -505,7 +682,9 @@ Remember: You are ${agent.toUpperCase()}, the passionate champion of ${position.
         
         if (response.success) {
           debateContext.push(response);
-          fullDebateTranscript.get(agent)?.push(response.output);
+          if (response.output) {
+            fullDebateTranscript.get(agent)?.push(response.output);
+          }
         }
       }
       
@@ -557,7 +736,6 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
             confrontationalPrompt,
             {
               workingDirectory: workingDirectory || this.config.workingDirectory,
-              sandbox: enableSandbox ?? this.config.enableSandbox,
               timeout: (this.config.defaultTimeout || 60000) * 2,
               models: models ? { [currentAgent]: models[currentAgent as keyof typeof models] } : undefined
             }
@@ -565,7 +743,9 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
           
           if (response.success) {
             debateContext.push(response);
-            fullDebateTranscript.get(currentAgent)?.push(response.output);
+            if (response.output) {
+              fullDebateTranscript.get(currentAgent)?.push(response.output);
+            }
           }
         }
       }
@@ -614,7 +794,9 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
       if (!agentOutputs.has(response.agent)) {
         agentOutputs.set(response.agent, []);
       }
-      agentOutputs.get(response.agent)?.push(response.output);
+      if (response.output) {
+        agentOutputs.get(response.agent)?.push(response.output);
+      }
     });
     
     synthesis += `## Key Points of Conflict\n\n`;
@@ -675,11 +857,10 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
 
   private async executeBrutalistAnalysis(
     analysisType: BrutalistPromptType,
-    targetPath: string, 
+    primaryContent: string, 
     systemPromptSpec: string,
     context?: string,
     workingDirectory?: string,
-    enableSandbox?: boolean,
     preferredCLI?: 'claude' | 'codex' | 'gemini',
     verbose?: boolean,
     models?: {
@@ -687,16 +868,17 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
       codex?: string;
       gemini?: string;
     },
-    progressToken?: string | number
+    progressToken?: string | number,
+    sessionId?: string,
+    requestId?: string
   ): Promise<BrutalistResponse> {
     logger.info(`🏢 Starting brutalist analysis: ${analysisType}`);
-    logger.info(`🔧 DEBUG: preferredCLI=${preferredCLI}, targetPath=${targetPath}`);
+    logger.info(`🔧 DEBUG: preferredCLI=${preferredCLI}, primaryContent=${primaryContent}`);
     logger.debug("Executing brutalist analysis", { 
-      targetPath,
+      primaryContent,
       analysisType,
       systemPromptSpec,
       workingDirectory,
-      enableSandbox,
       preferredCLI
     });
 
@@ -711,19 +893,22 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
       logger.info(`🔧 DEBUG: About to call cliOrchestrator.executeBrutalistAnalysis`);
       const responses = await this.cliOrchestrator.executeBrutalistAnalysis(
         analysisType,
-        targetPath,
+        primaryContent,
         systemPromptSpec,
         context,
         {
           workingDirectory: workingDirectory || this.config.workingDirectory,
-          sandbox: enableSandbox ?? this.config.enableSandbox,
           timeout: this.config.defaultTimeout,
           preferredCLI,
           analysisType: analysisType as BrutalistPromptType,
           models,
           onStreamingEvent: this.handleStreamingEvent,
           progressToken,
-          onProgress: progressToken ? this.handleProgressUpdate.bind(this, progressToken) : undefined
+          onProgress: progressToken && sessionId ? 
+            (progress: number, total: number, message: string) => 
+              this.handleProgressUpdate(progressToken, progress, total, message, sessionId) : undefined,
+          sessionId,
+          requestId
         }
       );
       logger.info(`🔧 DEBUG: cliOrchestrator.executeBrutalistAnalysis returned ${responses.length} responses`);
@@ -741,7 +926,7 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
         responses,
         synthesis,
         analysisType,
-        targetPath,
+        targetPath: primaryContent,
         executionSummary: {
           totalCLIs: responses.length,
           successfulCLIs: successfulResponses.length,
@@ -888,19 +1073,25 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     // Format response with pagination info
     let paginatedText = '';
     
-    // Add pagination header with analysis ID
+    // Add header
     paginatedText += `# Brutalist Analysis Results\n\n`;
-    paginatedText += `**📊 Pagination Status:** ${statusLine}\n`;
-    if (analysisId) {
-      paginatedText += `**🔑 Analysis ID:** ${analysisId}\n`;
-    }
-    paginatedText += `**🔢 Token Estimate:** ~${chunkTokens.toLocaleString()} tokens (chunk) / ~${totalTokens.toLocaleString()} tokens (total)\n\n`;
     
-    if (pagination.hasMore) {
+    // Only show pagination metadata if pagination is actually needed
+    const needsPagination = pagination.totalChunks > 1 || pagination.hasMore;
+    
+    if (needsPagination) {
+      paginatedText += `**📊 Pagination Status:** ${statusLine}\n`;
       if (analysisId) {
-        paginatedText += `**⏭️ Continue Reading:** Use \`analysis_id: "${analysisId}", offset: ${endOffset}\`\n\n`;
-      } else {
-        paginatedText += `**⏭️ Continue Reading:** Use \`offset: ${endOffset}\` for next chunk\n\n`;
+        paginatedText += `**🔑 Analysis ID:** ${analysisId}\n`;
+      }
+      paginatedText += `**🔢 Token Estimate:** ~${chunkTokens.toLocaleString()} tokens (chunk) / ~${totalTokens.toLocaleString()} tokens (total)\n\n`;
+      
+      if (pagination.hasMore) {
+        if (analysisId) {
+          paginatedText += `**⏭️ Continue Reading:** Use \`analysis_id: "${analysisId}", offset: ${endOffset}\`\n\n`;
+        } else {
+          paginatedText += `**⏭️ Continue Reading:** Use \`offset: ${endOffset}\` for next chunk\n\n`;
+        }
       }
     }
     
@@ -909,18 +1100,19 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     // Add the actual content chunk
     paginatedText += chunkContent;
     
-    // Add footer for continuation
-    if (pagination.hasMore) {
+    // Add footer
+    if (needsPagination) {
       paginatedText += `\n\n---\n\n`;
-      paginatedText += `📖 **End of chunk ${pagination.chunkIndex}/${pagination.totalChunks}**\n`;
-      if (analysisId) {
-        paginatedText += `🔄 To continue: Include \`analysis_id: "${analysisId}"\` with \`offset: ${endOffset}\` in next request`;
+      if (pagination.hasMore) {
+        paginatedText += `📖 **End of chunk ${pagination.chunkIndex}/${pagination.totalChunks}**\n`;
+        if (analysisId) {
+          paginatedText += `🔄 To continue: Include \`analysis_id: "${analysisId}"\` with \`offset: ${endOffset}\` in next request`;
+        } else {
+          paginatedText += `🔄 To continue: Use same tool with \`offset: ${endOffset}\``;
+        }
       } else {
-        paginatedText += `🔄 To continue: Use same tool with \`offset: ${endOffset}\``;
+        paginatedText += `✅ **Complete analysis shown** (${content.length.toLocaleString()} characters total)`;
       }
-    } else {
-      paginatedText += `\n\n---\n\n`;
-      paginatedText += `✅ **Complete analysis shown** (${content.length.toLocaleString()} characters total)`;
     }
     
     // Add verbose execution details if requested
@@ -954,7 +1146,7 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
       if (error.message.includes('timeout') || error.message.includes('Timeout')) {
         sanitizedMessage = "Analysis timed out - try reducing scope or increasing timeout";
       } else if (error.message.includes('ENOENT') || error.message.includes('no such file')) {
-        sanitizedMessage = "Target path not found";
+        sanitizedMessage = `DEBUG: Target path not found - Original error: ${error.message}`;
       } else if (error.message.includes('EACCES') || error.message.includes('permission denied')) {
         sanitizedMessage = "Permission denied - check file access";
       } else if (error.message.includes('No CLI agents available')) {

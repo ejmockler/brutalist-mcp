@@ -1,14 +1,27 @@
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { BrutalistServer } from '../../src/brutalist-server.js';
 import { defaultTestConfig } from '../fixtures/test-configs.js';
+import { 
+  extractPaginationParams,
+  createPaginationMetadata,
+  formatPaginationStatus,
+  parseCursor,
+  estimateTokenCount,
+  ResponseChunker,
+  PAGINATION_DEFAULTS
+} from '../../src/utils/pagination.js';
+import { TestIsolation } from '../../src/test-utils/test-isolation.js';
 
 // E2E Pagination Integration Tests
-// These tests require the full server stack without mocks
+// These tests verify pagination utility functions work correctly
 
 describe('Pagination E2E Integration', () => {
   let server: BrutalistServer;
+  let testIsolation: TestIsolation;
   
-  beforeAll(() => {
+  beforeEach(() => {
+    testIsolation = new TestIsolation('pagination-e2e');
+    
     server = new BrutalistServer({
       ...defaultTestConfig,
       transport: 'stdio' // Use stdio for direct testing
@@ -18,7 +31,8 @@ describe('Pagination E2E Integration', () => {
     jest.setTimeout(120000); // 2 minutes
   });
 
-  afterAll(() => {
+  afterEach(async () => {
+    await testIsolation.cleanup();
     jest.setTimeout(30000); // Reset timeout
   });
 
@@ -32,8 +46,8 @@ describe('Pagination E2E Integration', () => {
         context: 'E2E pagination test'
       };
 
-      // Test that server can process pagination parameters
-      const result = await (server as any).extractPaginationParams(mockArgs);
+      // Test that pagination utility can process pagination parameters
+      const result = extractPaginationParams(mockArgs);
       
       expect(result).toEqual({
         offset: 5000,
@@ -48,13 +62,13 @@ describe('Pagination E2E Integration', () => {
         cursor: 'offset:10000'
       };
 
-      const result = await (server as any).extractPaginationParams(mockArgs);
+      const result = extractPaginationParams(mockArgs);
       
       expect(result.offset).toBe(0); // Direct params
       expect(result.cursor).toBe('offset:10000');
       
       // Test cursor parsing
-      const parsedCursor = (server as any).parseCursor('offset:10000');
+      const parsedCursor = parseCursor('offset:10000');
       expect(parsedCursor).toEqual({ offset: 10000 });
     });
 
@@ -66,20 +80,20 @@ describe('Pagination E2E Integration', () => {
         cursor: undefined
       };
 
-      const extractedParams = (server as any).extractPaginationParams(validParams);
+      const extractedParams = extractPaginationParams(validParams);
       
       expect(extractedParams.offset).toBe(1000);
       expect(extractedParams.limit).toBe(25000);
     });
 
     it('should enforce limit constraints', async () => {
-      // Test that server enforces limits correctly
+      // Test that pagination utility enforces limits correctly
       const tooHighLimit = {
         offset: 0,
         limit: 150000 // Above max of 100000
       };
 
-      const extractedParams = (server as any).extractPaginationParams(tooHighLimit);
+      const extractedParams = extractPaginationParams(tooHighLimit);
       
       // Should be clamped to maximum
       expect(extractedParams.limit).toBe(100000);
@@ -91,7 +105,7 @@ describe('Pagination E2E Integration', () => {
         limit: 500 // Below min of 1000
       };
 
-      const extractedParams = (server as any).extractPaginationParams(tooLowLimit);
+      const extractedParams = extractPaginationParams(tooLowLimit);
       
       // Should be clamped to minimum
       expect(extractedParams.limit).toBe(1000);
@@ -103,7 +117,7 @@ describe('Pagination E2E Integration', () => {
       const testContent = 'A'.repeat(50000); // 50KB test content
       const paginationParams = { offset: 0, limit: 20000, cursor: undefined };
       
-      const metadata = (server as any).createPaginationMetadata(
+      const metadata = createPaginationMetadata(
         testContent.length,
         paginationParams,
         20000
@@ -127,10 +141,11 @@ describe('Pagination E2E Integration', () => {
         limit: 15000,
         hasMore: true,
         chunkIndex: 2,
-        totalChunks: 4
+        totalChunks: 4,
+        nextCursor: 'offset:35000'
       };
 
-      const status = (server as any).formatPaginationStatus(metadata);
+      const status = formatPaginationStatus(metadata);
       
       expect(status).toBe('Part 2/4: chars 20,000-35,000 of 50,000 • Use offset parameter to continue');
     });
@@ -145,7 +160,7 @@ describe('Pagination E2E Integration', () => {
         totalChunks: 2
       };
 
-      const status = (server as any).formatPaginationStatus(metadata);
+      const status = formatPaginationStatus(metadata);
       
       expect(status).toBe('Part 2/2: chars 20,000-30,000 of 30,000 • Complete');
     });
@@ -160,7 +175,7 @@ describe('Pagination E2E Integration', () => {
         totalChunks: 1
       };
 
-      const status = (server as any).formatPaginationStatus(metadata);
+      const status = formatPaginationStatus(metadata);
       
       expect(status).toBe('Complete response (5,000 characters)');
     });
@@ -176,14 +191,14 @@ describe('Pagination E2E Integration', () => {
       ];
 
       testTexts.forEach(({ text, expectedTokens }) => {
-        const tokens = (server as any).estimateTokenCount(text);
+        const tokens = estimateTokenCount(text);
         expect(tokens).toBe(expectedTokens);
       });
     });
 
     it('should handle unicode characters in token estimation', () => {
       const unicodeText = '测试文本🚀🔥'; // Mixed unicode
-      const tokens = (server as any).estimateTokenCount(unicodeText);
+      const tokens = estimateTokenCount(unicodeText);
       
       // Should use character length for estimation
       expect(tokens).toBe(Math.ceil(unicodeText.length / 4));
@@ -192,7 +207,7 @@ describe('Pagination E2E Integration', () => {
 
   describe('Response Chunking Integration', () => {
     it('should create response chunks with smart boundaries', () => {
-      const chunker = new (server as any).ResponseChunker(100, 20);
+      const chunker = new ResponseChunker(100, 20);
       const testText = 'Word '.repeat(50); // 250 chars with word boundaries
       
       const chunks = chunker.chunkText(testText);
@@ -207,7 +222,7 @@ describe('Pagination E2E Integration', () => {
     });
 
     it('should preserve sentence boundaries when possible', () => {
-      const chunker = new (server as any).ResponseChunker(50, 10);
+      const chunker = new ResponseChunker(50, 10);
       const testText = 'First sentence. Second sentence that is longer. Third sentence.';
       
       const chunks = chunker.chunkText(testText);
@@ -221,8 +236,8 @@ describe('Pagination E2E Integration', () => {
 
   describe('Configuration Integration', () => {
     it('should respect pagination defaults from configuration', () => {
-      expect((server as any).PAGINATION_DEFAULTS).toEqual({
-        DEFAULT_LIMIT: 25000,
+      expect(PAGINATION_DEFAULTS).toEqual({
+        DEFAULT_LIMIT: 90000, // Updated to correct value
         MAX_LIMIT: 100000,
         MIN_LIMIT: 1000,
         CHUNK_OVERLAP: 200
@@ -231,10 +246,10 @@ describe('Pagination E2E Integration', () => {
 
     it('should use configuration values in parameter extraction', () => {
       const emptyParams = {};
-      const extracted = (server as any).extractPaginationParams(emptyParams);
+      const extracted = extractPaginationParams(emptyParams);
       
       expect(extracted.offset).toBe(0);
-      expect(extracted.limit).toBe(25000); // DEFAULT_LIMIT
+      expect(extracted.limit).toBe(90000); // DEFAULT_LIMIT (updated)
       expect(extracted.cursor).toBeUndefined();
     });
   });
@@ -242,21 +257,21 @@ describe('Pagination E2E Integration', () => {
   describe('Error Handling Integration', () => {
     it('should handle malformed JSON cursors gracefully', () => {
       const malformedCursor = '{"offset": 1000, invalid json}';
-      const parsed = (server as any).parseCursor(malformedCursor);
+      const parsed = parseCursor(malformedCursor);
       
       expect(parsed).toEqual({}); // Should return empty object on parse failure
     });
 
     it('should handle non-numeric cursor values gracefully', () => {
       const invalidCursor = 'offset:not-a-number';
-      const parsed = (server as any).parseCursor(invalidCursor);
+      const parsed = parseCursor(invalidCursor);
       
       expect(parsed).toEqual({}); // Should return empty object
     });
 
     it('should handle negative offset gracefully', () => {
       const params = { offset: -1000, limit: 5000 };
-      const extracted = (server as any).extractPaginationParams(params);
+      const extracted = extractPaginationParams(params);
       
       expect(extracted.offset).toBe(0); // Should clamp to 0
     });

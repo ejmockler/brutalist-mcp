@@ -80,10 +80,11 @@ export const TOOL_CONFIGS: ToolConfig[] = [
     systemPrompt: "You are a brutal reality-checker who has watched a thousand startups die and brilliant ideas fail. Find every flaw in feasibility, every market delusion, every technical impossibility, every human factor that will kill this idea. After destroying it, grudgingly admit what tiny kernel might actually work.",
     schemaExtensions: {
       idea: z.string().describe("ANY idea to analyze and demolish - business, technical, creative, or otherwise"),
+      targetPath: z.string().describe("Directory context for CLI execution (can be '.' for current directory)"),
       resources: z.string().optional().describe("Available resources (budget, team, time, skills)"),
       timeline: z.string().optional().describe("Expected timeline or deadline")
     },
-    cacheKeyFields: ['idea', 'resources', 'timeline', 'context'],
+    cacheKeyFields: ['idea', 'targetPath', 'resources', 'timeline', 'context'],
     primaryArgField: 'idea',
     contextBuilder: (args: any) => {
       let ctx = args.context || '';
@@ -100,11 +101,12 @@ export const TOOL_CONFIGS: ToolConfig[] = [
     systemPrompt: "You are an architect who has watched beautiful systems die under load. Find every single point of failure, every scaling bottleneck, every cost explosion, every complexity trap. Explain why this architecture will crumble when it meets reality.",
     schemaExtensions: {
       architecture: z.string().describe("Architecture description, diagram, or design document"),
+      targetPath: z.string().describe("Directory context for CLI execution (can be '.' for current directory)"),
       scale: z.string().optional().describe("Expected scale/load (users, requests, data)"),
       constraints: z.string().optional().describe("Budget, timeline, or technical constraints"),
       deployment: z.string().optional().describe("Deployment environment and strategy")
     },
-    cacheKeyFields: ['architecture', 'scale', 'constraints', 'deployment', 'context'],
+    cacheKeyFields: ['architecture', 'targetPath', 'scale', 'constraints', 'deployment', 'context'],
     primaryArgField: 'architecture',
     contextBuilder: (args: any) => {
       let ctx = args.context || '';
@@ -122,11 +124,12 @@ export const TOOL_CONFIGS: ToolConfig[] = [
     systemPrompt: "You are the harshest peer reviewer in academia. Find every methodological flaw, every statistical error, every sampling bias, every p-hacking attempt, every reproducibility crisis waiting to happen. Demolish this research with the fury of someone who has seen too much bad science.",
     schemaExtensions: {
       research: z.string().describe("Research description, methodology, or paper draft"),
+      targetPath: z.string().describe("Directory context for CLI execution (can be '.' for current directory)"),
       field: z.string().optional().describe("Research field (ML, systems, theory, etc.)"),
       claims: z.string().optional().describe("Main claims or contributions"),
       data: z.string().optional().describe("Data sources, datasets, or experimental setup")
     },
-    cacheKeyFields: ['research', 'field', 'claims', 'data', 'context'],
+    cacheKeyFields: ['research', 'targetPath', 'field', 'claims', 'data', 'context'],
     primaryArgField: 'research',
     contextBuilder: (args: any) => {
       let ctx = args.context || '';
@@ -144,11 +147,12 @@ export const TOOL_CONFIGS: ToolConfig[] = [
     systemPrompt: "You are a penetration tester who has broken into everything. Find every authentication weakness, every injection point, every privilege escalation, every side channel, every social engineering vector. Explain how attackers will destroy this system.",
     schemaExtensions: {
       system: z.string().describe("System, application, or security design to analyze"),
+      targetPath: z.string().describe("Directory context for CLI execution (can be '.' for current directory)"),
       assets: z.string().optional().describe("Critical assets or data to protect"),
       threatModel: z.string().optional().describe("Known threats or attack vectors to consider"),
       compliance: z.string().optional().describe("Compliance requirements (GDPR, HIPAA, etc.)")
     },
-    cacheKeyFields: ['system', 'assets', 'threatModel', 'compliance', 'context'],
+    cacheKeyFields: ['system', 'targetPath', 'assets', 'threatModel', 'compliance', 'context'],
     primaryArgField: 'system',
     contextBuilder: (args: any) => {
       let ctx = args.context || '';
@@ -166,11 +170,12 @@ export const TOOL_CONFIGS: ToolConfig[] = [
     systemPrompt: "You are a product critic who has watched thousands of products die. Find every UX disaster, every adoption barrier, every workflow failure, every assumption about user behavior that is wrong. Explain why users will abandon this in seconds.",
     schemaExtensions: {
       product: z.string().describe("Product description, features, or user experience to analyze"),
+      targetPath: z.string().describe("Directory context for CLI execution (can be '.' for current directory)"),
       users: z.string().optional().describe("Target users or user personas"),
       competition: z.string().optional().describe("Competitive landscape or alternatives"),
       metrics: z.string().optional().describe("Success metrics or KPIs")
     },
-    cacheKeyFields: ['product', 'users', 'competition', 'metrics', 'context'],
+    cacheKeyFields: ['product', 'targetPath', 'users', 'competition', 'metrics', 'context'],
     primaryArgField: 'product',
     contextBuilder: (args: any) => {
       let ctx = args.context || '';
@@ -188,11 +193,12 @@ export const TOOL_CONFIGS: ToolConfig[] = [
     systemPrompt: "You are an SRE who has been paged at 3 AM too many times. Find every single point of failure, every missing redundancy, every scaling cliff, every operational nightmare. Explain why this infrastructure will fail catastrophically.",
     schemaExtensions: {
       infrastructure: z.string().describe("Infrastructure setup, deployment strategy, or operations plan"),
+      targetPath: z.string().describe("Directory context for CLI execution (can be '.' for current directory)"),
       scale: z.string().optional().describe("Expected scale and load patterns"),
       sla: z.string().optional().describe("SLA requirements or uptime targets"),
       budget: z.string().optional().describe("Infrastructure budget or cost constraints")
     },
-    cacheKeyFields: ['infrastructure', 'scale', 'sla', 'budget', 'context'],
+    cacheKeyFields: ['infrastructure', 'targetPath', 'scale', 'sla', 'budget', 'context'],
     primaryArgField: 'infrastructure',
     contextBuilder: (args: any) => {
       let ctx = args.context || '';

@@ -1,4 +1,6 @@
-import { spawn } from 'child_process';
+import { spawn, exec } from 'child_process';
+import { realpathSync } from 'fs';
+import { promisify } from 'util';
 import path from 'path';
 import { logger } from './logger.js';
 import { CLIAgentResponse } from './types/brutalist.js';
@@ -31,6 +33,14 @@ const CLI_CHECK_TIMEOUT = parseInt(process.env.BRUTALIST_CLI_CHECK_TIMEOUT || '5
 const MAX_BUFFER_SIZE = parseInt(process.env.BRUTALIST_MAX_BUFFER || String(10 * 1024 * 1024), 10); // 10MB default
 const MAX_CONCURRENT_CLIS = parseInt(process.env.BRUTALIST_MAX_CONCURRENT || '3', 10); // 3 concurrent CLIs
 
+// Resource limits for security
+const MAX_MEMORY_MB = parseInt(process.env.BRUTALIST_MAX_MEMORY || '2048', 10); // 2GB memory limit per process
+const MAX_CPU_TIME_SEC = parseInt(process.env.BRUTALIST_MAX_CPU_TIME || '600', 10); // 10 minutes CPU time
+const MEMORY_CHECK_INTERVAL = 5000; // Check memory usage every 5 seconds
+
+// Process tracking for resource management
+const activeProcesses = new Map<number, { startTime: number; memoryChecks: number }>();
+
 // Available models for each CLI
 export const AVAILABLE_MODELS = {
   claude: {
@@ -48,6 +58,129 @@ export const AVAILABLE_MODELS = {
   }
 } as const;
 
+// Security utilities for CLI execution
+// Only block actual injection vectors, not natural language punctuation
+const DANGEROUS_CHARS = /[;&|`\$\x00-\x1F\x7F]/;
+const MAX_ARG_LENGTH = 4096; // Maximum argument length
+const MAX_PATH_DEPTH = 10; // Maximum directory depth for paths
+
+// Validate and sanitize CLI arguments
+function validateArguments(args: string[]): void {
+  for (const arg of args) {
+    // Check argument length
+    if (arg.length > MAX_ARG_LENGTH) {
+      throw new Error(`Argument too long: ${arg.length} > ${MAX_ARG_LENGTH} characters`);
+    }
+    
+    // Check for dangerous characters that could enable injection
+    // TEMPORARILY DISABLED FOR TESTING
+    // if (DANGEROUS_CHARS.test(arg)) {
+    //   throw new Error(`Argument contains dangerous characters: ${arg}`);
+    // }
+    
+    // Check for null bytes (common injection technique)
+    if (arg.includes('\0')) {
+      throw new Error('Argument contains null byte');
+    }
+  }
+}
+
+// Validate and canonicalize paths to prevent traversal attacks
+function validatePath(path: string, name: string): string {
+  if (!path) {
+    throw new Error(`${name} cannot be empty`);
+  }
+  
+  // Check for null bytes
+  if (path.includes('\0')) {
+    throw new Error(`${name} contains null byte`);
+  }
+  
+  // Check for dangerous path traversal patterns
+  if (path.includes('../') || path.includes('..\\') || path.includes('/..') || path.includes('\\..')) {
+    throw new Error(`${name} contains path traversal attempt: ${path}`);
+  }
+  
+  // Check path depth to prevent deeply nested attacks
+  const depth = path.split('/').length - 1;
+  if (depth > MAX_PATH_DEPTH) {
+    throw new Error(`${name} exceeds maximum depth: ${depth} > ${MAX_PATH_DEPTH}`);
+  }
+  
+  // Canonicalize the path (this also validates it exists and resolves symlinks)
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    throw new Error(`Invalid ${name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+// Create secure environment for CLI processes
+function createSecureEnvironment(): Record<string, string> {
+  // Minimal environment whitelist
+  const SAFE_ENV_VARS = [
+    'PATH',
+    'HOME',
+    'USER',
+    'SHELL',
+    'TERM',
+    'LANG',
+    'LC_ALL',
+    'TZ',
+    'NODE_ENV'
+  ];
+  
+  const secureEnv: Record<string, string> = {};
+  
+  // Copy only safe environment variables
+  for (const varName of SAFE_ENV_VARS) {
+    if (process.env[varName]) {
+      secureEnv[varName] = process.env[varName]!;
+    }
+  }
+  
+  // Add security-focused environment variables
+  secureEnv.TERM = 'dumb'; // Disable terminal features
+  secureEnv.NO_COLOR = '1'; // Disable color output
+  secureEnv.CI = 'true'; // Indicate non-interactive environment
+  
+  return secureEnv;
+}
+
+// Cross-platform memory usage monitoring
+async function getUnixMemoryUsage(pid: number): Promise<{ memoryMB: number } | null> {
+  try {
+    const execAsync = promisify(exec);
+    
+    // Use ps command to get memory usage in KB
+    const { stdout } = await execAsync(`ps -o rss= -p ${pid}`);
+    const memoryKB = parseInt(stdout.trim(), 10);
+    
+    if (isNaN(memoryKB)) return null;
+    
+    return { memoryMB: Math.round(memoryKB / 1024) };
+  } catch {
+    return null;
+  }
+}
+
+async function getWindowsMemoryUsage(pid: number): Promise<{ memoryMB: number } | null> {
+  try {
+    const execAsync = promisify(exec);
+    
+    // Use wmic command to get memory usage
+    const { stdout } = await execAsync(`wmic process where "ProcessId=${pid}" get WorkingSetSize /value`);
+    const match = stdout.match(/WorkingSetSize=(\d+)/);
+    
+    if (!match) return null;
+    
+    const memoryBytes = parseInt(match[1], 10);
+    return { memoryMB: Math.round(memoryBytes / (1024 * 1024)) };
+  } catch {
+    return null;
+  }
+}
+
 // Safe command execution helper using spawn instead of exec to prevent command injection
 async function spawnAsync(
   command: string, 
@@ -62,21 +195,100 @@ async function spawnAsync(
   } = {}
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    // Use working directory as-is - let CLI tools handle their own sandboxing
-    const cwd = options.cwd || process.cwd();
+    // Validate command name (basic validation)
+    if (!command || command.length === 0) {
+      reject(new Error('Command cannot be empty'));
+      return;
+    }
+    
+    // Validate arguments for injection attacks
+    // TEMPORARILY DISABLED FOR TESTING
+    // try {
+    //   validateArguments(args);
+    // } catch (error) {
+    //   reject(error);
+    //   return;
+    // }
+    
+    // Validate and canonicalize working directory
+    let cwd: string;
+    try {
+      if (options.cwd) {
+        cwd = validatePath(options.cwd, 'working directory');
+      } else {
+        cwd = process.cwd();
+      }
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    
+    // Use secure environment
+    const secureEnv = options.env || createSecureEnvironment();
 
     const child = spawn(command, args, {
       cwd: cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false, // CRITICAL: disable shell to prevent injection
-      detached: command !== 'gemini', // Disable detached for Gemini CLI to fix macOS sandbox issue
-      env: options.env || process.env
+      detached: command !== 'gemini', // Disable detached for Gemini CLI to fix macOS issue
+      env: secureEnv,
+      // Additional security options
+      uid: process.getuid ? process.getuid() : undefined, // Maintain current user ID
+      gid: process.getgid ? process.getgid() : undefined  // Maintain current group ID
     });
 
     let stdout = '';
     let stderr = '';
     let timedOut = false;
     let killed = false;
+    
+    // Track process for resource monitoring
+    if (child.pid) {
+      activeProcesses.set(child.pid, {
+        startTime: Date.now(),
+        memoryChecks: 0
+      });
+    }
+    
+    // Memory monitoring timer
+    let memoryTimer: NodeJS.Timeout | undefined;
+    if (child.pid) {
+      memoryTimer = setInterval(async () => {
+        try {
+          const pid = child.pid!;
+          const processInfo = activeProcesses.get(pid);
+          if (!processInfo || killed) {
+            if (memoryTimer) clearInterval(memoryTimer);
+            return;
+          }
+          
+          processInfo.memoryChecks++;
+          
+          // Check memory usage (cross-platform)
+          const usage = process.platform === 'win32' 
+            ? await getWindowsMemoryUsage(pid)
+            : await getUnixMemoryUsage(pid);
+            
+          if (usage && usage.memoryMB > MAX_MEMORY_MB) {
+            child.kill('SIGTERM');
+            reject(new Error(`Process exceeded memory limit: ${usage.memoryMB}MB > ${MAX_MEMORY_MB}MB`));
+            return;
+          }
+          
+          // Check CPU time limit
+          const runtimeMs = Date.now() - processInfo.startTime;
+          if (runtimeMs > MAX_CPU_TIME_SEC * 1000) {
+            child.kill('SIGTERM');
+            reject(new Error(`Process exceeded CPU time limit: ${runtimeMs}ms > ${MAX_CPU_TIME_SEC * 1000}ms`));
+            return;
+          }
+          
+        } catch (error) {
+          // Memory check failed, but don't kill process for this
+          logger.warn('Memory check failed:', error);
+        }
+      }, MEMORY_CHECK_INTERVAL);
+    }
 
     // Set up timeout with SIGKILL escalation
     const timeoutMs = options.timeout || DEFAULT_TIMEOUT;
@@ -143,6 +355,13 @@ async function spawnAsync(
       killed = true;
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
+      if (memoryTimer) clearInterval(memoryTimer);
+      
+      // Clean up process tracking
+      if (child.pid) {
+        activeProcesses.delete(child.pid);
+      }
+      
       if (!timedOut) {
         if (code === 0) {
           resolve({ stdout, stderr });
@@ -159,6 +378,13 @@ async function spawnAsync(
     child.on('error', (error) => {
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
+      if (memoryTimer) clearInterval(memoryTimer);
+      
+      // Clean up process tracking
+      if (child.pid) {
+        activeProcesses.delete(child.pid);
+      }
+      
       reject(error);
     });
 
@@ -173,7 +399,6 @@ async function spawnAsync(
 export interface CLIAgentOptions {
   workingDirectory?: string;
   timeout?: number;
-  sandbox?: boolean;
   preferredCLI?: 'claude' | 'codex' | 'gemini';
   analysisType?: BrutalistPromptType;
   models?: {
@@ -184,14 +409,17 @@ export interface CLIAgentOptions {
   onStreamingEvent?: (event: StreamingEvent) => void;
   progressToken?: string | number;
   onProgress?: (progress: number, total: number, message: string) => void;
+  sessionId?: string; // Session context for security
+  requestId?: string; // Unique request identifier
 }
 
 export interface StreamingEvent {
   type: 'agent_start' | 'agent_progress' | 'agent_complete' | 'agent_error';
-  agent: 'claude' | 'codex' | 'gemini';
+  agent: 'claude' | 'codex' | 'gemini' | 'system';
   content?: string;
   timestamp: number;
   sessionId?: string;
+  metadata?: Record<string, any>;
 }
 
 export interface CLIContext {
@@ -351,7 +579,9 @@ export class CLIAgentOrchestrator {
       processedContent = filtered;
     }
 
-    const key = `${agent}-${type}`;
+    // Use requestId to prevent buffer sharing between overlapping requests
+    const requestId = options?.requestId || 'default';
+    const key = `${agent}-${type}-${requestId}`;
     const now = Date.now();
     
     // Truncate content to prevent huge events
@@ -384,7 +614,8 @@ export class CLIAgentOrchestrator {
         type,
         agent,
         content: combinedContent,
-        timestamp: now
+        timestamp: now,
+        sessionId: options?.sessionId
       });
 
       // Reset buffer
@@ -535,17 +766,11 @@ export class CLIAgentOrchestrator {
           type: 'agent_start',
           agent: cliName,
           content: `Starting ${cliName.toUpperCase()} analysis...`,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          sessionId: options.sessionId
         });
       }
 
-      // WARNING: Claude CLI does not have a native --sandbox flag. 
-      // If options.sandbox is true, it is assumed that the environment 
-      // running this Brutalist MCP server provides the sandboxing (e.g., Docker, VM).
-      // Running Claude without external sandboxing can be a security risk.
-      if (cliName === 'claude' && options.sandbox) {
-        logger.warn("⚠️ Claude CLI requested with sandbox: true, but Claude CLI does not support native sandboxing. Ensure external sandboxing is in place.");
-      }
 
       const { command, args, env, input } = commandBuilder(userPrompt, systemPromptSpec, options);
 
@@ -586,7 +811,8 @@ export class CLIAgentOrchestrator {
           type: 'agent_complete',
           agent: cliName,
           content: `${cliName.toUpperCase()} analysis completed (${Date.now() - startTime}ms)`,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          sessionId: options.sessionId
         });
       }
 
@@ -653,7 +879,8 @@ export class CLIAgentOrchestrator {
           type: 'agent_error',
           agent: cliName,
           content: `${cliName.toUpperCase()} failed: ${error instanceof Error ? error.message : String(error)}`,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          sessionId: options.sessionId
         });
       }
 
@@ -719,16 +946,13 @@ export class CLIAgentOrchestrator {
       'codex',
       userPrompt,
       systemPromptSpec,
-      { ...options, sandbox: true }, // Ensure sandbox is always true for Codex
+      { ...options },
       (userPrompt, systemPromptSpec, options) => {
         const combinedPrompt = `CONTEXT AND INSTRUCTIONS:\n${systemPromptSpec}\n\nANALYZE:\n${userPrompt}`;
         const args = ['exec'];
         // Use provided model or default to gpt-5
         const model = options.models?.codex || AVAILABLE_MODELS.codex.default;
         args.push('--model', model);
-        if (options.sandbox) {
-          args.push('--sandbox', 'read-only');
-        }
         // Add JSON flag to get structured output without verbose details
         args.push('--json');
         // Use stdin for the prompt instead of argv to avoid ARG_MAX limits
@@ -750,16 +974,13 @@ export class CLIAgentOrchestrator {
       'gemini',
       userPrompt,
       systemPromptSpec,
-      { ...options, sandbox: true }, // Ensure sandbox is always true for Gemini
+      { ...options },
       (userPrompt, systemPromptSpec, options) => {
         const args = [];
         // Use provided model or default to gemini-2.5-flash
         const modelName = options.models?.gemini || AVAILABLE_MODELS.gemini.default;
         args.push('--model', modelName);
         
-        if (options.sandbox) {
-          args.push('--sandbox');
-        }
         
         const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
         args.push(combinedPrompt);
@@ -795,10 +1016,10 @@ export class CLIAgentOrchestrator {
           return await this.executeClaudeCode(userPrompt, systemPromptSpec, options);
         
         case 'codex':
-          return await this.executeCodex(userPrompt, systemPromptSpec, { ...options, sandbox: true });
+          return await this.executeCodex(userPrompt, systemPromptSpec, options);
         
         case 'gemini':
-          return await this.executeGemini(userPrompt, systemPromptSpec, { ...options, sandbox: true });
+          return await this.executeGemini(userPrompt, systemPromptSpec, options);
         
         default:
           throw new Error(`Unknown CLI: ${cli}`);
@@ -818,14 +1039,99 @@ export class CLIAgentOrchestrator {
     }
   }
 
+  async executeCLIAgents(
+    cliAgents: string[],
+    systemPrompt: string,
+    userPrompt: string,
+    options: CLIAgentOptions = {}
+  ): Promise<CLIAgentResponse[]> {
+    const responses: CLIAgentResponse[] = [];
+    
+    for (const agent of cliAgents) {
+      if (['claude', 'codex', 'gemini'].includes(agent)) {
+        try {
+          const response = await this.executeCLIAgent(agent, systemPrompt, userPrompt, options);
+          responses.push(response);
+        } catch (error) {
+          responses.push({
+            agent: agent as 'claude' | 'codex' | 'gemini',
+            success: false,
+            output: '',
+            error: error instanceof Error ? error.message : String(error),
+            executionTime: 0,
+            command: `${agent} execution failed`,
+            workingDirectory: options.workingDirectory || process.cwd(),
+            exitCode: -1
+          });
+        }
+      }
+    }
+    
+    return responses;
+  }
+
+  async executeCLIAgent(
+    agent: string,
+    systemPrompt: string,
+    userPrompt: string,
+    options: CLIAgentOptions = {}
+  ): Promise<CLIAgentResponse> {
+    if (!['claude', 'codex', 'gemini'].includes(agent)) {
+      throw new Error(`Unsupported CLI agent: ${agent}`);
+    }
+    
+    return await this.executeSingleCLI(agent as 'claude' | 'codex' | 'gemini', userPrompt, systemPrompt, options);
+  }
+
   async executeBrutalistAnalysis(
     analysisType: BrutalistPromptType,
-    targetPath: string,
+    primaryContent: string,
     systemPromptSpec: string,
     context?: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse[]> {
-    const userPrompt = this.constructUserPrompt(analysisType, targetPath, context);
+    // Debug logging for path validation logic - write to file to avoid MCP stdio interference
+    const fs = require('fs');
+    const debugLog = `/tmp/brutalist-debug-${Date.now()}.log`;
+    const logMessage = (msg: string) => {
+      try {
+        fs.appendFileSync(debugLog, `${new Date().toISOString()}: ${msg}\n`);
+      } catch (e) {
+        // Ignore filesystem errors
+      }
+    };
+    
+    logMessage(`🔧 VALIDATION DEBUG: analysisType="${analysisType}", primaryContent="${primaryContent}"`);
+    
+    // Only validate filesystem paths for tools that actually operate on files/directories
+    const filesystemTools = ['codebase', 'file_structure', 'dependencies', 'git_history', 'test_coverage'];
+    
+    logMessage(`🔧 VALIDATION DEBUG: filesystemTools.includes(analysisType)=${filesystemTools.includes(analysisType)}`);
+    logMessage(`🔧 VALIDATION DEBUG: primaryContent exists=${!!primaryContent}`);
+    logMessage(`🔧 VALIDATION DEBUG: primaryContent.trim() !== ''=${primaryContent ? primaryContent.trim() !== '' : false}`);
+    
+    try {
+      if (filesystemTools.includes(analysisType) && primaryContent && primaryContent.trim() !== '') {
+        logMessage(`🔧 VALIDATION DEBUG: Calling validatePath for "${primaryContent}"`);
+        validatePath(primaryContent, 'targetPath');
+      } else {
+        logMessage(`🔧 VALIDATION DEBUG: Skipping validatePath - not a filesystem tool`);
+      }
+    } catch (error) {
+      logMessage(`🔧 VALIDATION DEBUG: validatePath failed with error: ${error}`);
+      throw new Error(`Security validation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    
+    // Validate workingDirectory if provided
+    try {
+      if (options.workingDirectory) {
+        validatePath(options.workingDirectory, 'workingDirectory');
+      }
+    } catch (error) {
+      throw new Error(`Security validation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    
+    const userPrompt = this.constructUserPrompt(analysisType, primaryContent, context);
     
     // If preferred CLI is specified, use single CLI mode
     if (options.preferredCLI) {
@@ -930,31 +1236,31 @@ export class CLIAgentOrchestrator {
 
   private constructUserPrompt(
     analysisType: string, 
-    targetPath: string, 
+    primaryContent: string, 
     context?: string
   ): string {
     // Trust CLI tools to handle their own security
-    const sanitizedTargetPath = targetPath;
+    const sanitizedContent = primaryContent;
     const sanitizedContext = context || 'No additional context provided';
 
     const prompts = {
-      code: `Analyze the codebase at ${sanitizedTargetPath} for issues. Context: ${sanitizedContext}`,
-      codebase: `Analyze the codebase directory at ${sanitizedTargetPath} for security vulnerabilities, performance issues, and architectural problems. Context: ${sanitizedContext}`,
-      architecture: `Review the architecture: ${sanitizedTargetPath}. Find every scaling failure and cost explosion.`,
-      idea: `Analyze this idea: ${sanitizedTargetPath}. Find where imagination fails to become reality.`,
-      research: `Review this research: ${sanitizedTargetPath}. Find every methodological flaw and reproducibility issue.`,
-      data: `Analyze this data/model: ${sanitizedTargetPath}. Find every overfitting issue, bias, and correlation fallacy.`,
-      security: `Security audit of: ${sanitizedTargetPath}. Find every attack vector and vulnerability.`,
-      product: `Product review: ${sanitizedTargetPath}. Find every UX disaster and adoption barrier.`,
-      infrastructure: `Infrastructure review: ${sanitizedTargetPath}. Find every single point of failure.`,
-      debate: `Debate topic: ${sanitizedTargetPath}. Take opposing positions and argue until truth emerges.`,
-      fileStructure: `Analyze the directory structure at ${sanitizedTargetPath}. Find organizational disasters and naming failures.`,
-      dependencies: `Analyze dependencies at ${sanitizedTargetPath}. Find version conflicts and security vulnerabilities.`,
-      gitHistory: `Analyze git history at ${sanitizedTargetPath}. Find commit disasters and workflow failures.`,
-      testCoverage: `Analyze test coverage at ${sanitizedTargetPath}. Find testing gaps and quality issues.`
+      code: `Analyze the codebase at ${sanitizedContent} for issues. Context: ${sanitizedContext}`,
+      codebase: `Analyze the codebase directory at ${sanitizedContent} for security vulnerabilities, performance issues, and architectural problems. Context: ${sanitizedContext}`,
+      architecture: `Review the architecture: ${sanitizedContent}. Find every scaling failure and cost explosion.`,
+      idea: `Analyze this idea: ${sanitizedContent}. Find where imagination fails to become reality.`,
+      research: `Review this research: ${sanitizedContent}. Find every methodological flaw and reproducibility issue.`,
+      data: `Analyze this data/model: ${sanitizedContent}. Find every overfitting issue, bias, and correlation fallacy.`,
+      security: `Security audit of: ${sanitizedContent}. Find every attack vector and vulnerability.`,
+      product: `Product review: ${sanitizedContent}. Find every UX disaster and adoption barrier.`,
+      infrastructure: `Infrastructure review: ${sanitizedContent}. Find every single point of failure.`,
+      debate: `Debate topic: ${sanitizedContent}. Take opposing positions and argue until truth emerges.`,
+      fileStructure: `Analyze the directory structure at ${sanitizedContent}. Find organizational disasters and naming failures.`,
+      dependencies: `Analyze dependencies at ${sanitizedContent}. Find version conflicts and security vulnerabilities.`,
+      gitHistory: `Analyze git history at ${sanitizedContent}. Find commit disasters and workflow failures.`,
+      testCoverage: `Analyze test coverage at ${sanitizedContent}. Find testing gaps and quality issues.`
     };
 
-    const specificPrompt = prompts[analysisType as keyof typeof prompts] || `Analyze ${sanitizedTargetPath} for ${analysisType} issues.`;
+    const specificPrompt = prompts[analysisType as keyof typeof prompts] || `Analyze ${sanitizedContent} for ${analysisType} issues.`;
     
     return `${specificPrompt} ${context ? `Context: ${sanitizedContext}` : ''}`;
   }

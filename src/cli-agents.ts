@@ -59,25 +59,20 @@ export const AVAILABLE_MODELS = {
 } as const;
 
 // Security utilities for CLI execution
-// Only block actual injection vectors, not natural language punctuation
-const DANGEROUS_CHARS = /[;&|`\$\x00-\x1F\x7F]/;
 const MAX_ARG_LENGTH = 4096; // Maximum argument length
 const MAX_PATH_DEPTH = 10; // Maximum directory depth for paths
 
 // Validate and sanitize CLI arguments
+// Note: We use spawn() with shell:false and array args, so we don't need to block
+// punctuation characters. Only block truly dangerous patterns (null bytes, excessive length).
 function validateArguments(args: string[]): void {
   for (const arg of args) {
-    // Check argument length
+    // Check argument length (DoS prevention)
     if (arg.length > MAX_ARG_LENGTH) {
       throw new Error(`Argument too long: ${arg.length} > ${MAX_ARG_LENGTH} characters`);
     }
-    
-    // Check for dangerous characters that could enable injection
-    if (DANGEROUS_CHARS.test(arg)) {
-      throw new Error(`Argument contains dangerous characters: ${arg}`);
-    }
-    
-    // Check for null bytes (common injection technique)
+
+    // Check for null bytes (can terminate strings prematurely)
     if (arg.includes('\0')) {
       throw new Error('Argument contains null byte');
     }

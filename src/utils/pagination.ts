@@ -117,16 +117,36 @@ export class ResponseChunker {
 }
 
 /**
- * Create pagination metadata for a response
+ * Create pagination metadata for a response using actual chunk boundaries
  */
 export function createPaginationMetadata(
   totalLength: number,
   params: PaginationParams,
-  chunkSize: number = PAGINATION_DEFAULTS.DEFAULT_LIMIT
+  chunkSize: number = PAGINATION_DEFAULTS.DEFAULT_LIMIT,
+  chunks?: ResponseChunk[],
+  currentChunkIndex?: number
 ): PaginationMetadata {
+  // If chunks and index are provided, use actual boundaries
+  if (chunks && currentChunkIndex !== undefined) {
+    const currentChunk = chunks[currentChunkIndex];
+    const hasMore = currentChunkIndex < chunks.length - 1;
+    const nextChunk = hasMore ? chunks[currentChunkIndex + 1] : undefined;
+
+    return {
+      total: totalLength,
+      offset: currentChunk.startOffset,
+      limit: currentChunk.endOffset - currentChunk.startOffset,
+      hasMore,
+      nextCursor: nextChunk ? `offset:${nextChunk.startOffset}` : undefined,
+      chunkIndex: currentChunkIndex + 1, // 1-based for display
+      totalChunks: chunks.length
+    };
+  }
+
+  // Fallback to theoretical calculation (for backwards compatibility)
   const offset = params.offset || 0;
   const limit = Math.min(params.limit || PAGINATION_DEFAULTS.DEFAULT_LIMIT, PAGINATION_DEFAULTS.MAX_LIMIT);
-  
+
   const totalChunks = Math.ceil(totalLength / chunkSize);
   const currentChunk = Math.floor(offset / chunkSize) + 1;
   const hasMore = offset + limit < totalLength;
@@ -156,20 +176,22 @@ export function extractPaginationParams(args: Record<string, unknown>): Paginati
 }
 
 /**
- * Parse cursor string to extract pagination state
+ * Parse cursor string to extract pagination state with proper clamping
  */
 export function parseCursor(cursor: string): Partial<PaginationParams> {
   try {
     if (cursor.startsWith('offset:')) {
       const offset = parseInt(cursor.substring(7), 10);
-      return isNaN(offset) ? {} : { offset };
+      return isNaN(offset) ? {} : { offset: Math.max(0, offset) }; // Clamp to non-negative
     }
-    
+
     // Support JSON cursor format for future extensibility
     const parsed = JSON.parse(cursor);
     return {
-      offset: typeof parsed.offset === 'number' ? parsed.offset : undefined,
-      limit: typeof parsed.limit === 'number' ? parsed.limit : undefined
+      offset: typeof parsed.offset === 'number' ? Math.max(0, parsed.offset) : undefined,
+      limit: typeof parsed.limit === 'number'
+        ? Math.min(Math.max(parsed.limit, PAGINATION_DEFAULTS.MIN_LIMIT), PAGINATION_DEFAULTS.MAX_LIMIT)
+        : undefined
     };
   } catch {
     logger.warn(`Invalid cursor format: ${cursor}`);

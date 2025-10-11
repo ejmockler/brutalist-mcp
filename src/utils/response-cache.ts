@@ -123,6 +123,39 @@ export class ResponseCache {
   }
 
   /**
+   * Find existing analysis_id for a given cache key
+   */
+  findAnalysisIdForKey(cacheKey: string): string | null {
+    for (const [analysisId, mapping] of this.analysisIdMap.entries()) {
+      if (mapping.cacheKey === cacheKey) {
+        return analysisId;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Create alias analysis_id that maps to same cache entry
+   * Used for pagination - each request gets unique analysis_id but shares cached content
+   */
+  createAlias(existingAnalysisId: string, cacheKey: string): string {
+    const existingMapping = this.analysisIdMap.get(existingAnalysisId);
+    if (!existingMapping) {
+      throw new Error(`Cannot create alias: analysis_id ${existingAnalysisId} not found`);
+    }
+
+    const newAlias = randomUUID();
+    this.analysisIdMap.set(newAlias, {
+      cacheKey,
+      sessionId: existingMapping.sessionId,
+      created: Date.now()
+    });
+
+    logger.debug(`🔗 Created alias ${newAlias.substring(0, 8)}... -> ${cacheKey.substring(0, 16)}...`);
+    return newAlias;
+  }
+
+  /**
    * Store response with session binding
    */
   async set(

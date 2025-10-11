@@ -375,7 +375,9 @@ describe('Performance Benchmarks and Memory Monitoring', () => {
       const statsEndTime = performance.now();
       const statsTime = statsEndTime - statsStartTime;
 
-      expect(statsTime).toBeLessThan(10); // Stats should be very fast
+      // Stats should be fast - allow more time on CI systems which may be under load
+      const statsTimeLimit = process.env.CI ? 50 : 10; // 50ms on CI, 10ms locally
+      expect(statsTime).toBeLessThan(statsTimeLimit);
       expect(stats.totalConnections).toBeGreaterThanOrEqual(0);
 
       console.log(`SSE Transport Performance:

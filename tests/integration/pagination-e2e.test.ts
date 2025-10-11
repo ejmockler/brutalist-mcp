@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { BrutalistServer } from '../../src/brutalist-server.js';
 import { defaultTestConfig } from '../fixtures/test-configs.js';
-import { 
+import {
   extractPaginationParams,
   createPaginationMetadata,
   formatPaginationStatus,
@@ -11,6 +11,8 @@ import {
   PAGINATION_DEFAULTS
 } from '../../src/utils/pagination.js';
 import { TestIsolation } from '../../src/test-utils/test-isolation.js';
+import { CLIAgentOrchestrator } from '../../src/cli-agents.js';
+import { TOOL_CONFIGS } from '../../src/tool-definitions.js';
 
 // E2E Pagination Integration Tests
 // These tests verify pagination utility functions work correctly
@@ -272,8 +274,164 @@ describe('Pagination E2E Integration', () => {
     it('should handle negative offset gracefully', () => {
       const params = { offset: -1000, limit: 5000 };
       const extracted = extractPaginationParams(params);
-      
+
       expect(extracted.offset).toBe(0); // Should clamp to 0
     });
+  });
+
+  describe('Real Server Pagination Cache Flow (E2E)', () => {
+    let orchestratorCallCount: number;
+    let mockExecuteBrutalistAnalysis: ReturnType<typeof jest.spyOn>;
+
+    beforeEach(() => {
+      orchestratorCallCount = 0;
+
+      // Spy on the server's cliOrchestrator.executeBrutalistAnalysis method
+      const largeResponse = '## BRUTAL ANALYSIS RESULTS\n\n' +
+        'Security vulnerability found: '.repeat(5000);
+
+      mockExecuteBrutalistAnalysis = jest.spyOn(
+        (server as any).cliOrchestrator,
+        'executeBrutalistAnalysis'
+      ).mockImplementation(async () => {
+        orchestratorCallCount++;
+        return [
+          {
+            agent: 'codex',
+            success: true,
+            output: largeResponse,
+            executionTime: 30000
+          }
+        ];
+      });
+    });
+
+    afterEach(() => {
+      mockExecuteBrutalistAnalysis.mockRestore();
+    });
+
+    it('should use analysis_id to paginate from cache without re-running CLIs', async () => {
+      // This tests the fix for PAGINATION_BUGS.md - pagination should hit cache
+
+      // Find roast_idea config
+      const ideaConfig = TOOL_CONFIGS.find(c => c.name === 'roast_idea')!;
+      expect(ideaConfig).toBeDefined();
+
+      const toolArgs = {
+        idea: 'A blockchain-based todo app',
+        targetPath: '.',
+        limit: 50000 // Request first 50KB chunk
+      };
+
+      // First request - should run CLIs
+      const result1 = await (server as any).handleRoastTool(ideaConfig, toolArgs, {});
+
+      expect(orchestratorCallCount).toBe(1);
+      expect(result1.content).toBeDefined();
+      expect(result1.content[0].text).toContain('BRUTAL ANALYSIS');
+
+      // Extract analysis_id from response (handles markdown formatting)
+      const analysisIdMatch = result1.content[0].text.match(/Analysis ID:\*\*\s*([0-9a-f-]+)/);
+      expect(analysisIdMatch).not.toBeNull();
+      const analysisId = analysisIdMatch![1];
+
+      // Second request - should hit cache, NOT run CLIs
+      const result2 = await (server as any).handleRoastTool(ideaConfig, {
+        ...toolArgs,
+        analysis_id: analysisId,
+        offset: 50000,
+        limit: 50000
+      }, {});
+
+      // Orchestrator should NOT be called again
+      expect(orchestratorCallCount).toBe(1);
+
+      // Result should be from cache
+      expect(result2.content).toBeDefined();
+
+      // Should indicate it's a continuation (Part 2+ out of total)
+      expect(result2.content[0].text).toMatch(/Part [2-9]\/\d+/);
+      expect(result2.content[0].text).toContain('Security vulnerability found');
+    }, 60000); // 60 second timeout for this E2E test
+
+    it('should show analysis_id on first request even when content fits in one chunk', async () => {
+      // This tests the fix for src/brutalist-server.ts:1112-1115
+      // analysis_id should appear even when needsPagination = false
+
+      const ideaConfig = TOOL_CONFIGS.find(c => c.name === 'roast_idea')!;
+
+      // Mock smaller response that fits in one chunk
+      mockExecuteBrutalistAnalysis.mockResolvedValueOnce([
+        {
+          agent: 'codex',
+          success: true,
+          output: 'Short analysis result that fits in one chunk',
+          executionTime: 1000
+        }
+      ]);
+
+      const result = await (server as any).handleRoastTool(ideaConfig, {
+        idea: 'Small test idea',
+        targetPath: '.',
+        limit: 90000 // Default limit
+      }, {});
+
+      expect(result.content).toBeDefined();
+      const text = result.content[0].text;
+
+      // Should contain analysis_id even though it's a single chunk
+      expect(text).toContain('🔑 Analysis ID:');
+      expect(text).toMatch(/Analysis ID:\*\*\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+    }, 30000);
+
+    it('should throw error when using invalid analysis_id', async () => {
+      // This tests that cache miss throws error instead of silently re-running
+
+      const ideaConfig = TOOL_CONFIGS.find(c => c.name === 'roast_idea')!;
+
+      const result = await (server as any).handleRoastTool(ideaConfig, {
+        idea: 'test',
+        targetPath: '.',
+        analysis_id: 'invalid-id-12345',
+        offset: 1000
+      }, {});
+
+      // Should return an error response (error message may be generic)
+      expect(result.content).toBeDefined();
+      expect(result.content[0].text).toMatch(/Error|failed|not found/);
+
+      // Orchestrator should NOT be called at all
+      expect(orchestratorCallCount).toBe(0);
+    }, 10000);
+
+    it('should handle consistent anonymous session for pagination', async () => {
+      // This tests that multiple requests without session share cache via 'anonymous'
+
+      const ideaConfig = TOOL_CONFIGS.find(c => c.name === 'roast_idea')!;
+
+      const toolArgs = {
+        idea: 'Test idea',
+        targetPath: '.',
+        limit: 50000
+      };
+
+      // First request with no session metadata
+      const result1 = await (server as any).handleRoastTool(ideaConfig, toolArgs, {});
+      expect(orchestratorCallCount).toBe(1);
+
+      const analysisIdMatch = result1.content[0].text.match(/Analysis ID:\*\*\s*([0-9a-f-]+)/);
+      const analysisId = analysisIdMatch![1];
+
+      // Second request with no session metadata (should still be 'anonymous')
+      const result2 = await (server as any).handleRoastTool(ideaConfig, {
+        ...toolArgs,
+        analysis_id: analysisId,
+        offset: 50000
+      }, {});
+
+      // Should hit cache - orchestrator not called again
+      expect(orchestratorCallCount).toBe(1);
+      expect(result2.content).toBeDefined();
+    }, 60000);
   });
 });

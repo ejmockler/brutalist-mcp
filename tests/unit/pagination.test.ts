@@ -404,6 +404,29 @@ describe('Pagination System Tests', () => {
       const parsed = parseCursor(cursor);
       expect(parsed).toEqual({ limit: 5000 });
     });
+
+    it('should clamp limit to MAX_LIMIT in JSON cursor', () => {
+      const cursor = JSON.stringify({ offset: 0, limit: 999999 });
+      const parsed = parseCursor(cursor);
+      expect(parsed.limit).toBe(100000); // Should be clamped to MAX_LIMIT
+    });
+
+    it('should clamp limit to MIN_LIMIT in JSON cursor', () => {
+      const cursor = JSON.stringify({ offset: 0, limit: 100 });
+      const parsed = parseCursor(cursor);
+      expect(parsed.limit).toBe(1000); // Should be clamped to MIN_LIMIT
+    });
+
+    it('should clamp negative offset to 0', () => {
+      const parsed = parseCursor('offset:-5000');
+      expect(parsed.offset).toBe(0);
+    });
+
+    it('should clamp negative offset in JSON cursor', () => {
+      const cursor = JSON.stringify({ offset: -1000, limit: 5000 });
+      const parsed = parseCursor(cursor);
+      expect(parsed.offset).toBe(0);
+    });
   });
 
   describe('createPaginatedResponse', () => {

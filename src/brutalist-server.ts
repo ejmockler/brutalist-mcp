@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { randomUUID } from "crypto";
+import { appendFileSync } from "fs";
 import express, { Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { CLIAgentOrchestrator, BrutalistPromptType, StreamingEvent } from './cli-agents.js';
@@ -66,17 +67,21 @@ export class BrutalistServer {
     });
     logger.info(`📦 Response cache initialized with ${cacheTTLHours} hour TTL`);
 
-    this.server = new McpServer({
-      name: "brutalist-mcp",
-      version: PACKAGE_VERSION,
-      capabilities: {
-        tools: {},
-        logging: {},
-        experimental: {
-          streaming: true
+    this.server = new McpServer(
+      {
+        name: "brutalist-mcp",
+        version: PACKAGE_VERSION
+      },
+      {
+        capabilities: {
+          tools: {},
+          logging: {},
+          experimental: {
+            streaming: true
+          }
         }
       }
-    });
+    );
 
     this.registerTools();
   }
@@ -87,47 +92,60 @@ export class BrutalistServer {
         logger.warn("⚠️ Streaming event without session ID - dropping for security");
         return;
       }
-      
+
       logger.debug(`🔄 Session-scoped streaming: ${event.type} from ${event.agent} to session ${event.sessionId.substring(0, 8)}...`);
-      
-      // For HTTP transport: send session-specific notification
+
+      // For HTTP transport: send session-specific notification if client supports it
       if (this.httpTransport) {
-        // Use MCP server's notification system with session context
-        this.server.server.notification({
-          method: "notifications/message",
-          params: {
-            level: 'info',
-            data: {
-              type: 'streaming_event',
-              sessionId: event.sessionId,
-              agent: event.agent,
-              eventType: event.type,
-              content: event.content?.substring(0, 1000), // Truncate for safety
-              timestamp: event.timestamp
-            },
-            logger: 'brutalist-mcp-streaming'
-          }
-        });
+        try {
+          // Debug: Check what capabilities the server has
+          logger.debug(`🔍 Server capabilities check: logging=${!!(this.server.server as any)._capabilities?.logging}`);
+
+          // Use MCP server's notification system with session context
+          this.server.server.notification({
+            method: "notifications/message",
+            params: {
+              level: 'info',
+              data: {
+                type: 'streaming_event',
+                sessionId: event.sessionId,
+                agent: event.agent,
+                eventType: event.type,
+                content: event.content?.substring(0, 1000), // Truncate for safety
+                timestamp: event.timestamp
+              },
+              logger: 'brutalist-mcp-streaming'
+            }
+          });
+        } catch (notificationError) {
+          // Client doesn't support logging notifications - silently skip
+          logger.debug("Client doesn't support logging notifications, skipping streaming event");
+        }
       }
       // For STDIO transport: still send but with session info
       else {
-        this.server.sendLoggingMessage({
-          level: 'info',
-          data: {
-            sessionId: event.sessionId,
-            agent: event.agent,
-            type: event.type,
-            content: event.content?.substring(0, 500) // More restrictive for stdio
-          },
-          logger: 'brutalist-mcp-streaming'
-        });
+        try {
+          this.server.sendLoggingMessage({
+            level: 'info',
+            data: {
+              sessionId: event.sessionId,
+              agent: event.agent,
+              type: event.type,
+              content: event.content?.substring(0, 500) // More restrictive for stdio
+            },
+            logger: 'brutalist-mcp-streaming'
+          });
+        } catch (loggingError) {
+          // Client doesn't support logging - silently skip
+          logger.debug("Client doesn't support logging, skipping streaming event");
+        }
       }
-      
+
       // Update session activity
       if (this.activeSessions.has(event.sessionId)) {
         this.activeSessions.get(event.sessionId)!.lastActivity = Date.now();
       }
-      
+
     } catch (error) {
       logger.error("💥 Failed to send session-scoped streaming event", {
         error: error instanceof Error ? error.message : String(error),
@@ -137,9 +155,9 @@ export class BrutalistServer {
   };
 
   private handleProgressUpdate = (
-    progressToken: string | number, 
-    progress: number, 
-    total: number, 
+    progressToken: string | number,
+    progress: number,
+    total: number,
     message: string,
     sessionId?: string
   ) => {
@@ -148,22 +166,26 @@ export class BrutalistServer {
         logger.warn("⚠️ Progress update without session ID - dropping for security");
         return;
       }
-      
+
       logger.debug(`📊 Session progress: ${progress}/${total} for session ${sessionId.substring(0, 8)}...`);
-      
-      // Send progress notification with session context
-      this.server.server.notification({
-        method: "notifications/progress",
-        params: {
-          progressToken,
-          progress,
-          total,
-          message: `[${sessionId.substring(0, 8)}] ${message}`, // Include session prefix
-          sessionId // Include in notification data
-        }
-      });
-      
-      logger.debug(`✅ Sent session-scoped progress notification: ${progress}/${total}`);
+
+      // Send progress notification with session context if client supports it
+      try {
+        this.server.server.notification({
+          method: "notifications/progress",
+          params: {
+            progressToken,
+            progress,
+            total,
+            message: `[${sessionId.substring(0, 8)}] ${message}`, // Include session prefix
+            sessionId // Include in notification data
+          }
+        });
+        logger.debug(`✅ Sent session-scoped progress notification: ${progress}/${total}`);
+      } catch (notificationError) {
+        // Client doesn't support progress notifications - silently skip
+        logger.debug("Client doesn't support progress notifications, skipping");
+      }
     } catch (error) {
       logger.error("💥 Failed to send progress notification", {
         error: error instanceof Error ? error.message : String(error),
@@ -459,11 +481,12 @@ export class BrutalistServer {
       const progressToken = extra._meta?.progressToken;
       
       // Extract session context for security
-      const sessionId = extra?.sessionId || 
-                        extra?._meta?.sessionId || 
+      // IMPORTANT: Use consistent "anonymous" for all anonymous users to enable cache sharing
+      const sessionId = extra?.sessionId ||
+                        extra?._meta?.sessionId ||
                         extra?.headers?.['mcp-session-id'] ||
-                        `anonymous-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-      
+                        'anonymous'; // Consistent for cache sharing across pagination requests
+
       const requestId = `${sessionId}-${Date.now()}-${Math.random().toString(36).substring(7)}`;
       
       logger.debug(`🔐 Processing request with session: ${sessionId.substring(0, 8)}..., request: ${requestId.substring(0, 12)}...`);
@@ -481,11 +504,10 @@ export class BrutalistServer {
       sessionInfo.lastActivity = Date.now();
       
       // Debug logging: Log the received arguments to file
-      const fs = require('fs');
       const debugLog = `/tmp/brutalist-tool-debug-${Date.now()}.log`;
       const logMessage = (msg: string) => {
         try {
-          fs.appendFileSync(debugLog, `${new Date().toISOString()}: ${msg}\n`);
+          appendFileSync(debugLog, `${new Date().toISOString()}: ${msg}\n`);
         } catch (e) {
           // Ignore filesystem errors
         }
@@ -506,7 +528,7 @@ export class BrutalistServer {
       if (args.analysis_id && !args.force_refresh) {
         const cachedContent = await this.responseCache.get(args.analysis_id, sessionId);
         if (cachedContent) {
-          logger.info(`🎯 Session-validated cache hit for analysis_id: ${args.analysis_id}`);
+          logger.info(`🎯 Cache HIT for analysis_id: ${args.analysis_id}`);
           const cachedResult: BrutalistResponse = {
             success: true,
             responses: [{
@@ -518,7 +540,13 @@ export class BrutalistServer {
           };
           return this.formatToolResponse(cachedResult, args.verbose, paginationParams, args.analysis_id);
         } else {
-          logger.info(`🔍 No valid cache entry for analysis_id: ${args.analysis_id} and session: ${sessionId?.substring(0, 8)}`);
+          logger.warn(`❌ Cache MISS for analysis_id: ${args.analysis_id}, session: ${sessionId}`);
+          // Don't silently re-run - analysis_id should always hit cache or error
+          throw new Error(
+            `Analysis ID "${args.analysis_id}" not found in cache. ` +
+            `It may have expired (2 hour TTL) or belong to a different session. ` +
+            `Remove analysis_id parameter to run a new analysis.`
+          );
         }
       }
       
@@ -535,7 +563,11 @@ export class BrutalistServer {
       if (!args.force_refresh) {
         const cachedContent = await this.responseCache.get(cacheKey, sessionId);
         if (cachedContent) {
-          const analysisId = this.responseCache.generateAnalysisId(cacheKey);
+          // Get existing analysis_id or create new alias
+          const existingAnalysisId = this.responseCache.findAnalysisIdForKey(cacheKey);
+          const analysisId = existingAnalysisId
+            ? this.responseCache.createAlias(existingAnalysisId, cacheKey)
+            : this.responseCache.generateAnalysisId(cacheKey);
           logger.info(`🎯 Cache hit for new request, using analysis_id: ${analysisId}`);
           const cachedResult: BrutalistResponse = {
             success: true,
@@ -1045,25 +1077,28 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     // Use ResponseChunker for intelligent boundary detection
     const chunker = new ResponseChunker(limit, 200); // 200 char overlap
     const chunks = chunker.chunkText(content);
-    
+
     // Find the appropriate chunk based on offset
     let targetChunk = chunks[0]; // Default to first chunk
+    let targetChunkIndex = 0;
     let currentOffset = 0;
-    
-    for (const chunk of chunks) {
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
       if (offset >= chunk.startOffset && offset < chunk.endOffset) {
         targetChunk = chunk;
+        targetChunkIndex = i;
         break;
       }
       currentOffset = chunk.endOffset;
     }
-    
+
     const chunkContent = targetChunk.content;
     const actualOffset = targetChunk.startOffset;
     const endOffset = targetChunk.endOffset;
-    
-    // Create pagination metadata
-    const pagination = createPaginationMetadata(content.length, paginationParams, limit);
+
+    // Create pagination metadata using actual chunk boundaries
+    const pagination = createPaginationMetadata(content.length, paginationParams, limit, chunks, targetChunkIndex);
     const statusLine = formatPaginationStatus(pagination);
     
     // Estimate token usage for user awareness
@@ -1076,16 +1111,23 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     // Add header
     paginatedText += `# Brutalist Analysis Results\n\n`;
     
-    // Only show pagination metadata if pagination is actually needed
+    // Show pagination metadata
     const needsPagination = pagination.totalChunks > 1 || pagination.hasMore;
-    
+    const isFirstRequest = offset === 0;
+
+    // Always show analysis_id on first request for future pagination
+    if (isFirstRequest && analysisId) {
+      paginatedText += `**🔑 Analysis ID:** ${analysisId}\n`;
+      paginatedText += `**🔢 Token Estimate:** ~${totalTokens.toLocaleString()} tokens (total)\n\n`;
+    }
+
     if (needsPagination) {
       paginatedText += `**📊 Pagination Status:** ${statusLine}\n`;
-      if (analysisId) {
+      if (!isFirstRequest && analysisId) {
         paginatedText += `**🔑 Analysis ID:** ${analysisId}\n`;
       }
       paginatedText += `**🔢 Token Estimate:** ~${chunkTokens.toLocaleString()} tokens (chunk) / ~${totalTokens.toLocaleString()} tokens (total)\n\n`;
-      
+
       if (pagination.hasMore) {
         if (analysisId) {
           paginatedText += `**⏭️ Continue Reading:** Use \`analysis_id: "${analysisId}", offset: ${endOffset}\`\n\n`;

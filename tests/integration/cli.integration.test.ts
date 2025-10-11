@@ -487,40 +487,26 @@ describe('CLI Integration Tests', () => {
 
     it('should handle CLI crashes gracefully', async () => {
       const context = await orchestrator.detectCLIContext();
-      
+
       if (context.availableCLIs.length === 0) {
         return;
       }
 
-      // Try to cause a CLI error with invalid input
-      const responses = await orchestrator.executeBrutalistAnalysis(
-        'codebase',
-        '/tmp/nonexistent-path-' + Date.now(),
-        'Analyze this nonexistent path',
-        'Error recovery test',
-        {
-          timeout: 30000,
-          analysisType: 'codebase',
-          workingDirectory: await testIsolation.createWorkspace()
-        }
-      );
-
-      expect(Array.isArray(responses)).toBe(true);
-      
-      // Should have some responses, even if they failed
-      expect(responses.length).toBeGreaterThan(0);
-      
-      responses.forEach(response => {
-        // Validate CLI response structure
-        expect(response).toBeDefined();
-        expect(typeof response.agent).toBe('string');
-        expect(typeof response.success).toBe('boolean');
-        expect(typeof response.executionTime).toBe('number');
-        
-        if (!response.success) {
-          expect(response.error).toBeTruthy();
-        }
-      });
+      // Path validation now catches invalid paths before CLI execution
+      // Test should expect validation error, not CLI error
+      await expect(async () => {
+        await orchestrator.executeBrutalistAnalysis(
+          'codebase',
+          '/tmp/nonexistent-path-' + Date.now(),
+          'Analyze this nonexistent path',
+          'Error recovery test',
+          {
+            timeout: 30000,
+            analysisType: 'codebase',
+            workingDirectory: await testIsolation.createWorkspace()
+          }
+        );
+      }).rejects.toThrow(/Security validation failed|Invalid targetPath|ENOENT/);
     });
 
     it('should continue if some CLIs fail', async () => {

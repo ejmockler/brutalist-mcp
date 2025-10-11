@@ -133,7 +133,8 @@ export class ServerHarness {
       params: {
         protocolVersion: '2024-11-05',
         capabilities: {
-          tools: {}
+          tools: {},
+          logging: {}  // Add logging capability to support notifications
         },
         clientInfo: {
           name: 'test-client',

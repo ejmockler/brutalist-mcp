@@ -259,6 +259,71 @@ describe('Cache Integration Tests', () => {
       const resultB = await cache.getByAnalysisId(analysisId, sessionB);
       expect(resultB).toBeNull();
     });
+
+    it('should use consistent anonymous session for pagination cache hits', async () => {
+      // This tests the fix for PAGINATION_BUGS.md Bug #1
+      // Multiple requests with sessionId='anonymous' should share the same cache
+
+      const params = { tool: 'roast_idea', idea: 'test idea' };
+      const content = 'Large analysis result '.repeat(5000); // ~100KB
+
+      // First request: sessionId = 'anonymous'
+      const { analysisId: id1 } = await cache.set(
+        params,
+        content,
+        undefined,
+        'anonymous', // Consistent anonymous session
+        'request-1'
+      );
+
+      // Second request: sessionId = 'anonymous' (should match first)
+      // This simulates pagination request with same anonymous session
+      const result1 = await cache.get(id1, 'anonymous');
+      expect(result1).toBe(content);
+
+      // Third request: Also anonymous, should still hit cache
+      const cachedResponse = await cache.getByAnalysisId(id1, 'anonymous');
+      expect(cachedResponse).not.toBeNull();
+      expect(cachedResponse!.content).toBe(content);
+      expect(cachedResponse!.sessionId).toBe('anonymous');
+
+      // Verify cache hit was recorded
+      const statsBefore = cache.getStats();
+      await cache.get(id1, 'anonymous'); // Another hit
+      const statsAfter = cache.getStats();
+
+      expect(statsAfter.hits).toBe(statsBefore.hits + 1);
+    });
+
+    it('should prevent cache hits when sessionId changes from anonymous to random', async () => {
+      // This tests what would have happened with the BUG (random session IDs)
+      // If sessionId = `anonymous-${timestamp}-${random}`, cache misses occur
+
+      const params = { tool: 'roast_idea', idea: 'test' };
+      const content = 'Analysis result';
+
+      const randomSession1 = `anonymous-${Date.now()}-abc123`;
+      const randomSession2 = `anonymous-${Date.now() + 1000}-xyz789`;
+
+      // Store with first random session
+      const { analysisId } = await cache.set(
+        params,
+        content,
+        undefined,
+        randomSession1,
+        'request-1'
+      );
+
+      // Try to access with second random session (different session)
+      const result = await cache.get(analysisId, randomSession2);
+
+      // Should be null - different sessions can't share cache
+      expect(result).toBeNull();
+
+      // But the original session can still access it
+      const originalResult = await cache.get(analysisId, randomSession1);
+      expect(originalResult).toBe(content);
+    });
   });
 
   describe('LRU Eviction & Memory Management', () => {

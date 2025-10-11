@@ -1,5 +1,5 @@
 import { spawn, exec } from 'child_process';
-import { realpathSync } from 'fs';
+import { realpathSync, appendFileSync } from 'fs';
 import { promisify } from 'util';
 import path from 'path';
 import { logger } from './logger.js';
@@ -35,7 +35,7 @@ const MAX_CONCURRENT_CLIS = parseInt(process.env.BRUTALIST_MAX_CONCURRENT || '3'
 
 // Resource limits for security
 const MAX_MEMORY_MB = parseInt(process.env.BRUTALIST_MAX_MEMORY || '2048', 10); // 2GB memory limit per process
-const MAX_CPU_TIME_SEC = parseInt(process.env.BRUTALIST_MAX_CPU_TIME || '600', 10); // 10 minutes CPU time
+const MAX_CPU_TIME_SEC = parseInt(process.env.BRUTALIST_MAX_CPU_TIME || '1800', 10); // 30 minutes CPU time (should exceed default timeout)
 const MEMORY_CHECK_INTERVAL = 5000; // Check memory usage every 5 seconds
 
 // Process tracking for resource management
@@ -73,10 +73,9 @@ function validateArguments(args: string[]): void {
     }
     
     // Check for dangerous characters that could enable injection
-    // TEMPORARILY DISABLED FOR TESTING
-    // if (DANGEROUS_CHARS.test(arg)) {
-    //   throw new Error(`Argument contains dangerous characters: ${arg}`);
-    // }
+    if (DANGEROUS_CHARS.test(arg)) {
+      throw new Error(`Argument contains dangerous characters: ${arg}`);
+    }
     
     // Check for null bytes (common injection technique)
     if (arg.includes('\0')) {
@@ -202,13 +201,12 @@ async function spawnAsync(
     }
     
     // Validate arguments for injection attacks
-    // TEMPORARILY DISABLED FOR TESTING
-    // try {
-    //   validateArguments(args);
-    // } catch (error) {
-    //   reject(error);
-    //   return;
-    // }
+    try {
+      validateArguments(args);
+    } catch (error) {
+      reject(error);
+      return;
+    }
     
     // Validate and canonicalize working directory
     let cwd: string;
@@ -535,31 +533,35 @@ export class CLIAgentOrchestrator {
     if (!jsonOutput || !jsonOutput.trim()) {
       return '';
     }
-    
+
     const agentMessages: string[] = [];
     const lines = jsonOutput.split('\n');
-    
+
     for (const line of lines) {
       if (!line.trim()) continue;
-      
+
       try {
         const event = JSON.parse(line);
-        
+
+        // Codex --json outputs events with structure: {"type":"item.completed","item":{...}}
         // Only extract agent_message type - this is the actual response
-        if (event.msg?.type === 'agent_message' && event.msg?.message) {
-          agentMessages.push(event.msg.message);
-        } else if (event.msg?.type === 'error' && event.msg?.message) {
-          // Include error messages
-          agentMessages.push(`Error: ${event.msg.message}`);
+        if (event.type === 'item.completed' && event.item) {
+          if (event.item.type === 'agent_message' && event.item.text) {
+            // Agent's actual response text
+            agentMessages.push(event.item.text);
+          }
+          // Skip all other types:
+          // - reasoning: internal thinking steps
+          // - command_execution: file reads, bash commands
+          // - error: will be in stderr
         }
-        // Skip all other types: agent_reasoning, exec, token_count, task_started, etc.
       } catch {
         // Skip non-JSON lines (config output, prompts, etc.)
         continue;
       }
     }
-    
-    return agentMessages.join('\n').trim();
+
+    return agentMessages.join('\n\n').trim();
   }
 
   private emitThrottledStreamingEvent(
@@ -1091,11 +1093,10 @@ export class CLIAgentOrchestrator {
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse[]> {
     // Debug logging for path validation logic - write to file to avoid MCP stdio interference
-    const fs = require('fs');
     const debugLog = `/tmp/brutalist-debug-${Date.now()}.log`;
     const logMessage = (msg: string) => {
       try {
-        fs.appendFileSync(debugLog, `${new Date().toISOString()}: ${msg}\n`);
+        appendFileSync(debugLog, `${new Date().toISOString()}: ${msg}\n`);
       } catch (e) {
         // Ignore filesystem errors
       }

@@ -69,9 +69,9 @@ describe('Transport Integration Tests', () => {
       });
 
       const response = await serverHarness.testRequest('/health');
-      
+
       expect(response.status).toBe(200);
-      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+      expect(response.headers.get('access-control-allow-origin')).toBe('http://localhost:3000');
       expect(response.headers.get('access-control-allow-methods')).toContain('GET');
       expect(response.headers.get('access-control-allow-methods')).toContain('POST');
       
@@ -326,6 +326,7 @@ describe('Transport Integration Tests', () => {
       try {
         const result = await serverHarness.executeTool('roast_idea', {
           idea: 'A blockchain-based social network for pets that uses AI to translate animal thoughts',
+          targetPath: '.',
           context: 'This is a test idea for integration testing'
         });
 

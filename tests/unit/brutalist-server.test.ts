@@ -188,18 +188,22 @@ describe('BrutalistServer', () => {
 
     it('should initialize MCP server with correct metadata', () => {
       new BrutalistServer();
-      
-      expect(McpServer).toHaveBeenCalledWith({
-        name: 'brutalist-mcp',
-        version: '0.4.4-test',
-        capabilities: {
-          tools: {},
-          logging: {},
-          experimental: {
-            streaming: true
+
+      expect(McpServer).toHaveBeenCalledWith(
+        {
+          name: 'brutalist-mcp',
+          version: '0.4.4-test'
+        },
+        {
+          capabilities: {
+            tools: {},
+            logging: {},
+            experimental: {
+              streaming: true
+            }
           }
         }
-      });
+      );
     });
 
     it('should create CLI orchestrator instance', () => {

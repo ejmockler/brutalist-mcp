@@ -63,11 +63,11 @@ Every brutalist tool now supports pagination parameters:
 ### Basic Pagination
 
 ```bash
-# Get first chunk (default: 25K characters)
-roast_codebase({targetPath: "/src", limit: 25000})
+# Get first chunk (default: 90K characters / ~22.5K tokens)
+roast_codebase({targetPath: "/src"})
 
-# Get next chunk 
-roast_codebase({targetPath: "/src", offset: 25000, limit: 25000})
+# Get next chunk explicitly
+roast_codebase({targetPath: "/src", offset: 90000, limit: 90000})
 ```
 
 ### Cursor-Based Navigation

@@ -11,3 +11,10 @@ npm-debug.log*
 .eslintcache
 *.tsbuildinfo
 *.tgz
+# Temporary analysis and debugging docs
+*_ANALYSIS.md
+*_BUGS.md
+*_FIX.md
+*_PLAN.md
+SHIP_*.md
+test-results.txt

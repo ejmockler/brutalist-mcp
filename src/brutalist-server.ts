@@ -395,6 +395,17 @@ export class BrutalistServer {
         }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {
+        // CRITICAL: Prevent recursion
+        if (process.env.BRUTALIST_SUBPROCESS === '1') {
+          logger.warn(`🚫 Rejecting roast_cli_debate from brutalist subprocess`);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `ERROR: Brutalist MCP tools cannot be used from within a brutalist-spawned CLI subprocess (recursion prevented)`
+            }]
+          };
+        }
+
         return this.handleToolExecution(async () => {
           const debateRounds = Math.min(args.debateRounds || 2, 10); // Limit to max 10 rounds to prevent DoS
           const responses = await this.executeCLIDebate(
@@ -478,8 +489,19 @@ export class BrutalistServer {
     extra: any
   ): Promise<any> {
     try {
+      // CRITICAL: Prevent recursion - reject tool calls from brutalist-spawned subprocesses
+      if (process.env.BRUTALIST_SUBPROCESS === '1') {
+        logger.warn(`🚫 Rejecting tool call from brutalist subprocess (recursion prevented)`);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `ERROR: Brutalist MCP tools cannot be used from within a brutalist-spawned CLI subprocess (recursion prevented)`
+          }]
+        };
+      }
+
       const progressToken = extra._meta?.progressToken;
-      
+
       // Extract session context for security
       // IMPORTANT: Use consistent "anonymous" for all anonymous users to enable cache sharing
       const sessionId = extra?.sessionId ||
@@ -488,7 +510,7 @@ export class BrutalistServer {
                         'anonymous'; // Consistent for cache sharing across pagination requests
 
       const requestId = `${sessionId}-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-      
+
       logger.debug(`🔐 Processing request with session: ${sessionId.substring(0, 8)}..., request: ${requestId.substring(0, 12)}...`);
       
       // Track session activity

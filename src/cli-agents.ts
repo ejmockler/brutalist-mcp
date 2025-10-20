@@ -384,11 +384,13 @@ async function spawnAsync(
       reject(error);
     });
 
-    // Send input if provided
+    // Send input if provided, then close stdin
     if (options.input) {
       child.stdin?.write(options.input);
-      child.stdin?.end();
     }
+    // CRITICAL: Always close stdin, even if no input provided
+    // CLI tools like Claude wait for stdin to close before processing
+    child.stdin?.end();
   });
 }
 
@@ -918,7 +920,9 @@ export class CLIAgentOrchestrator {
       options,
       (userPrompt, systemPromptSpec, options) => {
         const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
-        const args = ['--print'];
+        const args = [];
+
+        args.push('--print');
 
         // Enable streaming for real-time progress if progress notifications are enabled
         if (options.progressToken) {
@@ -934,7 +938,6 @@ export class CLIAgentOrchestrator {
         args.push(combinedPrompt);
 
         // Set environment to ensure consistent output behavior
-        // CRITICAL: Add BRUTALIST_SUBPROCESS marker to prevent recursion
         const env = {
           ...process.env,
           TERM: 'dumb',      // Disable fancy terminal output
@@ -967,13 +970,23 @@ export class CLIAgentOrchestrator {
         args.push('--model', model);
         // Auto-approve all actions without prompting or sandboxing
         args.push('--dangerously-bypass-approvals-and-sandbox');
+
+        // DEFENSIVE: Disable MCP if Codex supports it (currently no known MCP support)
+        // This prevents potential stdio deadlock if Codex adds MCP in the future
+        // Note: Codex CLI doesn't currently have documented MCP config flags
+
         // Use stdin for the prompt instead of argv to avoid ARG_MAX limits
+        // Create clean environment without MCP-related variables
+        const cleanEnv = { ...process.env };
+        delete cleanEnv.CODEX_MCP_CONFIG;
+        delete cleanEnv.MCP_ENABLED;
+
         return {
           command: 'codex',
           args,
           input: combinedPrompt,
           env: {
-            ...process.env,
+            ...cleanEnv,
             BRUTALIST_SUBPROCESS: '1'  // Mark this as a brutalist-spawned subprocess
           }
         };
@@ -983,7 +996,7 @@ export class CLIAgentOrchestrator {
 
   async executeGemini(
     userPrompt: string,
-    systemPromptSpec: string, 
+    systemPromptSpec: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse> {
     return this._executeCLI(
@@ -993,18 +1006,27 @@ export class CLIAgentOrchestrator {
       { ...options },
       (userPrompt, systemPromptSpec, options) => {
         const args = [];
-        // Use provided model or default to gemini-2.5-flash
+        // Use provided model or default to gemini-2.5-pro
         const modelName = options.models?.gemini || AVAILABLE_MODELS.gemini.default;
         args.push('--model', modelName);
-        
-        
+
+        // DEFENSIVE: Disable MCP if Gemini supports it (currently no known MCP support)
+        // This prevents potential stdio deadlock if Gemini adds MCP in the future
+        // Note: Gemini CLI doesn't currently have documented MCP config flags
+
         const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
         args.push(combinedPrompt);
+
+        // Create clean environment without MCP-related variables
+        const cleanEnv = { ...process.env };
+        delete cleanEnv.GEMINI_MCP_CONFIG;
+        delete cleanEnv.MCP_ENABLED;
+
         return {
           command: 'gemini',
           args: args,
           env: {
-            ...process.env,
+            ...cleanEnv,
             TERM: 'dumb',
             NO_COLOR: '1',
             CI: 'true',

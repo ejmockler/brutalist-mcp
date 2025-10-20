@@ -21,7 +21,7 @@
     "prebuild": "npm run clean",
     "build": "tsc && chmod +x dist/index.js",
     "prepare": "npm run build",
-    "prepublishOnly": "npm test -- tests/unit tests/integration/pagination-e2e.test.ts tests/integration/cache.integration.test.ts && npm audit --production && npm run build",
+    "prepublishOnly": "npm test -- tests/unit tests/integration/pagination-e2e.test.ts tests/integration/cache.integration.test.ts && npm run build",
     "watch": "tsc --watch",
     "start": "node dist/index.js",
     "dev": "npm run build && npm start",

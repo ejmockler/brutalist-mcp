@@ -2,6 +2,11 @@
 import { BrutalistServer } from './brutalist-server.js';
 async function main() {
     try {
+        // CRITICAL: Prevent recursion - refuse to start if we're in a brutalist subprocess
+        if (process.env.BRUTALIST_SUBPROCESS === '1') {
+            console.error("ERROR: Brutalist MCP cannot be used from within a brutalist-spawned CLI subprocess (recursion prevented)");
+            process.exit(1);
+        }
         // Check if HTTP mode is requested via environment variable or command line
         const useHttp = process.env.BRUTALIST_HTTP === 'true' || process.argv.includes('--http');
         const port = process.env.BRUTALIST_PORT ? parseInt(process.env.BRUTALIST_PORT) : 3000;

@@ -678,7 +678,7 @@ export class CLIAgentOrchestrator {
 
   private detectCurrentCLI(): 'claude' | 'codex' | 'gemini' | undefined {
     // Check environment variables that might indicate current CLI
-    if (process.env.CLAUDE_CODE_SESSION || process.env.CLAUDE_CONFIG_DIR) {
+    if (process.env.CLAUDE_CODE_SESSION || process.env.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CODE_ENTRYPOINT || process.env.CLAUDECODE) {
       return 'claude';
     }
     
@@ -907,7 +907,7 @@ export class CLIAgentOrchestrator {
   }
 
   async executeClaudeCode(
-    userPrompt: string, 
+    userPrompt: string,
     systemPromptSpec: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse> {
@@ -919,12 +919,12 @@ export class CLIAgentOrchestrator {
       (userPrompt, systemPromptSpec, options) => {
         const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
         const args = ['--print'];
-        
+
         // Enable streaming for real-time progress if progress notifications are enabled
         if (options.progressToken) {
           args.push('--output-format', 'stream-json', '--verbose');
         }
-        
+
         // Use provided model or let Claude use its default
         const model = options.models?.claude || AVAILABLE_MODELS.claude.default;
         if (model) {
@@ -932,15 +932,17 @@ export class CLIAgentOrchestrator {
         }
         // Pass prompt as argument - Claude CLI works better this way
         args.push(combinedPrompt);
-        
+
         // Set environment to ensure consistent output behavior
+        // CRITICAL: Add BRUTALIST_SUBPROCESS marker to prevent recursion
         const env = {
           ...process.env,
           TERM: 'dumb',      // Disable fancy terminal output
           NO_COLOR: '1',     // Disable colored output
-          CI: 'true'         // Indicate non-interactive environment
+          CI: 'true',        // Indicate non-interactive environment
+          BRUTALIST_SUBPROCESS: '1'  // Mark this as a brutalist-spawned subprocess
         };
-        
+
         return { command: 'claude', args, env };
       }
     );
@@ -960,7 +962,7 @@ export class CLIAgentOrchestrator {
         // Instruct Codex to analyze immediately in one shot without waiting for approval
         const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}\n\nExecute the complete analysis now in a single response without creating a plan first or waiting for input. Provide your full findings immediately.`;
         const args = ['exec'];
-        // Use provided model or default to gpt-5
+        // Use provided model or default to gpt-5-codex
         const model = options.models?.codex || AVAILABLE_MODELS.codex.default;
         args.push('--model', model);
         // Auto-approve all actions without prompting or sandboxing
@@ -969,7 +971,11 @@ export class CLIAgentOrchestrator {
         return {
           command: 'codex',
           args,
-          input: combinedPrompt
+          input: combinedPrompt,
+          env: {
+            ...process.env,
+            BRUTALIST_SUBPROCESS: '1'  // Mark this as a brutalist-spawned subprocess
+          }
         };
       }
     );
@@ -994,14 +1000,15 @@ export class CLIAgentOrchestrator {
         
         const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
         args.push(combinedPrompt);
-        return { 
-          command: 'gemini', 
+        return {
+          command: 'gemini',
           args: args,
           env: {
             ...process.env,
             TERM: 'dumb',
             NO_COLOR: '1',
-            CI: 'true'
+            CI: 'true',
+            BRUTALIST_SUBPROCESS: '1'  // Mark this as a brutalist-spawned subprocess
           }
         };
       }
@@ -1162,16 +1169,10 @@ export class CLIAgentOrchestrator {
     
     // Multi-CLI execution (default behavior)
     logger.info(`🚀 Executing multi-CLI analysis`);
-    
-    // Only exclude current CLI if we have other options
+
+    // Use all available CLIs - spawning separate processes is fine
     let availableCLIs = [...this.cliContext.availableCLIs];
-    if (this.cliContext.currentCLI && this.cliContext.availableCLIs.length > 1) {
-      // Exclude current CLI to prevent recursion, but only if we have alternatives
-      availableCLIs = availableCLIs.filter(cli => cli !== this.cliContext.currentCLI);
-      logger.info(`🔄 Excluding current CLI (${this.cliContext.currentCLI}) to prevent recursion`);
-    } else if (this.cliContext.currentCLI && this.cliContext.availableCLIs.length === 1) {
-      logger.info(`🔄 Using current CLI (${this.cliContext.currentCLI}) - spawning separate process`);
-    }
+    logger.info(`📋 Using all available CLIs: ${availableCLIs.join(', ')}`)
     
     if (availableCLIs.length === 0) {
       throw new Error('No CLI agents available for analysis');

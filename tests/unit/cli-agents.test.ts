@@ -124,7 +124,19 @@ describe('CLIAgentOrchestrator', () => {
       // Reset cache to force new detection
       (orchestrator as any).cliContextCached = false;
       (orchestrator as any).cliContext = null;
-      
+
+      // Clear environment variables that might indicate current CLI
+      const originalEnv = process.env;
+      process.env = {
+        ...originalEnv,
+        CLAUDE_CODE_SESSION: undefined,
+        CLAUDE_CONFIG_DIR: undefined,
+        CLAUDE_CODE_ENTRYPOINT: undefined,
+        CLAUDECODE: undefined,
+        CODEX_SESSION: undefined,
+        GEMINI_SESSION: undefined
+      };
+
       // Mock all CLIs failing
       mockSpawn.mockImplementation(() => {
         const child = new MockChildProcess();
@@ -138,6 +150,9 @@ describe('CLIAgentOrchestrator', () => {
 
       expect(context.availableCLIs).toEqual([]);
       expect(context.currentCLI).toBeUndefined();
+
+      // Restore environment
+      process.env = originalEnv;
     });
 
     it('should cache CLI context for performance', async () => {

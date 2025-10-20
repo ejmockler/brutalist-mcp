@@ -41,20 +41,23 @@ const MEMORY_CHECK_INTERVAL = 5000; // Check memory usage every 5 seconds
 // Process tracking for resource management
 const activeProcesses = new Map<number, { startTime: number; memoryChecks: number }>();
 
-// Available models for each CLI
+// Available models for each CLI - prioritizing frontier models with high capacity
 export const AVAILABLE_MODELS = {
   claude: {
-    default: undefined, // Uses user's configured model
+    default: undefined, // Uses user's configured model (respects preferences)
     aliases: ['opus', 'sonnet', 'haiku'],
-    full: ['claude-opus-4-1-20250805', 'claude-sonnet-4-20250514']
+    full: ['claude-opus-4-1-20250805', 'claude-sonnet-4-20250514'],
+    recommended: 'opus' // Highest capacity Claude model
   },
   codex: {
-    default: 'gpt-5', // Fast default reasoning
-    models: ['gpt-5', 'gpt-5-codex', 'o3', 'o3-mini', 'o3-pro', 'o4-mini']
+    default: 'gpt-5-codex', // Optimized for coding with high capacity
+    models: ['gpt-5', 'gpt-5-codex', 'o3', 'o3-mini', 'o3-pro', 'o4-mini'],
+    recommended: 'gpt-5-codex' // Best balance of capacity and code understanding
   },
   gemini: {
-    default: 'gemini-2.5-flash', // Best price/performance
-    models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']
+    default: 'gemini-2.5-pro', // Highest capacity Gemini model
+    models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'],
+    recommended: 'gemini-2.5-pro' // Frontier model with advanced reasoning
   }
 } as const;
 
@@ -526,11 +529,14 @@ export class CLIAgentOrchestrator {
   // Extract only the agent messages from Codex JSON output (no thinking, no file reads, no commands)
   private extractCodexAgentMessage(jsonOutput: string): string {
     if (!jsonOutput || !jsonOutput.trim()) {
+      logger.debug('extractCodexAgentMessage: empty input');
       return '';
     }
 
     const agentMessages: string[] = [];
     const lines = jsonOutput.split('\n');
+
+    logger.debug(`extractCodexAgentMessage: processing ${lines.length} lines`);
 
     for (const line of lines) {
       if (!line.trim()) continue;
@@ -538,11 +544,14 @@ export class CLIAgentOrchestrator {
       try {
         const event = JSON.parse(line);
 
+        logger.debug(`extractCodexAgentMessage: parsed event type=${event.type}, item.type=${event.item?.type}`);
+
         // Codex --json outputs events with structure: {"type":"item.completed","item":{...}}
         // Only extract agent_message type - this is the actual response
         if (event.type === 'item.completed' && event.item) {
           if (event.item.type === 'agent_message' && event.item.text) {
             // Agent's actual response text
+            logger.info(`✅ extractCodexAgentMessage: found agent_message with ${event.item.text.length} chars`);
             agentMessages.push(event.item.text);
           }
           // Skip all other types:
@@ -550,13 +559,16 @@ export class CLIAgentOrchestrator {
           // - command_execution: file reads, bash commands
           // - error: will be in stderr
         }
-      } catch {
+      } catch (e) {
         // Skip non-JSON lines (config output, prompts, etc.)
+        logger.debug(`extractCodexAgentMessage: failed to parse line: ${line.substring(0, 50)}`);
         continue;
       }
     }
 
-    return agentMessages.join('\n\n').trim();
+    const result = agentMessages.join('\n\n').trim();
+    logger.info(`extractCodexAgentMessage: extracted ${agentMessages.length} messages, total ${result.length} chars`);
+    return result;
   }
 
   private emitThrottledStreamingEvent(
@@ -936,7 +948,7 @@ export class CLIAgentOrchestrator {
 
   async executeCodex(
     userPrompt: string,
-    systemPromptSpec: string, 
+    systemPromptSpec: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse> {
     return this._executeCLI(
@@ -945,16 +957,17 @@ export class CLIAgentOrchestrator {
       systemPromptSpec,
       { ...options },
       (userPrompt, systemPromptSpec, options) => {
-        const combinedPrompt = `CONTEXT AND INSTRUCTIONS:\n${systemPromptSpec}\n\nANALYZE:\n${userPrompt}`;
+        // Instruct Codex to analyze immediately in one shot without waiting for approval
+        const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}\n\nExecute the complete analysis now in a single response without creating a plan first or waiting for input. Provide your full findings immediately.`;
         const args = ['exec'];
         // Use provided model or default to gpt-5
         const model = options.models?.codex || AVAILABLE_MODELS.codex.default;
         args.push('--model', model);
-        // Add JSON flag to get structured output without verbose details
-        args.push('--json');
+        // Auto-approve all actions without prompting or sandboxing
+        args.push('--dangerously-bypass-approvals-and-sandbox');
         // Use stdin for the prompt instead of argv to avoid ARG_MAX limits
-        return { 
-          command: 'codex', 
+        return {
+          command: 'codex',
           args,
           input: combinedPrompt
         };

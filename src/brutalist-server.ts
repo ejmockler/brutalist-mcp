@@ -1061,18 +1061,30 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
       }
     }
 
-    // Handle pagination ONLY if explicitly requested by user
-    if (explicitPaginationRequested && paginationParams && primaryContent) {
-      logger.info(`🔧 DEBUG: Applying pagination (explicitly requested)`);
+    // Estimate token count to determine if pagination is needed
+    const estimatedTokens = estimateTokenCount(primaryContent);
+    const maxTokensWithoutPagination = 25000;
+    const needsAutoPagination = estimatedTokens > maxTokensWithoutPagination;
+
+    // Apply pagination if:
+    // 1. User explicitly requested it, OR
+    // 2. Content is too large (auto-pagination)
+    if ((explicitPaginationRequested || needsAutoPagination) && paginationParams && primaryContent) {
+      if (needsAutoPagination && !explicitPaginationRequested) {
+        logger.info(`🔧 DEBUG: Auto-applying pagination (${estimatedTokens} tokens > ${maxTokensWithoutPagination} limit)`);
+      } else {
+        logger.info(`🔧 DEBUG: Applying pagination (explicitly requested)`);
+      }
       return this.formatPaginatedResponse(primaryContent, paginationParams, result, verbose, analysisId);
     }
-    
-    // Non-paginated response (legacy behavior)
+
+    // Non-paginated response (only for content that fits within token limit)
     if (primaryContent) {
+      logger.info(`🔧 DEBUG: Returning full response (${estimatedTokens} tokens < ${maxTokensWithoutPagination} limit)`);
       return {
-        content: [{ 
-          type: "text" as const, 
-          text: primaryContent 
+        content: [{
+          type: "text" as const,
+          text: primaryContent
         }]
       };
     }

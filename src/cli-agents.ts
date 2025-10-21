@@ -35,7 +35,7 @@ const MAX_CONCURRENT_CLIS = parseInt(process.env.BRUTALIST_MAX_CONCURRENT || '3'
 
 // Resource limits for security
 const MAX_MEMORY_MB = parseInt(process.env.BRUTALIST_MAX_MEMORY || '2048', 10); // 2GB memory limit per process
-const MAX_CPU_TIME_SEC = parseInt(process.env.BRUTALIST_MAX_CPU_TIME || '1800', 10); // 30 minutes CPU time (should exceed default timeout)
+const MAX_CPU_TIME_SEC = parseInt(process.env.BRUTALIST_MAX_CPU_TIME || '3000', 10); // 50 minutes CPU time (should exceed default timeout)
 const MEMORY_CHECK_INTERVAL = 5000; // Check memory usage every 5 seconds
 
 // Process tracking for resource management
@@ -426,7 +426,7 @@ export interface CLIContext {
 }
 
 export class CLIAgentOrchestrator {
-  private defaultTimeout = 1500000; // 25 minutes - thorough analysis takes time
+  private defaultTimeout = 2700000; // 45 minutes - thorough analysis takes time
   private defaultWorkingDir = process.cwd();
   private cliContext: CLIContext = { availableCLIs: [] };
   private cliContextCached = false;
@@ -970,6 +970,8 @@ export class CLIAgentOrchestrator {
         args.push('--model', model);
         // Auto-approve all actions without prompting or sandboxing
         args.push('--dangerously-bypass-approvals-and-sandbox');
+        // CRITICAL: Use --json flag to get structured output that we can parse
+        args.push('--json');
 
         // DEFENSIVE: Disable MCP if Codex supports it (currently no known MCP support)
         // This prevents potential stdio deadlock if Codex adds MCP in the future

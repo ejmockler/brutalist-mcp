@@ -545,7 +545,16 @@ export class BrutalistServer {
         const cursorParams = parseCursor(args.cursor);
         Object.assign(paginationParams, cursorParams);
       }
-      
+
+      // Determine if pagination was explicitly requested by the user
+      const explicitPaginationRequested =
+        args.offset !== undefined ||
+        args.limit !== undefined ||
+        args.cursor !== undefined ||
+        args.analysis_id !== undefined;
+
+      logger.info(`🔧 DEBUG: explicitPaginationRequested=${explicitPaginationRequested}, offset=${args.offset}, limit=${args.limit}, cursor=${args.cursor}, analysis_id=${args.analysis_id}`);
+
       // Check cache if analysis_id provided
       if (args.analysis_id && !args.force_refresh) {
         const cachedContent = await this.responseCache.get(args.analysis_id, sessionId);
@@ -560,7 +569,7 @@ export class BrutalistServer {
               executionTime: 0
             }]
           };
-          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, args.analysis_id);
+          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, args.analysis_id, explicitPaginationRequested);
         } else {
           logger.warn(`❌ Cache MISS for analysis_id: ${args.analysis_id}, session: ${sessionId}`);
           // Don't silently re-run - analysis_id should always hit cache or error
@@ -571,7 +580,7 @@ export class BrutalistServer {
           );
         }
       }
-      
+
       // Generate cache key for this request
       const cacheKey = this.responseCache.generateCacheKey(
         config.cacheKeyFields.reduce((acc, field) => {
@@ -580,7 +589,7 @@ export class BrutalistServer {
           return acc;
         }, {} as Record<string, any>)
       );
-      
+
       // Check if we have a cached result (unless forcing refresh)
       if (!args.force_refresh) {
         const cachedContent = await this.responseCache.get(cacheKey, sessionId);
@@ -600,7 +609,7 @@ export class BrutalistServer {
               executionTime: 0
             }]
           };
-          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, analysisId);
+          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, analysisId, explicitPaginationRequested);
         }
       }
       
@@ -638,7 +647,7 @@ export class BrutalistServer {
             if (args[field] !== undefined) acc[field] = args[field];
             return acc;
           }, {} as Record<string, any>);
-          
+
           const { analysisId: newId } = await this.responseCache.set(
             cacheData,
             fullContent,
@@ -650,8 +659,8 @@ export class BrutalistServer {
           logger.info(`✅ Cached analysis result with ID: ${analysisId} for session: ${sessionId?.substring(0, 8)}`);
         }
       }
-      
-      return this.formatToolResponse(result, args.verbose, paginationParams, analysisId);
+
+      return this.formatToolResponse(result, args.verbose, paginationParams, analysisId, explicitPaginationRequested);
     } catch (error) {
       return this.formatErrorResponse(error);
     }
@@ -1026,14 +1035,21 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     return null;
   }
 
-  private formatToolResponse(result: BrutalistResponse, verbose: boolean = false, paginationParams?: PaginationParams, analysisId?: string) {
+  private formatToolResponse(
+    result: BrutalistResponse,
+    verbose: boolean = false,
+    paginationParams?: PaginationParams,
+    analysisId?: string,
+    explicitPaginationRequested: boolean = false
+  ) {
     logger.info(`🔧 DEBUG: formatToolResponse called with synthesis length: ${result.synthesis?.length || 0}`);
     logger.info(`🔧 DEBUG: result.success=${result.success}, responses.length=${result.responses?.length || 0}`);
     logger.info(`🔧 DEBUG: pagination params:`, paginationParams);
-    
+    logger.info(`🔧 DEBUG: explicitPaginationRequested=${explicitPaginationRequested}`);
+
     // Get the primary content to paginate
     let primaryContent = '';
-    
+
     if (result.synthesis) {
       primaryContent = result.synthesis;
       logger.info(`🔧 DEBUG: Using synthesis content (${primaryContent.length} characters)`);
@@ -1044,9 +1060,10 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
         logger.info(`🔧 DEBUG: Using raw CLI output (${primaryContent.length} characters)`);
       }
     }
-    
-    // Handle pagination if params provided and content is substantial
-    if (paginationParams && primaryContent) {
+
+    // Handle pagination ONLY if explicitly requested by user
+    if (explicitPaginationRequested && paginationParams && primaryContent) {
+      logger.info(`🔧 DEBUG: Applying pagination (explicitly requested)`);
       return this.formatPaginatedResponse(primaryContent, paginationParams, result, verbose, analysisId);
     }
     

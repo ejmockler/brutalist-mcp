@@ -457,9 +457,7 @@ export class BrutalistServer {
           // Add CLI context information
           const cliContext = await this.cliOrchestrator.detectCLIContext();
           roster += "## Current CLI Context\n";
-          roster += `**Available CLIs:** ${cliContext.availableCLIs.join(', ') || 'None detected'}\n`;
-          roster += `**Current CLI:** ${cliContext.currentCLI || 'Unknown'}\n`;
-          roster += `**Smart Routing:** ${cliContext.currentCLI ? `Excludes ${cliContext.currentCLI} for analysis` : 'Uses all available CLIs'}\n\n`;
+          roster += `**Available CLIs:** ${cliContext.availableCLIs.join(', ') || 'None detected'}\n\n`;
           
           roster += "## Pagination Support (NEW in v0.5.2)\n";
           roster += "**All tools now support intelligent pagination:**\n";

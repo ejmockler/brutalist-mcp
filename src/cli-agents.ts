@@ -226,7 +226,7 @@ async function spawnAsync(
       cwd: cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false, // CRITICAL: disable shell to prevent injection
-      detached: command !== 'gemini', // Disable detached for Gemini CLI to fix macOS issue
+      detached: false, // Run all CLIs non-detached for consistent behavior
       env: secureEnv,
       // Additional security options
       uid: process.getuid ? process.getuid() : undefined, // Maintain current user ID
@@ -297,13 +297,8 @@ async function spawnAsync(
       killTimer = setTimeout(() => {
         if (!killed) {
           try {
-            if (command === 'gemini' || process.platform === 'win32') {
-              // Gemini runs non-detached, and Windows doesn't support process groups
-              child.kill('SIGKILL');
-            } else {
-              // Other CLIs on Unix-like systems: kill process group
-              process.kill(-child.pid!, 'SIGKILL');
-            }
+            // All CLIs run non-detached now, so just kill the process directly
+            child.kill('SIGKILL');
           } catch (e) {
             // Process may have already exited
           }
@@ -387,10 +382,15 @@ async function spawnAsync(
     // Send input if provided, then close stdin
     if (options.input) {
       child.stdin?.write(options.input);
+      child.stdin?.end();
+    } else {
+      // CRITICAL: For Claude CLI specifically, close stdin immediately even without input
+      // Claude --print waits for stdin EOF before processing the prompt argument
+      if (command === 'claude') {
+        child.stdin?.end();
+      }
+      // Other CLIs (Codex, Gemini) work fine with stdin left open
     }
-    // CRITICAL: Always close stdin, even if no input provided
-    // CLI tools like Claude wait for stdin to close before processing
-    child.stdin?.end();
   });
 }
 
@@ -421,7 +421,6 @@ export interface StreamingEvent {
 }
 
 export interface CLIContext {
-  currentCLI?: 'claude' | 'codex' | 'gemini';
   availableCLIs: ('claude' | 'codex' | 'gemini')[];
 }
 
@@ -642,7 +641,6 @@ export class CLIAgentOrchestrator {
     }
 
     const availableCLIs: ('claude' | 'codex' | 'gemini')[] = [];
-    let currentCLI: 'claude' | 'codex' | 'gemini' | undefined;
 
     // Check for available CLIs
     const cliChecks = [
@@ -667,55 +665,24 @@ export class CLIAgentOrchestrator {
       .map(result => (result as PromiseFulfilledResult<typeof cliChecks[number]['name']>).value);
     availableCLIs.push(...detectedCLIs);
 
-
-    // Detect current CLI context from environment or process
-    currentCLI = this.detectCurrentCLI();
-
-    this.cliContext = { currentCLI, availableCLIs };
+    this.cliContext = { availableCLIs };
     this.cliContextCached = true;
     this.cliContextCacheTime = Date.now();
-    
+
     return this.cliContext;
-  }
-
-  private detectCurrentCLI(): 'claude' | 'codex' | 'gemini' | undefined {
-    // Check environment variables that might indicate current CLI
-    if (process.env.CLAUDE_CODE_SESSION || process.env.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CODE_ENTRYPOINT || process.env.CLAUDECODE) {
-      return 'claude';
-    }
-    
-    if (process.env.CODEX_SESSION || process.env.OPENAI_CODEX_SESSION) {
-      return 'codex';
-    }
-    
-    if (process.env.GEMINI_SESSION || process.env.GEMINI_API_KEY) {
-      return 'gemini';
-    }
-
-    // Check process parent/ancestry for CLI indicators
-    try {
-      const processInfo = process.env._;
-      if (processInfo?.includes('claude')) return 'claude';
-      if (processInfo?.includes('codex')) return 'codex'; 
-      if (processInfo?.includes('gemini')) return 'gemini';
-    } catch (error) {
-      logger.debug('Could not detect current CLI from process info');
-    }
-
-    return undefined;
   }
 
   selectSingleCLI(
     preferredCLI?: 'claude' | 'codex' | 'gemini',
     analysisType?: BrutalistPromptType
   ): 'claude' | 'codex' | 'gemini' {
-    // 1. Honor explicit preference if available (allow even if current CLI to avoid blocking)
+    // 1. Honor explicit preference if available
     if (preferredCLI && this.cliContext.availableCLIs.includes(preferredCLI)) {
       logger.info(`✅ Using preferred CLI: ${preferredCLI}`);
       return preferredCLI;
     }
-    
-    // 2. Smart selection based on analysis type  
+
+    // 2. Smart selection based on analysis type
     const selectionRules: Record<string, ('claude' | 'codex' | 'gemini')[]> = {
       'code': ['claude', 'codex', 'gemini'],
       'architecture': ['gemini', 'claude', 'codex'],
@@ -728,32 +695,24 @@ export class CLIAgentOrchestrator {
       'debate': ['claude', 'gemini', 'codex'],
       'default': ['claude', 'gemini', 'codex']
     };
-    
+
     const priority = selectionRules[analysisType || 'default'] || selectionRules.default;
-    
-    // 3. Filter available CLIs, exclude current CLI only for auto-selection to prevent recursion
-    const currentCLI = this.cliContext.currentCLI;
-    const candidates = this.cliContext.availableCLIs.filter(cli => cli !== currentCLI);
-    
-    // If no candidates after filtering, fall back to available CLIs (allow recursion if necessary)
-    const finalCandidates = candidates.length > 0 ? candidates : this.cliContext.availableCLIs;
-    
-    if (finalCandidates.length === 0) {
-      throw new Error('No CLI agents available');
-    }
-    
-    // 4. Select by priority
+
+    // 3. Select by priority from available CLIs
     for (const cli of priority) {
-      if (finalCandidates.includes(cli)) {
-        const recursionWarning = candidates.length === 0 ? ' (allowing recursion)' : '';
-        logger.info(`🎯 Auto-selected ${cli} for ${analysisType || 'general'} analysis${recursionWarning}`);
+      if (this.cliContext.availableCLIs.includes(cli)) {
+        logger.info(`🎯 Auto-selected ${cli} for ${analysisType || 'general'} analysis`);
         return cli;
       }
     }
-    
+
     // Fallback to first available
-    logger.warn(`⚠️ Using fallback CLI: ${finalCandidates[0]}`);
-    return finalCandidates[0];
+    if (this.cliContext.availableCLIs.length === 0) {
+      throw new Error('No CLI agents available');
+    }
+
+    logger.warn(`⚠️ Using fallback CLI: ${this.cliContext.availableCLIs[0]}`);
+    return this.cliContext.availableCLIs[0];
   }
 
   private async _executeCLI(
@@ -920,9 +879,7 @@ export class CLIAgentOrchestrator {
       options,
       (userPrompt, systemPromptSpec, options) => {
         const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
-        const args = [];
-
-        args.push('--print');
+        const args = ['--print'];
 
         // Enable streaming for real-time progress if progress notifications are enabled
         if (options.progressToken) {
@@ -934,19 +891,12 @@ export class CLIAgentOrchestrator {
         if (model) {
           args.push('--model', model);
         }
-        // Pass prompt as argument - Claude CLI works better this way
+
+        // Pass prompt as argument
         args.push(combinedPrompt);
 
-        // Set environment to ensure consistent output behavior
-        const env = {
-          ...process.env,
-          TERM: 'dumb',      // Disable fancy terminal output
-          NO_COLOR: '1',     // Disable colored output
-          CI: 'true',        // Indicate non-interactive environment
-          BRUTALIST_SUBPROCESS: '1'  // Mark this as a brutalist-spawned subprocess
-        };
-
-        return { command: 'claude', args, env };
+        // Inherit full environment - same as direct invocation
+        return { command: 'claude', args, env: process.env as Record<string, string> };
       }
     );
   }
@@ -1177,7 +1127,7 @@ export class CLIAgentOrchestrator {
     if (options.preferredCLI) {
       const selectedCLI = this.selectSingleCLI(
         options.preferredCLI,
-        options.analysisType
+        analysisType  // Use the direct parameter, not options.analysisType
       );
       
       logger.info(`✅ Using preferred CLI: ${selectedCLI}`);

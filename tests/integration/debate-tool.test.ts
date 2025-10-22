@@ -128,7 +128,6 @@ describe('Debate Tool Tests', () => {
       executeSingleCLI: jest.fn(),
       selectSingleCLI: jest.fn(),
       executeAllCLIs: jest.fn(),
-      cliContext: { availableCLIs: ['claude', 'codex', 'gemini'], currentCLI: undefined }
     } as any;
 
     // Replace the orchestrator in the brutalist server
@@ -143,7 +142,6 @@ describe('Debate Tool Tests', () => {
     it('should require at least 2 CLI agents for debate', async () => {
       mockOrchestrator.detectCLIContext.mockResolvedValue({
         availableCLIs: ['claude'], // Only one CLI
-        currentCLI: undefined
       });
 
       await expect(
@@ -157,7 +155,6 @@ describe('Debate Tool Tests', () => {
     it('should assign opposing positions to available agents', async () => {
       mockOrchestrator.detectCLIContext.mockResolvedValue({
         availableCLIs: ['claude', 'codex'],
-        currentCLI: undefined
       });
 
       let capturedPrompts: string[] = [];
@@ -189,7 +186,6 @@ describe('Debate Tool Tests', () => {
     it('should handle debate topic and context properly', async () => {
       mockOrchestrator.detectCLIContext.mockResolvedValue({
         availableCLIs: ['claude', 'codex'],
-        currentCLI: undefined
       });
 
       let capturedPrompts: string[] = [];
@@ -219,7 +215,6 @@ describe('Debate Tool Tests', () => {
     beforeEach(() => {
       mockOrchestrator.detectCLIContext.mockResolvedValue({
         availableCLIs: ['claude', 'codex'],
-        currentCLI: undefined
       });
     });
 
@@ -322,7 +317,6 @@ describe('Debate Tool Tests', () => {
     beforeEach(() => {
       mockOrchestrator.detectCLIContext.mockResolvedValue({
         availableCLIs: ['claude', 'codex', 'gemini'],
-        currentCLI: undefined
       });
     });
 
@@ -399,7 +393,6 @@ describe('Debate Tool Tests', () => {
     beforeEach(() => {
       mockOrchestrator.detectCLIContext.mockResolvedValue({
         availableCLIs: ['claude', 'codex'],
-        currentCLI: undefined
       });
     });
 
@@ -534,7 +527,6 @@ describe('Debate Tool Tests', () => {
     beforeEach(() => {
       mockOrchestrator.detectCLIContext.mockResolvedValue({
         availableCLIs: ['claude', 'codex', 'gemini'],
-        currentCLI: undefined
       });
     });
 
@@ -616,7 +608,6 @@ describe('Debate Tool Tests', () => {
     beforeEach(() => {
       mockOrchestrator.detectCLIContext.mockResolvedValue({
         availableCLIs: ['claude', 'codex', 'gemini'],
-        currentCLI: undefined
       });
     });
 
@@ -704,7 +695,6 @@ describe('Debate Tool Tests', () => {
     beforeEach(() => {
       mockOrchestrator.detectCLIContext.mockResolvedValue({
         availableCLIs: ['claude', 'codex'],
-        currentCLI: undefined
       });
     });
 

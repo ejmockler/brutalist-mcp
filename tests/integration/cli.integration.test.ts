@@ -77,7 +77,6 @@ describe('CLI Integration Tests', () => {
       
       // Log available CLIs for debugging
       console.log('Available CLIs:', context.availableCLIs);
-      console.log('Current CLI:', context.currentCLI);
     });
 
     it('should cache CLI context for performance', async () => {

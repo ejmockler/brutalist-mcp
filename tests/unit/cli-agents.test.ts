@@ -56,7 +56,6 @@ describe('CLIAgentOrchestrator', () => {
     // Mock CLI context with available CLIs for most tests
     (orchestrator as any).cliContext = {
       availableCLIs: ['claude', 'codex', 'gemini'],
-      currentCLI: 'claude'
     };
     (orchestrator as any).cliContextCached = true;
   });
@@ -115,7 +114,6 @@ describe('CLIAgentOrchestrator', () => {
 
       const context = await orchestrator.detectCLIContext();
 
-      expect(context.currentCLI).toBe('claude');
       
       process.env = originalEnv;
     });
@@ -149,7 +147,6 @@ describe('CLIAgentOrchestrator', () => {
       const context = await orchestrator.detectCLIContext();
 
       expect(context.availableCLIs).toEqual([]);
-      expect(context.currentCLI).toBeUndefined();
 
       // Restore environment
       process.env = originalEnv;
@@ -193,7 +190,6 @@ describe('CLIAgentOrchestrator', () => {
       // Setup context with all CLIs available
       const mockContext = {
         availableCLIs: ['claude', 'codex', 'gemini'],
-        currentCLI: 'claude' as const
       };
       
       // Mock the private cliContext property
@@ -215,7 +211,6 @@ describe('CLIAgentOrchestrator', () => {
       // Mock CLI context with limited available CLIs
       (orchestrator as any).cliContext = {
         availableCLIs: ['claude'], // Only claude available
-        currentCLI: undefined
       };
       
       // When gemini is requested but not available, should fallback to claude
@@ -517,7 +512,6 @@ describe('CLIAgentOrchestrator', () => {
       
       console.log('Real CLI context detected:', {
         availableCLIs: context.availableCLIs,
-        currentCLI: context.currentCLI
       });
 
       // In CI, we might not have any CLIs installed

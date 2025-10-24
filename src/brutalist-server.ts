@@ -27,7 +27,7 @@ import {
 } from './utils/pagination.js';
 import { ResponseCache } from './utils/response-cache.js';
 // Use environment variable or fallback to manual version
-const PACKAGE_VERSION = process.env.npm_package_version || "0.4.4";
+const PACKAGE_VERSION = process.env.npm_package_version || "0.6.12";
 
 export class BrutalistServer {
   public server: McpServer;

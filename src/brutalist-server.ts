@@ -47,7 +47,7 @@ export class BrutalistServer {
   constructor(config: BrutalistServerConfig = {}) {
     this.config = {
       workingDirectory: process.cwd(),
-      defaultTimeout: 1500000, // 25 minutes for thorough CLI analysis
+      defaultTimeout: 120000, // 2 minutes for testing (configurable via BRUTALIST_TIMEOUT env)
       transport: 'stdio', // Default to stdio for backward compatibility
       httpPort: 3000,
       ...config
@@ -1064,25 +1064,42 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     const maxTokensWithoutPagination = 25000;
     const needsAutoPagination = estimatedTokens > maxTokensWithoutPagination;
 
-    // Apply pagination if:
-    // 1. User explicitly requested it, OR
-    // 2. Content is too large (auto-pagination)
-    if ((explicitPaginationRequested || needsAutoPagination) && paginationParams && primaryContent) {
+    // CRITICAL: Always apply pagination if content is too large, even if not explicitly requested
+    // This prevents MCP protocol errors when response exceeds client token limits
+    if (needsAutoPagination || explicitPaginationRequested) {
       if (needsAutoPagination && !explicitPaginationRequested) {
-        logger.info(`🔧 DEBUG: Auto-applying pagination (${estimatedTokens} tokens > ${maxTokensWithoutPagination} limit)`);
-      } else {
+        logger.info(`🔧 AUTO-PAGINATING: ${estimatedTokens} tokens exceeds ${maxTokensWithoutPagination} limit - forcing first page`);
+        // Force pagination params to show first chunk (use token-based limit)
+        const forcedParams: PaginationParams = {
+          offset: 0,
+          limit: PAGINATION_DEFAULTS.DEFAULT_LIMIT_TOKENS // Use token-based limit
+        };
+        return this.formatPaginatedResponse(primaryContent, forcedParams, result, verbose, analysisId);
+      } else if (paginationParams) {
         logger.info(`🔧 DEBUG: Applying pagination (explicitly requested)`);
+        return this.formatPaginatedResponse(primaryContent, paginationParams, result, verbose, analysisId);
       }
-      return this.formatPaginatedResponse(primaryContent, paginationParams, result, verbose, analysisId);
     }
 
     // Non-paginated response (only for content that fits within token limit)
     if (primaryContent) {
       logger.info(`🔧 DEBUG: Returning full response (${estimatedTokens} tokens < ${maxTokensWithoutPagination} limit)`);
+
+      // Include analysis_id even for non-paginated responses (for future pagination/caching)
+      let responseText = '';
+      if (analysisId) {
+        responseText += `# Brutalist Analysis Results\n\n`;
+        responseText += `**🔑 Analysis ID:** ${analysisId}\n\n`;
+        responseText += `---\n\n`;
+        responseText += primaryContent;
+      } else {
+        responseText = primaryContent;
+      }
+
       return {
         content: [{
           type: "text" as const,
-          text: primaryContent
+          text: responseText
         }]
       };
     }
@@ -1117,14 +1134,16 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     analysisId?: string
   ) {
     // Using imported pagination utilities
-    
+
     const offset = paginationParams.offset || 0;
-    const limit = paginationParams.limit || PAGINATION_DEFAULTS.DEFAULT_LIMIT;
-    
-    logger.info(`🔧 DEBUG: Paginating content - offset: ${offset}, limit: ${limit}, total: ${content.length}`);
-    
-    // Use ResponseChunker for intelligent boundary detection
-    const chunker = new ResponseChunker(limit, 200); // 200 char overlap
+    // Convert character-based limit to token-based limit (1 token ≈ 4 chars)
+    const limitChars = paginationParams.limit || PAGINATION_DEFAULTS.DEFAULT_LIMIT;
+    const limitTokens = Math.ceil(limitChars / 4); // Convert chars to tokens
+
+    logger.info(`🔧 DEBUG: Paginating content - offset: ${offset}, limitChars: ${limitChars}, limitTokens: ${limitTokens}, total: ${content.length} chars`);
+
+    // Use ResponseChunker for intelligent boundary detection (TOKEN-BASED)
+    const chunker = new ResponseChunker(limitTokens, PAGINATION_DEFAULTS.CHUNK_OVERLAP_TOKENS);
     const chunks = chunker.chunkText(content);
 
     // Find the appropriate chunk based on offset
@@ -1147,7 +1166,7 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     const endOffset = targetChunk.endOffset;
 
     // Create pagination metadata using actual chunk boundaries
-    const pagination = createPaginationMetadata(content.length, paginationParams, limit, chunks, targetChunkIndex);
+    const pagination = createPaginationMetadata(content.length, paginationParams, limitTokens, chunks, targetChunkIndex);
     const statusLine = formatPaginationStatus(pagination);
     
     // Estimate token usage for user awareness

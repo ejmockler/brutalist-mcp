@@ -62,19 +62,14 @@ export const AVAILABLE_MODELS = {
 } as const;
 
 // Security utilities for CLI execution
-const MAX_ARG_LENGTH = 4096; // Maximum argument length
 const MAX_PATH_DEPTH = 10; // Maximum directory depth for paths
 
 // Validate and sanitize CLI arguments
 // Note: We use spawn() with shell:false and array args, so we don't need to block
-// punctuation characters. Only block truly dangerous patterns (null bytes, excessive length).
+// punctuation characters. Only block truly dangerous patterns (null bytes).
+// We use stdin for large content, so no arg length limit needed (OS limit is ~1MB anyway).
 function validateArguments(args: string[]): void {
   for (const arg of args) {
-    // Check argument length (DoS prevention)
-    if (arg.length > MAX_ARG_LENGTH) {
-      throw new Error(`Argument too long: ${arg.length} > ${MAX_ARG_LENGTH} characters`);
-    }
-
     // Check for null bytes (can terminate strings prematurely)
     if (arg.includes('\0')) {
       throw new Error('Argument contains null byte');
@@ -892,11 +887,15 @@ export class CLIAgentOrchestrator {
           args.push('--model', model);
         }
 
-        // Pass prompt as argument
-        args.push(combinedPrompt);
-
+        // Use stdin to avoid MAX_ARG_LENGTH limit (4096 chars)
+        // Claude --print can read from stdin when no positional argument is provided
         // Inherit full environment - same as direct invocation
-        return { command: 'claude', args, env: process.env as Record<string, string> };
+        return {
+          command: 'claude',
+          args,
+          input: combinedPrompt,
+          env: process.env as Record<string, string>
+        };
       }
     );
   }
@@ -918,10 +917,12 @@ export class CLIAgentOrchestrator {
         // Use provided model or default to gpt-5-codex
         const model = options.models?.codex || AVAILABLE_MODELS.codex.default;
         args.push('--model', model);
-        // Auto-approve all actions without prompting or sandboxing
-        args.push('--dangerously-bypass-approvals-and-sandbox');
-        // CRITICAL: Use --json flag to get structured output that we can parse
-        args.push('--json');
+        // SECURITY: Use read-only sandbox to prevent filesystem modifications
+        args.push('--sandbox', 'read-only');
+        // OPTIONAL: Use --json flag to get structured output (can be disabled for compatibility)
+        if (process.env.CODEX_USE_JSON !== 'false') {
+          args.push('--json');
+        }
 
         // DEFENSIVE: Disable MCP if Codex supports it (currently no known MCP support)
         // This prevents potential stdio deadlock if Codex adds MCP in the future
@@ -962,12 +963,17 @@ export class CLIAgentOrchestrator {
         const modelName = options.models?.gemini || AVAILABLE_MODELS.gemini.default;
         args.push('--model', modelName);
 
+        // SECURITY: Enable sandbox to restrict filesystem access
+        args.push('--sandbox');
+
         // DEFENSIVE: Disable MCP if Gemini supports it (currently no known MCP support)
         // This prevents potential stdio deadlock if Gemini adds MCP in the future
         // Note: Gemini CLI doesn't currently have documented MCP config flags
 
         const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
-        args.push(combinedPrompt);
+
+        // Use stdin to avoid MAX_ARG_LENGTH limit (4096 chars)
+        // Gemini CLI can read from stdin instead of positional argument
 
         // Create clean environment without MCP-related variables
         const cleanEnv = { ...process.env };
@@ -977,6 +983,7 @@ export class CLIAgentOrchestrator {
         return {
           command: 'gemini',
           args: args,
+          input: combinedPrompt, // Pass prompt via stdin instead of args
           env: {
             ...cleanEnv,
             TERM: 'dumb',

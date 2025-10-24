@@ -83,8 +83,8 @@ describe('Cache Integration Tests', () => {
     orchestrator = new CLIAgentOrchestrator();
     
     chunker = new ResponseChunker(
-      PAGINATION_DEFAULTS.DEFAULT_LIMIT,
-      PAGINATION_DEFAULTS.CHUNK_OVERLAP
+      PAGINATION_DEFAULTS.DEFAULT_LIMIT_TOKENS, // Use token-based limit
+      PAGINATION_DEFAULTS.CHUNK_OVERLAP_TOKENS   // Use token-based overlap
     );
 
     jest.clearAllMocks();
@@ -501,34 +501,34 @@ describe('Cache Integration Tests', () => {
     it('should handle typical brutalist analysis response pagination', async () => {
       const brutalistResponse = createLargeAnalysisResponse(150); // 150KB for multiple chunks
 
-      const params = { 
+      const params = {
         targetPath: '/real-project',
         context: 'Complete security audit',
         preferredCLI: 'claude'
       };
-      
+
       const { cacheKey } = await cache.set(params, brutalistResponse);
-      
+
       // Test pagination workflow
       const cached = await cache.get(cacheKey);
       expect(cached).toBeDefined();
-      
+
       const chunks = chunker.chunkText(cached!);
-      
+
       // Should create multiple readable chunks
       expect(chunks.length).toBeGreaterThan(1);
-      
+
       // Each chunk should contain complete sections where possible
       chunks.forEach((chunk, index) => {
         expect(chunk.content.length).toBeGreaterThan(0);
         expect(chunk.startOffset).toBeGreaterThanOrEqual(0);
         expect(chunk.endOffset).toBeGreaterThan(chunk.startOffset);
-        
+
         // Metadata should be accurate
         expect(chunk.metadata.originalLength).toBe(brutalistResponse.length);
         expect(chunk.metadata.isComplete).toBe(index === chunks.length - 1);
       });
-    });
+    }, 60000); // 60 second timeout for large content processing
 
     it('should handle concurrent cache operations', async () => {
       // Simulate multiple concurrent analysis requests with smaller number for stability

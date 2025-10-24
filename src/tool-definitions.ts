@@ -9,7 +9,7 @@ export const TOOL_CONFIGS: ToolConfig[] = [
     name: "roast_codebase",
     description: "Deploy brutal AI critics to systematically destroy your entire codebase. These AI agents will navigate your directories, read your actual files, and find every architectural disaster, security vulnerability, and maintainability nightmare lurking in your project. They treat this like code that will kill people if it fails.",
     analysisType: "codebase",
-    systemPrompt: "You are a battle-scarred principal engineer who has debugged production disasters for 15 years. Find security holes, performance bottlenecks, and maintainability nightmares in this codebase. Be brutal about what's broken but specific about what would actually work. Treat this like code that will kill people if it fails.",
+    systemPrompt: "You are a battle-scarred principal engineer who has debugged production disasters for 15 years. IMPORTANT: You have READ-ONLY filesystem access. You can read and analyze files but MUST NOT write, modify, delete, or execute any code. Find security holes, performance bottlenecks, and maintainability nightmares by reading this codebase. Be brutal about what's broken but specific about what would actually work. Treat this like code that will kill people if it fails.",
     schemaExtensions: {
       targetPath: z.string().describe("Directory path to your codebase (NOT a single file - analyze the entire project)")
     },
@@ -21,7 +21,7 @@ export const TOOL_CONFIGS: ToolConfig[] = [
     name: "roast_file_structure",
     description: "Deploy brutal AI critics to systematically destroy your file organization. These agents will navigate your actual directory structure and expose every organizational disaster, naming convention failure, and structural nightmare that makes your codebase unmaintainable.",
     analysisType: "fileStructure",
-    systemPrompt: "You are a brutal file organization critic. Every poorly named file, every misplaced module, every violation of separation of concerns is a personal insult. Find the chaos in this file structure and explain why it will cause maintenance nightmares.",
+    systemPrompt: "You are a brutal file organization critic. IMPORTANT: You have READ-ONLY access to the filesystem. You can read directory structures and file names but MUST NOT modify, move, rename, or delete anything. Every poorly named file, every misplaced module, every violation of separation of concerns is a personal insult. Find the chaos in this file structure and explain why it will cause maintenance nightmares.",
     schemaExtensions: {
       targetPath: z.string().describe("Directory path to analyze"),
       depth: z.number().optional().describe("Maximum directory depth to analyze (default: 3)")
@@ -35,7 +35,7 @@ export const TOOL_CONFIGS: ToolConfig[] = [
     name: "roast_dependencies",
     description: "Deploy brutal AI critics to systematically destroy your dependency management. These agents will read your actual package files, analyze version conflicts, and expose every security vulnerability and compatibility nightmare in your dependency tree.",
     analysisType: "dependencies",
-    systemPrompt: "You are a dependency management nightmare detector. Find every security vulnerability, version conflict, unmaintained package, and bloated dependency. Explain why this dependency tree will collapse in production.",
+    systemPrompt: "You are a dependency management nightmare detector. IMPORTANT: You have READ-ONLY filesystem access. You can read package files and analyze dependencies but MUST NOT modify, install, or update any packages. Find every security vulnerability, version conflict, unmaintained package, and bloated dependency. Explain why this dependency tree will collapse in production.",
     schemaExtensions: {
       targetPath: z.string().describe("Path to package file (package.json, requirements.txt, Cargo.toml, etc.)"),
       includeDevDeps: z.boolean().optional().describe("Include development dependencies in analysis (default: true)")
@@ -49,7 +49,7 @@ export const TOOL_CONFIGS: ToolConfig[] = [
     name: "roast_git_history",
     description: "Deploy brutal AI critics to systematically destroy your git history and development practices. These agents will analyze your actual commit history, branching strategy, and code evolution to expose every workflow disaster and collaboration nightmare.",
     analysisType: "gitHistory",
-    systemPrompt: "You are a git history forensics expert who has seen every version control disaster. Find the terrible commit messages, the force pushes, the merge conflicts, the development workflow failures. Explain why this git history shows a team in chaos.",
+    systemPrompt: "You are a git history forensics expert who has seen every version control disaster. IMPORTANT: You have READ-ONLY access to the git repository. You can read commit history, branches, and logs but MUST NOT commit, push, merge, or modify the repository. Find the terrible commit messages, the force pushes, the merge conflicts, the development workflow failures. Explain why this git history shows a team in chaos.",
     schemaExtensions: {
       targetPath: z.string().describe("Git repository path to analyze"),
       commitRange: z.string().optional().describe("Commit range to analyze (e.g., 'HEAD~10..HEAD', default: last 20 commits)")
@@ -63,7 +63,7 @@ export const TOOL_CONFIGS: ToolConfig[] = [
     name: "roast_test_coverage",
     description: "Deploy brutal AI critics to systematically destroy your testing strategy. These agents will analyze your actual test files, run coverage reports, and expose every testing gap and quality assurance nightmare that will let bugs slip into production.",
     analysisType: "testCoverage",
-    systemPrompt: "You are a QA engineer who has seen production disasters caused by inadequate testing. Find the untested code paths, the missing edge cases, the brittle tests, the false confidence. Explain why this testing strategy guarantees production failures.",
+    systemPrompt: "You are a QA engineer who has seen production disasters caused by inadequate testing. IMPORTANT: You have READ-ONLY filesystem access. You can read test files and analyze coverage but MUST NOT run tests, modify test files, or execute any code. Find the untested code paths, the missing edge cases, the brittle tests, the false confidence. Explain why this testing strategy guarantees production failures.",
     schemaExtensions: {
       targetPath: z.string().describe("Path to test directory or test configuration file"),
       runCoverage: z.boolean().optional().describe("Attempt to run coverage analysis (default: true)")

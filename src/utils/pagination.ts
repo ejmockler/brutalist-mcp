@@ -6,12 +6,17 @@ import {
   PaginatedResponse 
 } from '../types/brutalist.js';
 
-// Default pagination configuration
+// Default pagination configuration - WORKING IN TOKENS NOW, not characters
 export const PAGINATION_DEFAULTS = {
-  DEFAULT_LIMIT: 90000, // ~22.5K tokens - optimized for Claude Code's 25K window with headroom
-  MAX_LIMIT: 100000,    // 100K tokens - reasonable upper bound
-  MIN_LIMIT: 1000,      // 1K tokens - minimum meaningful chunk
-  CHUNK_OVERLAP: 200    // Character overlap between chunks for context
+  DEFAULT_LIMIT_TOKENS: 22000, // 22K tokens - safe margin below Claude Code's 25K limit
+  MAX_LIMIT_TOKENS: 90000,     // 90K tokens - reasonable upper bound for large responses
+  MIN_LIMIT_TOKENS: 1000,      // 1K tokens - minimum meaningful chunk
+  CHUNK_OVERLAP_TOKENS: 50,    // 50 token overlap between chunks for context
+  // Legacy character-based defaults (for backward compatibility with existing tool args)
+  DEFAULT_LIMIT: 90000,        // ~22.5K tokens worth of characters (kept at 90K for back-compat)
+  MAX_LIMIT: 100000,           // ~25K tokens worth of characters (hard limit for tool args)
+  MIN_LIMIT: 1000,             // ~250 tokens worth of characters
+  CHUNK_OVERLAP: 200           // Character overlap between chunks
 } as const;
 
 /**
@@ -23,21 +28,26 @@ export function estimateTokenCount(text: string): number {
 
 /**
  * Smart text chunking that preserves sentence boundaries and adds overlap
+ * NOW WORKS WITH TOKEN LIMITS, not character limits
  */
 export class ResponseChunker {
-  private readonly chunkSize: number;
-  private readonly overlap: number;
+  private readonly chunkSizeTokens: number;
+  private readonly overlapTokens: number;
 
-  constructor(chunkSize: number = PAGINATION_DEFAULTS.DEFAULT_LIMIT, overlap: number = PAGINATION_DEFAULTS.CHUNK_OVERLAP) {
-    this.chunkSize = Math.max(chunkSize, PAGINATION_DEFAULTS.MIN_LIMIT);
-    this.overlap = Math.min(overlap, Math.floor(chunkSize * 0.1)); // Max 10% overlap
+  constructor(chunkSizeTokens: number = PAGINATION_DEFAULTS.DEFAULT_LIMIT_TOKENS, overlapTokens: number = PAGINATION_DEFAULTS.CHUNK_OVERLAP_TOKENS) {
+    this.chunkSizeTokens = Math.max(chunkSizeTokens, PAGINATION_DEFAULTS.MIN_LIMIT_TOKENS);
+    this.overlapTokens = Math.min(overlapTokens, Math.floor(chunkSizeTokens * 0.1)); // Max 10% overlap
   }
 
   /**
    * Split text into chunks with smart boundary detection
+   * Works with TOKEN limits, not character limits
    */
   public chunkText(text: string): ResponseChunk[] {
-    if (text.length <= this.chunkSize) {
+    const totalTokens = estimateTokenCount(text);
+
+    // If content fits in one chunk, return as-is
+    if (totalTokens <= this.chunkSizeTokens) {
       return [{
         content: text,
         startOffset: 0,
@@ -54,18 +64,28 @@ export class ResponseChunker {
     let currentOffset = 0;
 
     while (currentOffset < text.length) {
-      const endOffset = Math.min(currentOffset + this.chunkSize, text.length);
+      // Convert token limit to approximate character offset
+      const chunkSizeChars = this.chunkSizeTokens * 4; // ~4 chars per token
+      const endOffset = Math.min(currentOffset + chunkSizeChars, text.length);
       let chunkEnd = endOffset;
 
       // Smart boundary detection - prefer paragraph, then sentence, then word breaks
       if (endOffset < text.length) {
-        chunkEnd = this.findSmartBreakpoint(text, currentOffset, endOffset);
+        chunkEnd = this.findSmartBreakpoint(text, currentOffset, endOffset, chunkSizeChars);
       }
 
       const chunkContent = text.substring(currentOffset, chunkEnd);
-      
+      const chunkTokens = estimateTokenCount(chunkContent);
+
+      // If chunk is too large (rare due to smart breakpoint), force split
+      if (chunkTokens > this.chunkSizeTokens * 1.1) { // 10% tolerance
+        logger.warn(`Chunk ${chunks.length + 1} is ${chunkTokens} tokens (target: ${this.chunkSizeTokens}) - forcing split`);
+        // Recalculate with tighter bound
+        chunkEnd = currentOffset + Math.floor(this.chunkSizeTokens * 3.8); // Conservative estimate
+      }
+
       chunks.push({
-        content: chunkContent,
+        content: text.substring(currentOffset, chunkEnd),
         startOffset: currentOffset,
         endOffset: chunkEnd,
         metadata: {
@@ -75,20 +95,21 @@ export class ResponseChunker {
         }
       });
 
-      // Move to next chunk with overlap (except for last chunk)
-      currentOffset = chunkEnd - (chunkEnd === text.length ? 0 : this.overlap);
+      // Move to next chunk with token-based overlap (except for last chunk)
+      const overlapChars = this.overlapTokens * 4; // ~4 chars per token
+      currentOffset = chunkEnd - (chunkEnd === text.length ? 0 : overlapChars);
     }
 
-    logger.debug(`Chunked ${text.length} chars into ${chunks.length} chunks (size: ${this.chunkSize}, overlap: ${this.overlap})`);
+    logger.debug(`Chunked ${text.length} chars (~${totalTokens} tokens) into ${chunks.length} chunks (target: ${this.chunkSizeTokens} tokens/chunk, overlap: ${this.overlapTokens} tokens)`);
     return chunks;
   }
 
   /**
    * Find intelligent breakpoint that preserves readability
    */
-  private findSmartBreakpoint(text: string, start: number, idealEnd: number): number {
-    const searchRange = Math.min(500, Math.floor(this.chunkSize * 0.1)); // Search within 10% of chunk size
-    const minEnd = Math.max(start + this.chunkSize - searchRange, idealEnd - searchRange);
+  private findSmartBreakpoint(text: string, start: number, idealEnd: number, chunkSizeChars: number): number {
+    const searchRange = Math.min(500, Math.floor(chunkSizeChars * 0.1)); // Search within 10% of chunk size
+    const minEnd = Math.max(start + chunkSizeChars - searchRange, idealEnd - searchRange);
 
     // Try to find paragraph break (double newline)
     for (let i = idealEnd; i >= minEnd; i--) {

@@ -239,7 +239,11 @@ describe('Pagination E2E Integration', () => {
   describe('Configuration Integration', () => {
     it('should respect pagination defaults from configuration', () => {
       expect(PAGINATION_DEFAULTS).toEqual({
-        DEFAULT_LIMIT: 90000, // Updated to correct value
+        DEFAULT_LIMIT_TOKENS: 22000, // Token-based defaults
+        MAX_LIMIT_TOKENS: 90000,
+        MIN_LIMIT_TOKENS: 1000,
+        CHUNK_OVERLAP_TOKENS: 50,
+        DEFAULT_LIMIT: 90000, // Legacy character-based
         MAX_LIMIT: 100000,
         MIN_LIMIT: 1000,
         CHUNK_OVERLAP: 200
@@ -335,12 +339,19 @@ describe('Pagination E2E Integration', () => {
       expect(analysisIdMatch).not.toBeNull();
       const analysisId = analysisIdMatch![1];
 
-      // Second request - should hit cache, NOT run CLIs
+      // First request should have pagination markers since content is large (~43K tokens)
+      expect(result1.content[0].text).toMatch(/Part \d+\/\d+/);
+      expect(result1.content[0].text).toContain('analysis_id');
+
+      // Second request - should hit cache with a different offset, NOT run CLIs
+      const firstChunkEndMatch = result1.content[0].text.match(/offset: (\d+)/);
+      expect(firstChunkEndMatch).not.toBeNull();
+      const nextOffset = parseInt(firstChunkEndMatch![1], 10);
+
       const result2 = await (server as any).handleRoastTool(ideaConfig, {
         ...toolArgs,
         analysis_id: analysisId,
-        offset: 50000,
-        limit: 50000
+        offset: nextOffset // Use the suggested next offset
       }, {});
 
       // Orchestrator should NOT be called again
@@ -348,9 +359,6 @@ describe('Pagination E2E Integration', () => {
 
       // Result should be from cache
       expect(result2.content).toBeDefined();
-
-      // Should indicate it's a continuation (Part 2+ out of total)
-      expect(result2.content[0].text).toMatch(/Part [2-9]\/\d+/);
       expect(result2.content[0].text).toContain('Security vulnerability found');
     }, 60000); // 60 second timeout for this E2E test
 

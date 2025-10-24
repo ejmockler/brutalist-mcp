@@ -395,7 +395,7 @@ describe('CLI Integration Tests', () => {
 
     it('should synthesize responses into coherent feedback', async () => {
       const context = await orchestrator.detectCLIContext();
-      
+
       if (context.availableCLIs.length === 0) {
         return;
       }
@@ -416,10 +416,10 @@ describe('CLI Integration Tests', () => {
       expect(synthesis).toBeTruthy();
       expect(typeof synthesis).toBe('string');
       expect(synthesis.toLowerCase()).toMatch(/critic|analysis|brutal|demolish|systematically/i);
-      
+
       // Should mention the number of agents
       expect(synthesis).toMatch(/\d+ AI critic/);
-    });
+    }, 60000); // 60 second timeout for CLI execution
   });
 
   describe('Performance, Timeouts & Error Recovery', () => {

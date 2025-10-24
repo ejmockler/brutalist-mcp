@@ -174,7 +174,7 @@ describe('BrutalistServer', () => {
       const server = new BrutalistServer();
       
       expect(server.config.workingDirectory).toBe(process.cwd());
-      expect(server.config.defaultTimeout).toBe(1500000);
+      expect(server.config.defaultTimeout).toBe(120000); // 2 minutes
       expect(server.config.transport).toBe('stdio');
       expect(server.config.httpPort).toBe(3000);
     });

@@ -889,12 +889,24 @@ export class CLIAgentOrchestrator {
 
         // Use stdin to avoid MAX_ARG_LENGTH limit (4096 chars)
         // Claude --print can read from stdin when no positional argument is provided
-        // Inherit full environment - same as direct invocation
+
+        // DEFENSIVE: Disable MCP and Claude Code integration to prevent stdio deadlock
+        // When Claude CLI runs with MCP enabled or detects Claude Code context,
+        // it tries to communicate over stdio which conflicts with our stdin/stdout usage
+        const cleanEnv = { ...process.env };
+        delete cleanEnv.CLAUDE_MCP_CONFIG;
+        delete cleanEnv.MCP_ENABLED;
+        delete cleanEnv.CLAUDECODE;
+        delete cleanEnv.CLAUDE_CODE_ENTRYPOINT;
+
         return {
           command: 'claude',
           args,
           input: combinedPrompt,
-          env: process.env as Record<string, string>
+          env: {
+            ...cleanEnv,
+            BRUTALIST_SUBPROCESS: '1'  // Mark this as a brutalist-spawned subprocess
+          }
         };
       }
     );

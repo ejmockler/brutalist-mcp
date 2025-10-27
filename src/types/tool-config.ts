@@ -51,6 +51,6 @@ export const BASE_ROAST_SCHEMA = {
   offset: z.number().min(0).optional().describe("Character offset for response pagination (default: 0)"),
   limit: z.number().min(1000).max(100000).optional().describe("Maximum characters per response chunk (default: 90000, max: 100000)"),
   cursor: z.string().optional().describe("Pagination cursor from previous response (alternative to offset/limit)"),
-  analysis_id: z.string().optional().describe("Analysis ID from previous response to retrieve cached result"),
+  context_id: z.string().optional().describe("Context ID from previous response to resume the conversation"),
   force_refresh: z.boolean().optional().describe("Force re-analysis even if cached result exists (default: false)")
 };

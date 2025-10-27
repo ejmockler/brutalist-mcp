@@ -462,9 +462,9 @@ export class BrutalistServer {
           roster += "## Pagination Support (NEW in v0.5.2)\n";
           roster += "**All tools now support intelligent pagination:**\n";
           roster += "- Analysis results are cached with 2-hour TTL\n";
-          roster += "- Use `analysis_id` from response to paginate without re-running\n";
+          roster += "- Use `context_id` from response to resume conversation\n";
           roster += "- Smart text chunking preserves readability\n";
-          roster += "- Example: `roast_codebase(analysis_id: 'a3f5c2d8', offset: 25000)`\n\n";
+          roster += "- Example: `roast_codebase(context_id: 'a3f5c2d8', offset: 25000)`\n\n";
           
           roster += "## Brutalist Philosophy\n";
           roster += "*All tools use CLI agents with brutal system prompts for maximum reality-based criticism.*\n";
@@ -549,15 +549,15 @@ export class BrutalistServer {
         args.offset !== undefined ||
         args.limit !== undefined ||
         args.cursor !== undefined ||
-        args.analysis_id !== undefined;
+        args.context_id !== undefined;
 
-      logger.info(`🔧 DEBUG: explicitPaginationRequested=${explicitPaginationRequested}, offset=${args.offset}, limit=${args.limit}, cursor=${args.cursor}, analysis_id=${args.analysis_id}`);
+      logger.info(`🔧 DEBUG: explicitPaginationRequested=${explicitPaginationRequested}, offset=${args.offset}, limit=${args.limit}, cursor=${args.cursor}, context_id=${args.context_id}`);
 
-      // Check cache if analysis_id provided
-      if (args.analysis_id && !args.force_refresh) {
-        const cachedContent = await this.responseCache.get(args.analysis_id, sessionId);
+      // Check cache if context_id provided
+      if (args.context_id && !args.force_refresh) {
+        const cachedContent = await this.responseCache.get(args.context_id, sessionId);
         if (cachedContent) {
-          logger.info(`🎯 Cache HIT for analysis_id: ${args.analysis_id}`);
+          logger.info(`🎯 Cache HIT for context_id: ${args.context_id}`);
           const cachedResult: BrutalistResponse = {
             success: true,
             responses: [{
@@ -567,14 +567,14 @@ export class BrutalistServer {
               executionTime: 0
             }]
           };
-          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, args.analysis_id, explicitPaginationRequested);
+          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, args.context_id, explicitPaginationRequested);
         } else {
-          logger.warn(`❌ Cache MISS for analysis_id: ${args.analysis_id}, session: ${sessionId}`);
-          // Don't silently re-run - analysis_id should always hit cache or error
+          logger.warn(`❌ Cache MISS for context_id: ${args.context_id}, session: ${sessionId}`);
+          // Don't silently re-run - context_id should always hit cache or error
           throw new Error(
-            `Analysis ID "${args.analysis_id}" not found in cache. ` +
+            `Context ID "${args.context_id}" not found in cache. ` +
             `It may have expired (2 hour TTL) or belong to a different session. ` +
-            `Remove analysis_id parameter to run a new analysis.`
+            `Remove context_id parameter to run a new analysis.`
           );
         }
       }
@@ -592,12 +592,12 @@ export class BrutalistServer {
       if (!args.force_refresh) {
         const cachedContent = await this.responseCache.get(cacheKey, sessionId);
         if (cachedContent) {
-          // Get existing analysis_id or create new alias
-          const existingAnalysisId = this.responseCache.findAnalysisIdForKey(cacheKey);
-          const analysisId = existingAnalysisId
-            ? this.responseCache.createAlias(existingAnalysisId, cacheKey)
-            : this.responseCache.generateAnalysisId(cacheKey);
-          logger.info(`🎯 Cache hit for new request, using analysis_id: ${analysisId}`);
+          // Get existing context_id or create new alias
+          const existingContextId = this.responseCache.findContextIdForKey(cacheKey);
+          const contextId = existingContextId
+            ? this.responseCache.createAlias(existingContextId, cacheKey)
+            : this.responseCache.generateContextId(cacheKey);
+          logger.info(`🎯 Cache hit for new request, using context_id: ${contextId}`);
           const cachedResult: BrutalistResponse = {
             success: true,
             responses: [{
@@ -607,7 +607,7 @@ export class BrutalistServer {
               executionTime: 0
             }]
           };
-          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, analysisId, explicitPaginationRequested);
+          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, contextId, explicitPaginationRequested);
         }
       }
       
@@ -636,7 +636,7 @@ export class BrutalistServer {
       );
       
       // Cache the result if successful
-      let analysisId: string | undefined;
+      let contextId: string | undefined;
       if (result.success && result.responses.length > 0) {
         const fullContent = this.extractFullContent(result);
         if (fullContent) {
@@ -646,19 +646,19 @@ export class BrutalistServer {
             return acc;
           }, {} as Record<string, any>);
 
-          const { analysisId: newId } = await this.responseCache.set(
+          const { contextId: newId } = await this.responseCache.set(
             cacheData,
             fullContent,
             cacheKey,
-            sessionId,  // NEW: Bind to session
-            requestId   // NEW: Track request
+            sessionId,  // Bind to session
+            requestId   // Track request
           );
-          analysisId = newId;
-          logger.info(`✅ Cached analysis result with ID: ${analysisId} for session: ${sessionId?.substring(0, 8)}`);
+          contextId = newId;
+          logger.info(`✅ Cached analysis result with context ID: ${contextId} for session: ${sessionId?.substring(0, 8)}`);
         }
       }
 
-      return this.formatToolResponse(result, args.verbose, paginationParams, analysisId, explicitPaginationRequested);
+      return this.formatToolResponse(result, args.verbose, paginationParams, contextId, explicitPaginationRequested);
     } catch (error) {
       return this.formatErrorResponse(error);
     }
@@ -1037,7 +1037,7 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     result: BrutalistResponse,
     verbose: boolean = false,
     paginationParams?: PaginationParams,
-    analysisId?: string,
+    contextId?: string,
     explicitPaginationRequested: boolean = false
   ) {
     logger.info(`🔧 DEBUG: formatToolResponse called with synthesis length: ${result.synthesis?.length || 0}`);
@@ -1074,10 +1074,10 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
           offset: 0,
           limit: PAGINATION_DEFAULTS.DEFAULT_LIMIT_TOKENS // Use token-based limit
         };
-        return this.formatPaginatedResponse(primaryContent, forcedParams, result, verbose, analysisId);
+        return this.formatPaginatedResponse(primaryContent, forcedParams, result, verbose, contextId);
       } else if (paginationParams) {
         logger.info(`🔧 DEBUG: Applying pagination (explicitly requested)`);
-        return this.formatPaginatedResponse(primaryContent, paginationParams, result, verbose, analysisId);
+        return this.formatPaginatedResponse(primaryContent, paginationParams, result, verbose, contextId);
       }
     }
 
@@ -1085,11 +1085,11 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     if (primaryContent) {
       logger.info(`🔧 DEBUG: Returning full response (${estimatedTokens} tokens < ${maxTokensWithoutPagination} limit)`);
 
-      // Include analysis_id even for non-paginated responses (for future pagination/caching)
+      // Include context_id even for non-paginated responses (for future pagination/caching)
       let responseText = '';
-      if (analysisId) {
+      if (contextId) {
         responseText += `# Brutalist Analysis Results\n\n`;
-        responseText += `**🔑 Analysis ID:** ${analysisId}\n\n`;
+        responseText += `**🔑 Context ID:** ${contextId}\n\n`;
         responseText += `---\n\n`;
         responseText += primaryContent;
       } else {
@@ -1127,11 +1127,11 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
   }
 
   private formatPaginatedResponse(
-    content: string, 
-    paginationParams: PaginationParams, 
-    result: BrutalistResponse, 
+    content: string,
+    paginationParams: PaginationParams,
+    result: BrutalistResponse,
     verbose: boolean,
-    analysisId?: string
+    contextId?: string
   ) {
     // Using imported pagination utilities
 
@@ -1183,22 +1183,22 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     const needsPagination = pagination.totalChunks > 1 || pagination.hasMore;
     const isFirstRequest = offset === 0;
 
-    // Always show analysis_id on first request for future pagination
-    if (isFirstRequest && analysisId) {
-      paginatedText += `**🔑 Analysis ID:** ${analysisId}\n`;
+    // Always show context_id on first request for future pagination
+    if (isFirstRequest && contextId) {
+      paginatedText += `**🔑 Context ID:** ${contextId}\n`;
       paginatedText += `**🔢 Token Estimate:** ~${totalTokens.toLocaleString()} tokens (total)\n\n`;
     }
 
     if (needsPagination) {
       paginatedText += `**📊 Pagination Status:** ${statusLine}\n`;
-      if (!isFirstRequest && analysisId) {
-        paginatedText += `**🔑 Analysis ID:** ${analysisId}\n`;
+      if (!isFirstRequest && contextId) {
+        paginatedText += `**🔑 Context ID:** ${contextId}\n`;
       }
       paginatedText += `**🔢 Token Estimate:** ~${chunkTokens.toLocaleString()} tokens (chunk) / ~${totalTokens.toLocaleString()} tokens (total)\n\n`;
 
       if (pagination.hasMore) {
-        if (analysisId) {
-          paginatedText += `**⏭️ Continue Reading:** Use \`analysis_id: "${analysisId}", offset: ${endOffset}\`\n\n`;
+        if (contextId) {
+          paginatedText += `**⏭️ Continue Reading:** Use \`context_id: "${contextId}", offset: ${endOffset}\`\n\n`;
         } else {
           paginatedText += `**⏭️ Continue Reading:** Use \`offset: ${endOffset}\` for next chunk\n\n`;
         }
@@ -1215,8 +1215,8 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
       paginatedText += `\n\n---\n\n`;
       if (pagination.hasMore) {
         paginatedText += `📖 **End of chunk ${pagination.chunkIndex}/${pagination.totalChunks}**\n`;
-        if (analysisId) {
-          paginatedText += `🔄 To continue: Include \`analysis_id: "${analysisId}"\` with \`offset: ${endOffset}\` in next request`;
+        if (contextId) {
+          paginatedText += `🔄 To continue: Include \`context_id: "${contextId}"\` with \`offset: ${endOffset}\` in next request`;
         } else {
           paginatedText += `🔄 To continue: Use same tool with \`offset: ${endOffset}\``;
         }

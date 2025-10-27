@@ -9,7 +9,7 @@ const gunzipAsync = promisify(gunzip);
 export interface CachedResponse {
   content: string;
   timestamp: number;
-  analysisId: string;
+  contextId: string;
   cacheKey: string;
   requestParams: Record<string, unknown>;
   compressed: boolean;
@@ -18,8 +18,8 @@ export interface CachedResponse {
   requestId?: string; // Request tracking
 }
 
-// Analysis ID mapping for secure lookup
-interface AnalysisIdMapping {
+// Context ID mapping for secure lookup
+interface ContextIdMapping {
   cacheKey: string;
   sessionId: string;
   created: number;
@@ -50,7 +50,7 @@ export interface CacheStats {
  */
 export class ResponseCache {
   private entries = new Map<string, CachedResponseEntry>();
-  private analysisIdMap = new Map<string, AnalysisIdMapping>(); // NEW: ID to cache mapping
+  private contextIdMap = new Map<string, ContextIdMapping>(); // Context ID to cache mapping
   private accessOrder: string[] = [];
   private stats: CacheStats = {
     entries: 0,
@@ -104,7 +104,7 @@ export class ResponseCache {
     const sortedParams = Object.keys(params)
       .sort()
       .reduce((acc, key) => {
-        if (params[key] !== undefined && key !== 'analysis_id' && key !== 'offset' && key !== 'limit' && key !== 'cursor' && key !== 'force_refresh') {
+        if (params[key] !== undefined && key !== 'context_id' && key !== 'offset' && key !== 'limit' && key !== 'cursor' && key !== 'force_refresh') {
           acc[key] = params[key];
         }
         return acc;
@@ -116,36 +116,36 @@ export class ResponseCache {
   }
 
   /**
-   * Generate secure analysis ID (UUID instead of 8-char hash)
+   * Generate secure context ID (UUID)
    */
-  generateAnalysisId(cacheKey: string): string {
+  generateContextId(cacheKey: string): string {
     return randomUUID(); // Full UUID for security
   }
 
   /**
-   * Find existing analysis_id for a given cache key
+   * Find existing context_id for a given cache key
    */
-  findAnalysisIdForKey(cacheKey: string): string | null {
-    for (const [analysisId, mapping] of this.analysisIdMap.entries()) {
+  findContextIdForKey(cacheKey: string): string | null {
+    for (const [contextId, mapping] of this.contextIdMap.entries()) {
       if (mapping.cacheKey === cacheKey) {
-        return analysisId;
+        return contextId;
       }
     }
     return null;
   }
 
   /**
-   * Create alias analysis_id that maps to same cache entry
-   * Used for pagination - each request gets unique analysis_id but shares cached content
+   * Create alias context_id that maps to same cache entry
+   * Used for pagination - each request gets unique context_id but shares cached content
    */
-  createAlias(existingAnalysisId: string, cacheKey: string): string {
-    const existingMapping = this.analysisIdMap.get(existingAnalysisId);
+  createAlias(existingContextId: string, cacheKey: string): string {
+    const existingMapping = this.contextIdMap.get(existingContextId);
     if (!existingMapping) {
-      throw new Error(`Cannot create alias: analysis_id ${existingAnalysisId} not found`);
+      throw new Error(`Cannot create alias: context_id ${existingContextId} not found`);
     }
 
     const newAlias = randomUUID();
-    this.analysisIdMap.set(newAlias, {
+    this.contextIdMap.set(newAlias, {
       cacheKey,
       sessionId: existingMapping.sessionId,
       created: Date.now()
@@ -159,14 +159,14 @@ export class ResponseCache {
    * Store response with session binding
    */
   async set(
-    data: Record<string, any>, 
-    content: string, 
+    data: Record<string, any>,
+    content: string,
     cacheKey?: string,
     sessionId?: string,
     requestId?: string
-  ): Promise<{ analysisId: string; cacheKey: string }> {
+  ): Promise<{ contextId: string; cacheKey: string }> {
     const finalCacheKey = cacheKey || this.generateCacheKey(data);
-    const analysisId = this.generateAnalysisId(finalCacheKey);
+    const contextId = this.generateContextId(finalCacheKey);
     
     // Check size limits before compression
     const sizeInMB = Buffer.byteLength(content, 'utf8') / (1024 * 1024);
@@ -207,53 +207,53 @@ export class ResponseCache {
     
     // Store in cache
     this.entries.set(finalCacheKey, entry);
-    
-    // Map analysis ID to cache key with session binding
-    this.analysisIdMap.set(analysisId, {
+
+    // Map context ID to cache key with session binding
+    this.contextIdMap.set(contextId, {
       cacheKey: finalCacheKey,
       sessionId: sessionId || 'anonymous',
       created: Date.now()
     });
-    
+
     // Update access order for LRU
     this.updateAccessOrder(finalCacheKey);
-    
+
     // Update stats
     this.stats.entries = this.entries.size;
     this.stats.totalSize = Array.from(this.entries.values()).reduce((sum, e) => sum + e.size, 0);
-    
+
     // Ensure capacity limits
     await this.ensureCapacity();
-    
-    logger.debug(`✅ Cached response with analysis_id: ${analysisId} for session: ${sessionId?.substring(0, 8)}...`);
-    
-    return { analysisId, cacheKey: finalCacheKey };
+
+    logger.debug(`✅ Cached response with context_id: ${contextId} for session: ${sessionId?.substring(0, 8)}...`);
+
+    return { contextId, cacheKey: finalCacheKey };
   }
 
   /**
    * Retrieve response with session validation
    */
-  async get(analysisIdOrCacheKey: string, sessionId?: string): Promise<string | null> {
+  async get(contextIdOrCacheKey: string, sessionId?: string): Promise<string | null> {
     let cacheKey: string;
     let requiredSessionId: string | undefined;
-    
-    // Check if it's an analysis ID first
-    const mapping = this.analysisIdMap.get(analysisIdOrCacheKey);
+
+    // Check if it's a context ID first
+    const mapping = this.contextIdMap.get(contextIdOrCacheKey);
     if (mapping) {
       cacheKey = mapping.cacheKey;
       requiredSessionId = mapping.sessionId;
-      
+
       // Validate session access
       if (requiredSessionId !== 'anonymous') {
         if (!sessionId || sessionId !== requiredSessionId) {
-          logger.warn(`🚫 Session mismatch for analysis ${analysisIdOrCacheKey}: ${sessionId?.substring(0, 8) || 'none'} != ${requiredSessionId?.substring(0, 8)}`);
+          logger.warn(`🚫 Session mismatch for context ${contextIdOrCacheKey}: ${sessionId?.substring(0, 8) || 'none'} != ${requiredSessionId?.substring(0, 8)}`);
           this.stats.misses++;
           return null; // Block cross-session access
         }
       }
     } else {
       // Direct cache key access (legacy support)
-      cacheKey = analysisIdOrCacheKey;
+      cacheKey = contextIdOrCacheKey;
     }
     
     const entry = this.entries.get(cacheKey);
@@ -266,9 +266,9 @@ export class ResponseCache {
     if (Date.now() - entry.timestamp > this.ttlMs) {
       logger.debug(`⏰ Cache entry expired: ${cacheKey.substring(0, 8)}...`);
       this.entries.delete(cacheKey);
-      // Also clean up analysis ID mapping
+      // Also clean up context ID mapping
       if (mapping) {
-        this.analysisIdMap.delete(analysisIdOrCacheKey);
+        this.contextIdMap.delete(contextIdOrCacheKey);
       }
       this.stats.misses++;
       this.stats.evictions++;
@@ -308,20 +308,20 @@ export class ResponseCache {
    * Check if key exists in cache
    */
   has(keyOrId: string): boolean {
-    // Check analysis ID mapping first
-    const mapping = this.analysisIdMap.get(keyOrId);
+    // Check context ID mapping first
+    const mapping = this.contextIdMap.get(keyOrId);
     const cacheKey = mapping ? mapping.cacheKey : keyOrId;
-    
+
     const entry = this.entries.get(cacheKey);
     if (!entry) return false;
-    
+
     // Check if expired
     const age = Date.now() - entry.timestamp;
     if (age > this.ttlMs) {
       this.delete(keyOrId);
       return false;
     }
-    
+
     return true;
   }
 
@@ -329,18 +329,18 @@ export class ResponseCache {
    * Delete entry from cache
    */
   private delete(keyOrId: string): void {
-    // Check analysis ID mapping first
-    const mapping = this.analysisIdMap.get(keyOrId);
+    // Check context ID mapping first
+    const mapping = this.contextIdMap.get(keyOrId);
     const cacheKey = mapping ? mapping.cacheKey : keyOrId;
-    
+
     const entry = this.entries.get(cacheKey);
     if (entry) {
       this.stats.totalSize -= entry.size;
       // Delete from entries
       this.entries.delete(cacheKey);
-      // Remove from analysis ID mapping if it exists
+      // Remove from context ID mapping if it exists
       if (mapping) {
-        this.analysisIdMap.delete(keyOrId);
+        this.contextIdMap.delete(keyOrId);
       }
       // Remove cache key from access order
       this.accessOrder = this.accessOrder.filter(k => k !== cacheKey);
@@ -406,23 +406,23 @@ export class ResponseCache {
   }
 
   /**
-   * Retrieve response by analysis ID, returning full cached response object
+   * Retrieve response by context ID, returning full cached response object
    */
-  async getByAnalysisId(analysisId: string, sessionId?: string): Promise<CachedResponse | null> {
-    const mapping = this.analysisIdMap.get(analysisId);
+  async getByContextId(contextId: string, sessionId?: string): Promise<CachedResponse | null> {
+    const mapping = this.contextIdMap.get(contextId);
     if (!mapping) {
       this.stats.misses++;
-      logger.debug(`❌ Cache miss by analysis ID: ${analysisId}`);
+      logger.debug(`❌ Cache miss by context ID: ${contextId}`);
       return null;
     }
-    
+
     // Validate session access
     if (sessionId && mapping.sessionId !== sessionId && mapping.sessionId !== 'anonymous') {
-      logger.warn(`🚫 Session mismatch for analysis ${analysisId}: ${sessionId?.substring(0, 8)} != ${mapping.sessionId?.substring(0, 8)}`);
+      logger.warn(`🚫 Session mismatch for context ${contextId}: ${sessionId?.substring(0, 8)} != ${mapping.sessionId?.substring(0, 8)}`);
       this.stats.misses++;
       return null;
     }
-    
+
     const entry = this.entries.get(mapping.cacheKey);
     if (!entry) {
       this.stats.misses++;
@@ -432,8 +432,8 @@ export class ResponseCache {
     // Check TTL
     const age = Date.now() - entry.timestamp;
     if (age > this.ttlMs) {
-      logger.info(`⏰ Cache expired: ${analysisId} (age: ${(age / 1000 / 60).toFixed(0)} minutes)`);
-      this.delete(analysisId);
+      logger.info(`⏰ Cache expired: ${contextId} (age: ${(age / 1000 / 60).toFixed(0)} minutes)`);
+      this.delete(contextId);
       this.stats.misses++;
       return null;
     }
@@ -441,8 +441,8 @@ export class ResponseCache {
     // Update access order
     this.updateAccessOrder(mapping.cacheKey);
     this.stats.hits++;
-    
-    logger.info(`✅ Cache hit by analysis ID: ${analysisId} (age: ${(age / 1000 / 60).toFixed(0)} minutes)`);
+
+    logger.info(`✅ Cache hit by context ID: ${contextId} (age: ${(age / 1000 / 60).toFixed(0)} minutes)`);
 
     // Decompress if needed
     let content = entry.content;
@@ -453,7 +453,7 @@ export class ResponseCache {
         content = decompressed.toString('utf-8');
       } catch (error) {
         logger.error('Decompression failed:', error);
-        this.delete(analysisId);
+        this.delete(contextId);
         return null;
       }
     }
@@ -461,7 +461,7 @@ export class ResponseCache {
     return {
       content,
       timestamp: entry.timestamp,
-      analysisId,
+      contextId,
       cacheKey: mapping.cacheKey,
       requestParams: entry.metadata,
       compressed: entry.compressed || false,
@@ -476,7 +476,7 @@ export class ResponseCache {
    */
   clear(): void {
     this.entries.clear();
-    this.analysisIdMap.clear();
+    this.contextIdMap.clear();
     this.accessOrder = [];
     this.stats = {
       entries: 0,

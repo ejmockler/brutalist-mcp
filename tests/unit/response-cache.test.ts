@@ -25,9 +25,9 @@ describe('ResponseCache', () => {
       const params = { tool: 'test', arg: 'value' };
       const content = 'Test content';
       
-      const { cacheKey, analysisId } = await cache.set(params, content);
-      expect(analysisId).toBeDefined();
-      expect(analysisId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      const { cacheKey, contextId } = await cache.set(params, content);
+      expect(contextId).toBeDefined();
+      expect(contextId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
       expect(cacheKey).toBeDefined();
       
       // Retrieve by cache key
@@ -39,10 +39,10 @@ describe('ResponseCache', () => {
       const params = { tool: 'test', arg: 'value' };
       const content = 'Test content';
       
-      const { analysisId } = await cache.set(params, content);
+      const { contextId } = await cache.set(params, content);
       
       // Retrieve by analysis ID
-      const retrieved = await cache.get(analysisId);
+      const retrieved = await cache.get(contextId);
       expect(retrieved).toBe(content);
     });
 
@@ -68,18 +68,18 @@ describe('ResponseCache', () => {
       
       // Should generate the same cache key (excluding offset/limit)
       expect(result1.cacheKey).toBe(result2.cacheKey);
-      // Analysis IDs are now unique UUIDs, so they will be different
-      expect(result1.analysisId).not.toBe(result2.analysisId);
-      expect(result1.analysisId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-      expect(result2.analysisId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      // Context IDs are now unique UUIDs, so they will be different
+      expect(result1.contextId).not.toBe(result2.contextId);
+      expect(result1.contextId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      expect(result2.contextId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     });
 
-    it('should exclude analysis_id, cursor, and force_refresh from keys', async () => {
+    it('should exclude context_id, cursor, and force_refresh from keys', async () => {
       const baseParams = { tool: 'test', arg: 'value' };
       const extendedParams = { 
         tool: 'test', 
         arg: 'value',
-        analysis_id: 'abc123',
+        context_id: 'abc123',
         cursor: 'next',
         force_refresh: true
       };
@@ -227,8 +227,8 @@ describe('ResponseCache', () => {
       // Create content larger than compression threshold
       const largeContent = 'x'.repeat(2000); // 2KB
       
-      const { cacheKey, analysisId } = await cache.set({ tool: 'test' }, largeContent);
-      expect(analysisId).toBeDefined();
+      const { cacheKey, contextId } = await cache.set({ tool: 'test' }, largeContent);
+      expect(contextId).toBeDefined();
       
       // Verify decompression works
       const retrieved = await cache.get(cacheKey);
@@ -258,10 +258,10 @@ describe('ResponseCache', () => {
     });
 
     it('should check existence correctly', async () => {
-      const { cacheKey, analysisId } = await cache.set({ tool: 'test' }, 'Content');
+      const { cacheKey, contextId } = await cache.set({ tool: 'test' }, 'Content');
       
       expect(cache.has(cacheKey)).toBe(true);
-      expect(cache.has(analysisId)).toBe(true);
+      expect(cache.has(contextId)).toBe(true);
       expect(cache.has('nonexistent')).toBe(false);
     });
   });
@@ -276,7 +276,7 @@ describe('ResponseCache', () => {
       
       const stats = cache.getStats();
       expect(stats.entries).toBe(2);
-      // analysisIds not in stats, just check entries
+      // contextIds not in stats, just check entries
       expect(stats.totalSize).toBeGreaterThan(0);
       expect(stats.hits).toBe(0);
       expect(stats.misses).toBe(0);

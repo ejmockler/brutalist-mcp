@@ -127,7 +127,7 @@ describe('Cache Integration Tests', () => {
         offset: 1000,
         limit: 5000,
         cursor: 'abc123',
-        analysis_id: 'existing123',
+        context_id: 'existing123',
         force_refresh: false
       };
 
@@ -141,31 +141,31 @@ describe('Cache Integration Tests', () => {
       const params = { targetPath: '/src', context: 'test analysis' };
       const content = 'This is a test analysis result';
       
-      const { cacheKey, analysisId } = await cache.set(params, content);
+      const { cacheKey, contextId } = await cache.set(params, content);
       expect(cacheKey).toMatch(/^[a-f0-9]{64}$/);
-      expect(analysisId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      expect(contextId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 
       const retrieved = await cache.get(cacheKey);
       expect(retrieved).toBe(content);
       
       // Also test retrieval by analysis ID
-      const byAnalysisId = await cache.getByAnalysisId(analysisId);
+      const byAnalysisId = await cache.getByContextId(contextId);
       expect(byAnalysisId).toBeDefined();
       expect(byAnalysisId!.content).toBe(content);
-      expect(byAnalysisId!.analysisId).toBe(analysisId);
+      expect(byAnalysisId!.contextId).toBe(contextId);
     });
 
     it('should handle large content with compression', async () => {
       const params = { targetPath: '/large', context: 'large analysis' };
       const largeContent = 'Large analysis result '.repeat(10000); // ~200KB
       
-      const { cacheKey, analysisId } = await cache.set(params, largeContent);
+      const { cacheKey, contextId } = await cache.set(params, largeContent);
 
       const retrieved = await cache.get(cacheKey);
       expect(retrieved).toBe(largeContent);
       
-      // Check compressed metadata via getByAnalysisId
-      const cachedResponse = await cache.getByAnalysisId(analysisId);
+      // Check compressed metadata via getByContextId
+      const cachedResponse = await cache.getByContextId(contextId);
       expect(cachedResponse!.compressed).toBe(true);
       expect(cachedResponse!.size).toBeLessThan(largeContent.length); // Compressed size
     });
@@ -177,7 +177,7 @@ describe('Cache Integration Tests', () => {
       const sessionB = randomUUID();
       
       // Store data in session A
-      const { analysisId } = await cache.set(
+      const { contextId } = await cache.set(
         { tool: 'test', target: 'sensitive-data' },
         'Private data for session A',
         undefined,
@@ -186,15 +186,15 @@ describe('Cache Integration Tests', () => {
       );
       
       // Session A should be able to access it
-      const resultA = await cache.get(analysisId, sessionA);
+      const resultA = await cache.get(contextId, sessionA);
       expect(resultA).toBe('Private data for session A');
       
       // Session B should NOT be able to access it
-      const resultB = await cache.get(analysisId, sessionB);
+      const resultB = await cache.get(contextId, sessionB);
       expect(resultB).toBeNull();
       
       // No session should NOT be able to access it
-      const resultNone = await cache.get(analysisId);
+      const resultNone = await cache.get(contextId);
       expect(resultNone).toBeNull();
     });
     
@@ -203,7 +203,7 @@ describe('Cache Integration Tests', () => {
       const sessionB = randomUUID();
       
       // Store data as anonymous
-      const { analysisId } = await cache.set(
+      const { contextId } = await cache.set(
         { tool: 'test', target: 'public-data' },
         'Public data for everyone',
         undefined,
@@ -212,19 +212,19 @@ describe('Cache Integration Tests', () => {
       );
       
       // Both sessions should be able to access it
-      const resultA = await cache.get(analysisId, sessionA);
+      const resultA = await cache.get(contextId, sessionA);
       expect(resultA).toBe('Public data for everyone');
       
-      const resultB = await cache.get(analysisId, sessionB);
+      const resultB = await cache.get(contextId, sessionB);
       expect(resultB).toBe('Public data for everyone');
       
       // No session should also be able to access it
-      const resultNone = await cache.get(analysisId);
+      const resultNone = await cache.get(contextId);
       expect(resultNone).toBe('Public data for everyone');
     });
 
     it('should generate UUID-based analysis IDs', async () => {
-      const { analysisId } = await cache.set(
+      const { contextId } = await cache.set(
         { tool: 'test' },
         'test content',
         undefined,
@@ -233,15 +233,15 @@ describe('Cache Integration Tests', () => {
       );
       
       // Should be a valid UUID format
-      expect(analysisId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-      expect(analysisId.length).toBe(36);
+      expect(contextId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      expect(contextId.length).toBe(36);
     });
 
-    it('should validate session for getByAnalysisId', async () => {
+    it('should validate session for getByContextId', async () => {
       const sessionA = randomUUID();
       const sessionB = randomUUID();
       
-      const { analysisId } = await cache.set(
+      const { contextId } = await cache.set(
         { tool: 'test', target: 'detailed-test' },
         'Detailed test content',
         undefined,
@@ -250,13 +250,13 @@ describe('Cache Integration Tests', () => {
       );
       
       // Session A should get full response
-      const resultA = await cache.getByAnalysisId(analysisId, sessionA);
+      const resultA = await cache.getByContextId(contextId, sessionA);
       expect(resultA).not.toBeNull();
       expect(resultA!.content).toBe('Detailed test content');
       expect(resultA!.sessionId).toBe(sessionA);
       
       // Session B should be blocked
-      const resultB = await cache.getByAnalysisId(analysisId, sessionB);
+      const resultB = await cache.getByContextId(contextId, sessionB);
       expect(resultB).toBeNull();
     });
 
@@ -268,7 +268,7 @@ describe('Cache Integration Tests', () => {
       const content = 'Large analysis result '.repeat(5000); // ~100KB
 
       // First request: sessionId = 'anonymous'
-      const { analysisId: id1 } = await cache.set(
+      const { contextId: id1 } = await cache.set(
         params,
         content,
         undefined,
@@ -282,7 +282,7 @@ describe('Cache Integration Tests', () => {
       expect(result1).toBe(content);
 
       // Third request: Also anonymous, should still hit cache
-      const cachedResponse = await cache.getByAnalysisId(id1, 'anonymous');
+      const cachedResponse = await cache.getByContextId(id1, 'anonymous');
       expect(cachedResponse).not.toBeNull();
       expect(cachedResponse!.content).toBe(content);
       expect(cachedResponse!.sessionId).toBe('anonymous');
@@ -306,7 +306,7 @@ describe('Cache Integration Tests', () => {
       const randomSession2 = `anonymous-${Date.now() + 1000}-xyz789`;
 
       // Store with first random session
-      const { analysisId } = await cache.set(
+      const { contextId } = await cache.set(
         params,
         content,
         undefined,
@@ -315,13 +315,13 @@ describe('Cache Integration Tests', () => {
       );
 
       // Try to access with second random session (different session)
-      const result = await cache.get(analysisId, randomSession2);
+      const result = await cache.get(contextId, randomSession2);
 
       // Should be null - different sessions can't share cache
       expect(result).toBeNull();
 
       // But the original session can still access it
-      const originalResult = await cache.get(analysisId, randomSession1);
+      const originalResult = await cache.get(contextId, randomSession1);
       expect(originalResult).toBe(content);
     });
   });

@@ -1,59 +1,64 @@
-# Brutalist MCP 💀
+# Brutalist MCP
 
-Your startup will fail. Your architecture will collapse. Your code is a security nightmare.
+Multi-perspective code analysis using Claude Code, Codex, and Gemini CLI agents.
 
-But this time, you'll know *why* before users do.
+Get direct, honest technical feedback on your code, architecture, and ideas before they reach production.
 
-## Deploy AI Critics That Don't Lie
+## What It Does
 
-Every AI tells you what you want to hear. This one tells you what you need to know.
+The Brutalist MCP connects your AI coding assistant to three different CLI agents (Claude, Codex, Gemini), each providing independent analysis. This gives you multiple perspectives on:
 
-Three brutal CLI agents. Zero sugar-coating. Maximum carnage.
+- Code quality and security vulnerabilities
+- Architecture decisions and scalability
+- Product ideas and technical feasibility
+- Research methodology and design flaws
 
-Three brutal CLI agents that can analyze anything. Each agent brings different perspectives to demolish your work from every angle.
+Real file-system access. Straightforward analysis. No sugar-coating.
 
-Real file-system analysis. Actual brutal prompts. Intelligent pagination for enterprise codebases. No participation trophies.
+## Quick Start
 
-## Setup
+### Step 1: Install a CLI Agent
 
-### Prerequisites
+You need at least one of these installed:
 
-Install at least one CLI agent:
-- **Claude Code**: `npm install -g claude` (or via Claude desktop app)
-- **Codex**: Install from [OpenAI Codex](https://github.com/openai/codex-cli)
-- **Gemini**: `npm install -g @google/gemini-cli` or authenticate via `gemini auth`
+```bash
+# Option 1: Claude Code (recommended)
+npm install -g claude
 
-### Installation
+# Option 2: Codex
+# Install from https://github.com/openai/codex-cli
 
-<details>
-<summary><strong>Claude Code</strong> — One-liner</summary>
+# Option 3: Gemini
+npm install -g @google/gemini-cli
+```
 
+### Step 2: Install the MCP Server
+
+Choose your IDE:
+
+**Claude Code:**
 ```bash
 claude mcp add brutalist --scope user -- npx -y @brutalist/mcp
 ```
-</details>
 
-<details>
-<summary><strong>VS Code / Cline</strong> — Manual config</summary>
+**Cursor:**
+Add to `~/.cursor/mcp.json`:
+```json
+{
+  "brutalist": {
+    "command": "npx",
+    "args": ["-y", "@brutalist/mcp"]
+  }
+}
+```
 
+**VS Code / Cline:**
 ```bash
 code --add-mcp '{"name":"brutalist","command":"npx","args":["-y","@brutalist/mcp"]}'
 ```
-</details>
 
-<details>
-<summary><strong>Gemini CLI</strong> — One-liner</summary>
-
-```bash
-gemini mcp add brutalist -- npx -y @brutalist/mcp
-```
-</details>
-
-<details>
-<summary><strong>Cursor</strong> — Manual config</summary>
-
-Add to `~/.cursor/mcp.json` or use **Settings → MCP & Integrations**
-
+**Windsurf:**
+Add to `~/.codeium/windsurf/mcp_config.json`:
 ```json
 {
   "brutalist": {
@@ -62,202 +67,165 @@ Add to `~/.cursor/mcp.json` or use **Settings → MCP & Integrations**
   }
 }
 ```
-</details>
 
-<details>
-<summary><strong>Windsurf</strong> — Manual config</summary>
-
-Add to `~/.codeium/windsurf/mcp_config.json` or use **Plugin Store**
-
-```json
-{
-  "brutalist": {
-    "command": "npx",
-    "args": ["-y", "@brutalist/mcp"]
-  }
-}
-```
-</details>
-
-## Brutalist Workflows
-
-### 🔍 **Codebase Destruction**
-
-> Analyze actual files in your repository for security holes, performance disasters, and architectural nightmares.
-
-```bash
-# Demolish your entire codebase
-roast_codebase "/path/to/your/project"
-
-# Target specific modules for focused brutality
-roast_codebase "/src/auth"          # Authentication vulnerabilities
-roast_codebase "/src/api/handlers"  # API endpoint disasters
-roast_codebase "/components"        # React component chaos
-```
-
----
-
-### 💡 **Idea Obliteration**
-
-> Reality-check your startup dreams, product concepts, and technical decisions.
-
-```bash
-# Startup idea destruction
-roast_idea "A social network for developers to share code snippets"
-
-# Technical decision analysis
-roast_idea "Migrating our monolith to microservices with Kubernetes"
-
-# Product feature validation
-roast_idea "Adding AI-powered code suggestions to our IDE"
-```
-
----
-
-### 🏗️ **Architecture Annihilation**
-
-> Find every scaling bottleneck, cost explosion, and operational nightmare in your system design.
-
-```bash
-# System architecture review
-roast_architecture "Microservices with event sourcing and CQRS"
-
-# Infrastructure design analysis
-roast_architecture """
-API Gateway → Load Balancer → 3 Node.js services → PostgreSQL
-Redis for caching, Docker containers on AWS ECS
-"""
-```
-
----
-
-### 🔒 **Security Demolition**
-
-> Expose authentication bypasses, injection vulnerabilities, and data leak opportunities.
-
-```bash
-# Authentication system analysis
-roast_security "JWT tokens with user roles in localStorage"
-
-# API security review
-roast_security "GraphQL API with dynamic queries and no rate limiting"
-```
-
----
-
-### 🤺 **Multi-Agent Warfare**
-
-> Deploy multiple CLI agents in adversarial combat for maximum destruction.
-
-```bash
-# Technical decision debate
-roast_cli_debate "Should we use TypeScript or Go for this API?"
-
-# Architecture comparison battle
-roast_cli_debate "Microservices vs Monolith for our e-commerce platform"
-```
-
----
-
-### 🛠️ **Meta Commands**
+### Step 3: Verify Installation
 
 ```bash
 # Check which CLI agents are available
 cli_agent_roster()
 ```
 
-## How It Works
+## Usage Examples
 
-This MCP server orchestrates brutal feedback from locally installed CLI agents:
-- **Claude Code CLI** - Anthropic's code assistant with brutal system prompts
-- **Codex CLI** - OpenAI's code-focused model for technical criticism  
-- **Gemini CLI** - Google's model for architectural and system analysis
-
-Each agent runs locally on your machine with custom brutal prompts to find real problems before production fails.
-
-**⏱️ Analysis Timeout:** 25 minutes default - thorough analysis takes time to find real issues. Complex codebases and architectural reviews need deep analysis to catch subtle problems that quick scans miss.
-
-## 📄 Pagination Support (v0.5.0+)
-
-Handle enterprise-scale analyses that exceed Claude Code's 25K token limit:
+### Analyze Your Codebase
 
 ```bash
-# Enable pagination for large codebases
+# Analyze entire project
+roast_codebase "/path/to/your/project"
+
+# Analyze specific modules
+roast_codebase "/src/auth"
+roast_codebase "/src/api/handlers"
+```
+
+### Validate Ideas
+
+```bash
+# Evaluate a product concept
+roast_idea "A social network for developers to share code snippets"
+
+# Review technical decisions
+roast_idea "Migrating our monolith to microservices with Kubernetes"
+```
+
+### Review Architecture
+
+```bash
+# System architecture analysis
+roast_architecture "Microservices with event sourcing and CQRS"
+
+# Infrastructure design review
+roast_architecture """
+API Gateway → Load Balancer → 3 Node.js services → PostgreSQL
+Redis for caching, Docker containers on AWS ECS
+"""
+```
+
+### Security Analysis
+
+```bash
+# Authentication review
+roast_security "JWT tokens with user roles in localStorage"
+
+# API security check
+roast_security "GraphQL API with dynamic queries and no rate limiting"
+```
+
+### Compare Perspectives
+
+```bash
+# Get multiple viewpoints on technical decisions
+roast_cli_debate "Should we use TypeScript or Go for this API?"
+
+# Compare architecture approaches
+roast_cli_debate "Microservices vs Monolith for our e-commerce platform"
+```
+
+## How It Works
+
+This MCP server coordinates analysis from locally installed CLI agents:
+- **Claude Code CLI** - Code review and architectural analysis
+- **Codex CLI** - Security and technical implementation review
+- **Gemini CLI** - System design and scalability analysis
+
+Each agent runs locally with direct file-system access, providing independent perspectives on your code and design decisions.
+
+**Analysis time:** Up to 25 minutes for complex projects. Thorough analysis requires time to examine code patterns, dependencies, and architectural decisions.
+
+## Pagination for Large Results
+
+For analyses that exceed your IDE's token limit:
+
+```bash
+# Set chunk size for large codebases
 roast_codebase({targetPath: "/monorepo", limit: 20000})
 
-# Continue reading from where you left off
+# Continue from where you left off
 roast_codebase({targetPath: "/monorepo", offset: 20000, limit: 20000})
 
-# Smart chunking preserves readability
+# Use cursor-based navigation
 roast_codebase({targetPath: "/complex-system", cursor: "offset:25000"})
 ```
 
-**Features:**
-- **Smart Boundary Detection** - Preserves paragraphs and sentences
-- **Token Estimation** - Real-time cost awareness (~4 chars = 1 token)
-- **Rich Metadata** - Progress indicators and continuation instructions
-- **Configurable Chunks** - 1K to 100K characters per response
+Features:
+- Smart boundary detection (preserves paragraphs and sentences)
+- Token estimation (~4 chars = 1 token)
+- Progress indicators
+- Configurable chunk size (1K to 100K characters)
 
 ## Tools
 
-### Code & Architecture Analysis
-| Tool | What gets destroyed | CLI Agents Used |
-|------|-------------------|-----------------|
-| `roast_codebase` | Security holes, performance disasters, maintainability nightmares in actual files | All available |
-| `roast_file_structure` | Directory chaos, naming disasters, structural nightmares | All available |
-| `roast_dependencies` | Version conflicts, security vulns, dependency hell | All available |
-| `roast_git_history` | Commit disasters, branching chaos, collaboration failures | All available |
-| `roast_test_coverage` | Testing gaps, quality blind spots, coverage lies | All available |
+### Code & Architecture
 
-### Conceptual Analysis
-| Tool | What gets destroyed | CLI Agents Used |
-|------|-------------------|-----------------|
-| `roast_idea` | Why imagination fails to become reality | All available |
-| `roast_architecture` | Scaling failures, cost explosions, operational complexity | All available |
-| `roast_research` | Methodological flaws, irreproducible results, statistical crimes | All available |
-| `roast_security` | Attack vectors, authentication bypasses, data leaks | All available |
-| `roast_product` | UX disasters, adoption barriers, user abandonment | All available |
-| `roast_infrastructure` | Single points of failure, hidden costs, 3AM outages | All available |
+| Tool | Analyzes |
+|------|----------|
+| `roast_codebase` | Security vulnerabilities, performance issues, code quality |
+| `roast_file_structure` | Directory organization, naming conventions, structure |
+| `roast_dependencies` | Version conflicts, security vulnerabilities, compatibility |
+| `roast_git_history` | Commit quality, branching strategy, collaboration patterns |
+| `roast_test_coverage` | Test coverage, quality gaps, testing strategy |
 
-### Meta Tools
-| Tool | What it does |
-|------|--------------|
-| `roast_cli_debate` | Multiple CLI agents argue until truth emerges |
-| `cli_agent_roster` | Shows which CLI agents are available on your system |
+### Design & Planning
 
-## CLI Agent Selection
+| Tool | Analyzes |
+|------|----------|
+| `roast_idea` | Feasibility, market fit, implementation challenges |
+| `roast_architecture` | Scalability, cost, operational complexity |
+| `roast_research` | Methodology, reproducibility, statistical validity |
+| `roast_security` | Attack vectors, authentication, authorization |
+| `roast_product` | UX, adoption barriers, user needs |
+| `roast_infrastructure` | Reliability, scaling, operational overhead |
 
-The system automatically detects and uses available CLI agents:
+### Utilities
+
+| Tool | Purpose |
+|------|---------|
+| `roast_cli_debate` | Multi-agent discussion from different perspectives |
+| `cli_agent_roster` | Show available CLI agents on your system |
+
+## Advanced Usage
+
+### Choose Specific CLI Agents
 
 ```bash
-# Use specific CLI agent
+# Use a specific agent
 roast_codebase(targetPath="/src", preferredCLI="claude")
 
-# Let system choose based on analysis type
-roast_security "/auth/module"  # Prefers Codex for security
+# System automatically selects best agent for task
+roast_security "/auth/module"  # Typically uses Codex
 
-# Force multi-agent analysis (default)
-roast_idea "..."  # All available agents analyze in parallel
+# Multi-agent analysis (default)
+roast_idea "..."  # All available agents provide perspectives
 ```
 
-### Smart Selection Rules
+### Agent Strengths
 
-Different CLI agents excel at different analysis types:
-- **Code review**: Claude > Codex > Gemini
-- **Architecture**: Gemini > Claude > Codex  
-- **Security**: Codex > Claude > Gemini
-- **Research**: Claude > Gemini > Codex
+Different agents have different strengths:
+- **Code review**: Claude, Codex, Gemini
+- **Architecture**: Gemini, Claude, Codex
+- **Security**: Codex, Claude, Gemini
+- **Research**: Claude, Gemini, Codex
 
-## Why This Works
+## Why Multiple Perspectives
 
-**Problem:** AI optimizes for engagement, not truth.  
-**Solution:** Deploy multiple local CLI agents with adversarial perspectives.  
-**Result:** Brutal honesty through systematic destruction before expensive failures.
+Each CLI agent brings a different approach to analysis:
+- Different training data and focus areas
+- Independent evaluation of the same code
+- Varied perspectives on technical tradeoffs
 
-Your code will fail. Your startup will struggle. Better to learn this from brutal CLI agents than from production outages at 3AM.
-
-The only AI that prevents disasters instead of causing them.
+Getting multiple viewpoints helps identify issues that a single perspective might miss.
 
 ---
 
-Local CLI agents → Brutal system prompts → Parallel execution → Adversarial synthesis → Production survival
+**License:** MIT
+**Issues:** https://github.com/ejmockler/brutalist-mcp/issues

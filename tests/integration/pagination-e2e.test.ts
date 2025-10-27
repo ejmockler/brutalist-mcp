@@ -314,7 +314,7 @@ describe('Pagination E2E Integration', () => {
       mockExecuteBrutalistAnalysis.mockRestore();
     });
 
-    it('should use analysis_id to paginate from cache without re-running CLIs', async () => {
+    it('should use context_id to paginate from cache without re-running CLIs', async () => {
       // This tests the fix for PAGINATION_BUGS.md - pagination should hit cache
 
       // Find roast_idea config
@@ -334,14 +334,14 @@ describe('Pagination E2E Integration', () => {
       expect(result1.content).toBeDefined();
       expect(result1.content[0].text).toContain('BRUTAL ANALYSIS');
 
-      // Extract analysis_id from response (handles markdown formatting)
-      const analysisIdMatch = result1.content[0].text.match(/Analysis ID:\*\*\s*([0-9a-f-]+)/);
-      expect(analysisIdMatch).not.toBeNull();
-      const analysisId = analysisIdMatch![1];
+      // Extract context_id from response (handles markdown formatting)
+      const contextIdMatch = result1.content[0].text.match(/Context ID:\*\*\s*([0-9a-f-]+)/);
+      expect(contextIdMatch).not.toBeNull();
+      const contextId = contextIdMatch![1];
 
       // First request should have pagination markers since content is large (~43K tokens)
       expect(result1.content[0].text).toMatch(/Part \d+\/\d+/);
-      expect(result1.content[0].text).toContain('analysis_id');
+      expect(result1.content[0].text).toContain('context_id');
 
       // Second request - should hit cache with a different offset, NOT run CLIs
       const firstChunkEndMatch = result1.content[0].text.match(/offset: (\d+)/);
@@ -350,7 +350,7 @@ describe('Pagination E2E Integration', () => {
 
       const result2 = await (server as any).handleRoastTool(ideaConfig, {
         ...toolArgs,
-        analysis_id: analysisId,
+        context_id: contextId,
         offset: nextOffset // Use the suggested next offset
       }, {});
 
@@ -362,9 +362,9 @@ describe('Pagination E2E Integration', () => {
       expect(result2.content[0].text).toContain('Security vulnerability found');
     }, 60000); // 60 second timeout for this E2E test
 
-    it('should show analysis_id on first request even when content fits in one chunk', async () => {
+    it('should show context_id on first request even when content fits in one chunk', async () => {
       // This tests the fix for src/brutalist-server.ts:1112-1115
-      // analysis_id should appear even when needsPagination = false
+      // context_id should appear even when needsPagination = false
 
       const ideaConfig = TOOL_CONFIGS.find(c => c.name === 'roast_idea')!;
 
@@ -387,12 +387,12 @@ describe('Pagination E2E Integration', () => {
       expect(result.content).toBeDefined();
       const text = result.content[0].text;
 
-      // Should contain analysis_id even though it's a single chunk
-      expect(text).toContain('🔑 Analysis ID:');
-      expect(text).toMatch(/Analysis ID:\*\*\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+      // Should contain context_id even though it's a single chunk
+      expect(text).toContain('🔑 Context ID:');
+      expect(text).toMatch(/Context ID:\*\*\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
     }, 30000);
 
-    it('should throw error when using invalid analysis_id', async () => {
+    it('should throw error when using invalid context_id', async () => {
       // This tests that cache miss throws error instead of silently re-running
 
       const ideaConfig = TOOL_CONFIGS.find(c => c.name === 'roast_idea')!;
@@ -400,7 +400,7 @@ describe('Pagination E2E Integration', () => {
       const result = await (server as any).handleRoastTool(ideaConfig, {
         idea: 'test',
         targetPath: '.',
-        analysis_id: 'invalid-id-12345',
+        context_id: 'invalid-id-12345',
         offset: 1000
       }, {});
 
@@ -427,13 +427,13 @@ describe('Pagination E2E Integration', () => {
       const result1 = await (server as any).handleRoastTool(ideaConfig, toolArgs, {});
       expect(orchestratorCallCount).toBe(1);
 
-      const analysisIdMatch = result1.content[0].text.match(/Analysis ID:\*\*\s*([0-9a-f-]+)/);
-      const analysisId = analysisIdMatch![1];
+      const contextIdMatch = result1.content[0].text.match(/Context ID:\*\*\s*([0-9a-f-]+)/);
+      const contextId = contextIdMatch![1];
 
       // Second request with no session metadata (should still be 'anonymous')
       const result2 = await (server as any).handleRoastTool(ideaConfig, {
         ...toolArgs,
-        analysis_id: analysisId,
+        context_id: contextId,
         offset: 50000
       }, {});
 

@@ -38,7 +38,7 @@ Choose your IDE:
 
 **Claude Code:**
 ```bash
-claude mcp add brutalist --scope user -- npx -y @brutalist/mcp
+claude mcp add brutalist --scope user -- npx -y @brutalist/mcp@latest
 ```
 
 **Cursor:**
@@ -47,14 +47,14 @@ Add to `~/.cursor/mcp.json`:
 {
   "brutalist": {
     "command": "npx",
-    "args": ["-y", "@brutalist/mcp"]
+    "args": ["-y", "@brutalist/mcp@latest"]
   }
 }
 ```
 
 **VS Code / Cline:**
 ```bash
-code --add-mcp '{"name":"brutalist","command":"npx","args":["-y","@brutalist/mcp"]}'
+code --add-mcp '{"name":"brutalist","command":"npx","args":["-y","@brutalist/mcp@latest"]}'
 ```
 
 **Windsurf:**
@@ -63,7 +63,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
 {
   "brutalist": {
     "command": "npx",
-    "args": ["-y", "@brutalist/mcp"]
+    "args": ["-y", "@brutalist/mcp@latest"]
   }
 }
 ```

@@ -452,9 +452,10 @@ describe('CLI Integration Tests', () => {
       );
 
       const duration = Date.now() - startTime;
-      
+
       // Should complete within reasonable time of timeout
-      expect(duration).toBeLessThan(5000); // Max 5 seconds
+      // Allow up to 15s since multiple CLIs may timeout concurrently
+      expect(duration).toBeLessThan(15000); // Max 15 seconds
 
       // In CI, CLIs may not be available, so timeouts may not occur
       // Just verify we got responses and they completed quickly

@@ -28,7 +28,7 @@ export type BrutalistPromptType =
   | 'testCoverage';
 
 // Configurable timeouts and limits
-const DEFAULT_TIMEOUT = parseInt(process.env.BRUTALIST_TIMEOUT || '300000', 10); // 5 minutes default
+const DEFAULT_TIMEOUT = parseInt(process.env.BRUTALIST_TIMEOUT || '1800000', 10); // 30 minutes default
 const CLI_CHECK_TIMEOUT = parseInt(process.env.BRUTALIST_CLI_CHECK_TIMEOUT || '5000', 10); // 5 seconds for CLI checks
 const MAX_BUFFER_SIZE = parseInt(process.env.BRUTALIST_MAX_BUFFER || String(10 * 1024 * 1024), 10); // 10MB default
 const MAX_CONCURRENT_CLIS = parseInt(process.env.BRUTALIST_MAX_CONCURRENT || '3', 10); // 3 concurrent CLIs
@@ -420,7 +420,7 @@ export interface CLIContext {
 }
 
 export class CLIAgentOrchestrator {
-  private defaultTimeout = 2700000; // 45 minutes - thorough analysis takes time
+  private defaultTimeout = 1800000; // 30 minutes - complex codebases need time
   private defaultWorkingDir = process.cwd();
   private cliContext: CLIContext = { availableCLIs: [] };
   private cliContextCached = false;

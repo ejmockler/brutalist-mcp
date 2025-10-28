@@ -102,7 +102,7 @@ export class StreamingCLIOrchestrator extends EventEmitter {
     
     this.config = {
       maxConcurrentAnalyses: 10,
-      defaultTimeout: 600000, // 10 minutes
+      defaultTimeout: 1800000, // 30 minutes
       circuitBreakerConfig: {
         failureThreshold: 5,
         recoveryTimeout: 30000,

@@ -54,10 +54,11 @@ Be direct about real issues that cause production failures."
 
 ### Timeout Configuration
 
-Claude Code can take longer for complex analysis. The system automatically sets a 5-minute timeout for Claude to handle:
+Claude Code can take significantly longer for complex analysis. The system automatically sets a 30-minute timeout for Claude to handle:
 - Large codebases
-- Complex architectural analysis  
+- Complex architectural analysis
 - Multi-file security audits
+- Deep dependency analysis
 
 ### Model Selection
 
@@ -147,7 +148,8 @@ If Claude times out on large analyses:
 
 1. Break down the analysis into smaller chunks
 2. Use more specific paths rather than entire directories
-3. The timeout has been increased to 5 minutes automatically
+3. The timeout has been increased to 30 minutes automatically
+4. For extremely large codebases, consider analyzing modules separately
 
 ### No Response from Claude
 
@@ -353,7 +355,7 @@ args.push(`${systemPrompt}\n\n${userPrompt}`);
 
 await spawnAsync('claude', args, {
   cwd: workingDir,
-  timeout: 600000, // 10 minutes minimum
+  timeout: 1800000, // 30 minutes for complex analysis
   maxBuffer: 10 * 1024 * 1024
 });
 ```
@@ -369,7 +371,7 @@ const combinedPrompt = `CONTEXT AND INSTRUCTIONS:\n${systemPrompt}\n\nANALYZE:\n
 
 await spawnAsync('codex', args, {
   cwd: workingDir,
-  timeout: 300000, // 5 minutes minimum  
+  timeout: 1800000, // 30 minutes for complex analysis
   maxBuffer: 10 * 1024 * 1024,
   input: combinedPrompt // Using stdin to avoid ARG_MAX limits
 });
@@ -388,13 +390,13 @@ args.push(combinedPrompt); // Positional argument, NOT stdin
 
 await spawnAsync('gemini', args, {
   cwd: workingDir,
-  timeout: 600000, // 10 minutes minimum - Gemini is slowest
+  timeout: 1800000, // 30 minutes for complex analysis
   maxBuffer: 10 * 1024 * 1024,
   detached: false, // CRITICAL: Gemini hangs with detached:true on macOS
   env: {
     ...process.env,
     TERM: 'dumb',
-    NO_COLOR: '1', 
+    NO_COLOR: '1',
     CI: 'true'
   }
 });
@@ -421,9 +423,9 @@ await spawnAsync('gemini', args, {
 4. Avoid large prompts that may hit argument length limits
 
 **Timeout Issues**:
-- Claude: Minimum 10 minutes for complex analysis
-- Codex: Minimum 5 minutes for file operations  
-- Gemini: Minimum 10 minutes, often needs more
+- All CLIs: Default 30 minutes for complex analysis
+- Override via `BRUTALIST_TIMEOUT` environment variable if needed
+- For extremely large codebases (>100k LOC), consider splitting analysis
 
 **Process Management**:
 ```javascript

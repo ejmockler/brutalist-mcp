@@ -47,7 +47,7 @@ export class BrutalistServer {
   constructor(config: BrutalistServerConfig = {}) {
     this.config = {
       workingDirectory: process.cwd(),
-      defaultTimeout: 120000, // 2 minutes for testing (configurable via BRUTALIST_TIMEOUT env)
+      defaultTimeout: 1800000, // 30 minutes - complex codebases need time (configurable via BRUTALIST_TIMEOUT env)
       transport: 'stdio', // Default to stdio for backward compatibility
       httpPort: 3000,
       ...config

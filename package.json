@@ -1,6 +1,6 @@
 {
   "name": "@brutalist/mcp",
-  "version": "0.6.15",
+  "version": "0.6.16",
   "description": "Deploy Claude, Codex & Gemini CLI agents to demolish your work before users do. Real file analysis. Brutal honesty. Now with intelligent pagination.",
   "type": "module",
   "main": "dist/index.js",

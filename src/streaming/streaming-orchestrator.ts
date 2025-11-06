@@ -107,7 +107,7 @@ export class StreamingCLIOrchestrator extends EventEmitter {
         failureThreshold: 5,
         recoveryTimeout: 30000,
         successThreshold: 3,
-        timeout: 120000,
+        timeout: 1800000, // 30 minutes
         monitoringWindow: 300000,
         minimumRequests: 10
       },

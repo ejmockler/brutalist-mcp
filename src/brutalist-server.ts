@@ -7,7 +7,7 @@ import { z } from "zod";
 import { CLIAgentOrchestrator, BrutalistPromptType, StreamingEvent } from './cli-agents.js';
 import { logger } from './logger.js';
 import { ToolConfig, BASE_ROAST_SCHEMA } from './types/tool-config.js';
-import { TOOL_CONFIGS } from './tool-definitions.js';
+import { TOOL_CONFIGS } from './tool-definitions-generated.js';
 import { 
   BrutalistServerConfig, 
   BrutalistResponse, 

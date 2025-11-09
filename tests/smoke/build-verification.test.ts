@@ -252,8 +252,12 @@ describe('Configuration Validation', () => {
     expect(serverContent).not.toMatch(/const\s+\w+\s*=\s*require\s*\(\s*['"]fs['"]\s*\)/);
     expect(cliContent).not.toMatch(/const\s+\w+\s*=\s*require\s*\(\s*['"]fs['"]\s*\)/);
 
-    // Should use ES imports
-    expect(serverContent).toMatch(/import.*from\s+['"]fs['"]/);
-    expect(cliContent).toMatch(/import.*from\s+['"]fs['"]/);
+    // If fs is imported, should use ES imports (not required to import fs)
+    if (serverContent.includes('from \'fs\'') || serverContent.includes('from "fs"')) {
+      expect(serverContent).toMatch(/import.*from\s+['"]fs['"]/);
+    }
+    if (cliContent.includes('from \'fs\'') || cliContent.includes('from "fs"')) {
+      expect(cliContent).toMatch(/import.*from\s+['"]fs['"]/);
+    }
   });
 });

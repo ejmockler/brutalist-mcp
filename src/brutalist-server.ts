@@ -2,7 +2,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { randomUUID } from "crypto";
-import { appendFileSync } from "fs";
 import express, { Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { CLIAgentOrchestrator, BrutalistPromptType, StreamingEvent } from './cli-agents.js';
@@ -522,21 +521,10 @@ export class BrutalistServer {
       const sessionInfo = this.activeSessions.get(sessionId)!;
       sessionInfo.requestCount++;
       sessionInfo.lastActivity = Date.now();
-      
-      // Debug logging: Log the received arguments to file
-      const debugLog = `/tmp/brutalist-tool-debug-${Date.now()}.log`;
-      const logMessage = (msg: string) => {
-        try {
-          appendFileSync(debugLog, `${new Date().toISOString()}: ${msg}\n`);
-        } catch (e) {
-          // Ignore filesystem errors
-        }
-      };
-      
-      logMessage(`🔧 ROAST TOOL DEBUG: Tool=${config.name}, primaryArgField=${config.primaryArgField}`);
-      logMessage(`🔧 ROAST TOOL DEBUG: args=${JSON.stringify(args, null, 2)}`);
-      logMessage(`🔧 ROAST TOOL DEBUG: extra=${JSON.stringify(extra, null, 2)}`);
-      
+
+      logger.debug(`Tool execution: ${config.name}, primaryArgField=${config.primaryArgField}`);
+      logger.debug(`Args: ${JSON.stringify(args, null, 2)}`);
+
       // Extract pagination parameters
       const paginationParams = extractPaginationParams(args);
       if (args.cursor) {
@@ -616,10 +604,9 @@ export class BrutalistServer {
       
       // Get the primary argument (targetPath, idea, architecture, etc.)
       const primaryArg = args[config.primaryArgField];
-      
-      logMessage(`🔧 PRIMARY ARG DEBUG: primaryArgField=${config.primaryArgField}, primaryArg="${primaryArg}"`);
-      logMessage(`🔧 PRIMARY ARG DEBUG: config.analysisType="${config.analysisType}"`);
-      
+
+      logger.debug(`Primary arg: ${config.primaryArgField}="${primaryArg}", analysisType="${config.analysisType}"`);
+
       // Run the analysis
       const result = await this.executeBrutalistAnalysis(
         config.analysisType,

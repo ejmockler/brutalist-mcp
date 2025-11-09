@@ -1,5 +1,5 @@
 import { spawn, exec } from 'child_process';
-import { realpathSync, appendFileSync } from 'fs';
+import { realpathSync } from 'fs';
 import { promisify } from 'util';
 import path from 'path';
 import { logger } from './logger.js';
@@ -1100,34 +1100,18 @@ export class CLIAgentOrchestrator {
     context?: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse[]> {
-    // Debug logging for path validation logic - write to file to avoid MCP stdio interference
-    const debugLog = `/tmp/brutalist-debug-${Date.now()}.log`;
-    const logMessage = (msg: string) => {
-      try {
-        appendFileSync(debugLog, `${new Date().toISOString()}: ${msg}\n`);
-      } catch (e) {
-        // Ignore filesystem errors
-      }
-    };
-    
-    logMessage(`🔧 VALIDATION DEBUG: analysisType="${analysisType}", primaryContent="${primaryContent}"`);
-    
     // Only validate filesystem paths for tools that actually operate on files/directories
     const filesystemTools = ['codebase', 'file_structure', 'dependencies', 'git_history', 'test_coverage'];
-    
-    logMessage(`🔧 VALIDATION DEBUG: filesystemTools.includes(analysisType)=${filesystemTools.includes(analysisType)}`);
-    logMessage(`🔧 VALIDATION DEBUG: primaryContent exists=${!!primaryContent}`);
-    logMessage(`🔧 VALIDATION DEBUG: primaryContent.trim() !== ''=${primaryContent ? primaryContent.trim() !== '' : false}`);
-    
+
+    logger.debug(`Validation check: analysisType="${analysisType}", isFilesystemTool=${filesystemTools.includes(analysisType)}`);
+
     try {
       if (filesystemTools.includes(analysisType) && primaryContent && primaryContent.trim() !== '') {
-        logMessage(`🔧 VALIDATION DEBUG: Calling validatePath for "${primaryContent}"`);
+        logger.debug(`Validating path: "${primaryContent}"`);
         validatePath(primaryContent, 'targetPath');
-      } else {
-        logMessage(`🔧 VALIDATION DEBUG: Skipping validatePath - not a filesystem tool`);
       }
     } catch (error) {
-      logMessage(`🔧 VALIDATION DEBUG: validatePath failed with error: ${error}`);
+      logger.error(`Path validation failed: ${error}`);
       throw new Error(`Security validation failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     

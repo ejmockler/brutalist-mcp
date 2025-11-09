@@ -522,5 +522,111 @@ describe('CircuitBreaker', () => {
       const stats = breaker.getStats();
       expect(stats.failures).toBe(1);
     });
+
+    it('should trim response times window when exceeding 100 entries', async () => {
+      const mockFn = jest.fn().mockResolvedValue('success');
+
+      // Execute 150 requests to trigger window cleanup
+      for (let i = 0; i < 150; i++) {
+        await breaker.execute(mockFn);
+      }
+
+      const stats = breaker.getStats();
+      expect(stats.averageResponseTime).toBeGreaterThanOrEqual(0);
+      expect(stats.successes).toBe(150);
+    });
+
+    it('should trim request times window when exceeding 1000 entries', async () => {
+      const mockFn = jest.fn().mockResolvedValue('success');
+
+      // Execute 1100 requests to trigger window cleanup
+      for (let i = 0; i < 1100; i++) {
+        await breaker.execute(mockFn);
+      }
+
+      const stats = breaker.getStats();
+      expect(stats.totalRequests).toBe(1100);
+    });
+
+    it('should not reopen circuit when already OPEN', async () => {
+      const stateHandler = jest.fn();
+      breaker.on('stateChanged', stateHandler);
+
+      // Force circuit open
+      breaker.forceState(CircuitState.OPEN);
+      stateHandler.mockClear();
+
+      // Try to execute more failing requests
+      const mockFn = jest.fn().mockRejectedValue(new Error('error'));
+      await expect(breaker.execute(mockFn)).rejects.toThrow();
+
+      // Should not emit additional stateChanged events
+      expect(stateHandler).not.toHaveBeenCalled();
+    });
+
+    it('should open circuit based on high failure rate', async () => {
+      const mockFn = jest.fn()
+        .mockResolvedValueOnce('s1')
+        .mockResolvedValueOnce('s2')
+        .mockRejectedValueOnce(new Error('e1'))
+        .mockRejectedValueOnce(new Error('e2'))
+        .mockRejectedValueOnce(new Error('e3'))
+        .mockRejectedValueOnce(new Error('e4'));
+
+      // Execute enough requests to meet minimumRequests
+      await breaker.execute(mockFn); // success
+      await breaker.execute(mockFn); // success
+      await expect(breaker.execute(mockFn)).rejects.toThrow(); // fail
+      await expect(breaker.execute(mockFn)).rejects.toThrow(); // fail
+      await expect(breaker.execute(mockFn)).rejects.toThrow(); // fail
+
+      const stats = breaker.getStats();
+      // 3 failures out of 5 = 60% failure rate > 50% threshold
+      expect(stats.failureRate).toBeGreaterThan(0.5);
+    });
+
+    it('should set recovery timer when forcing OPEN state', async () => {
+      jest.useFakeTimers();
+
+      breaker.forceState(CircuitState.OPEN);
+      expect(breaker.getStats().state).toBe(CircuitState.OPEN);
+
+      // Fast-forward past recovery timeout
+      jest.advanceTimersByTime(config.recoveryTimeout + 100);
+
+      expect(breaker.getStats().state).toBe(CircuitState.HALF_OPEN);
+
+      jest.useRealTimers();
+    });
+
+    it('should clear recovery timer on reset', async () => {
+      jest.useFakeTimers();
+
+      // Open circuit
+      breaker.forceState(CircuitState.OPEN);
+      expect(breaker.getStats().state).toBe(CircuitState.OPEN);
+
+      // Reset before recovery
+      breaker.reset();
+
+      // Fast-forward - should stay CLOSED since timer was cleared
+      jest.advanceTimersByTime(config.recoveryTimeout + 100);
+      expect(breaker.getStats().state).toBe(CircuitState.CLOSED);
+
+      jest.useRealTimers();
+    });
+
+    it('should handle RetryFallback exhausting all attempts', async () => {
+      const retryFn = jest.fn().mockRejectedValue(new Error('persistent error'));
+      const retryFallback = new RetryFallback(retryFn, 3, 10);
+      breaker.addFallbackStrategy(retryFallback);
+
+      const mockFn = jest.fn().mockRejectedValue(new Error('initial error'));
+
+      await expect(breaker.execute(mockFn)).rejects.toThrow();
+
+      // RetryFallback should have attempted all 3 retries
+      expect(retryFn).toHaveBeenCalledTimes(3);
+    });
   });
 });

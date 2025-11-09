@@ -110,10 +110,10 @@ describe('Transport Integration Tests', () => {
   describe('CORS Security', () => {
     let server: BrutalistServer;
     let port: number;
-    
+
     beforeEach(async () => {
-      server = new BrutalistServer({ 
-        transport: 'http', 
+      server = new BrutalistServer({
+        transport: 'http',
         httpPort: 0,
         corsOrigins: ['http://localhost:3000', 'http://127.0.0.1:3000'],
         allowCORSWildcard: false
@@ -121,9 +121,12 @@ describe('Transport Integration Tests', () => {
       await server.start();
       port = server.getActualPort()!;
     });
-    
-    afterEach(() => {
-      server.cleanup();
+
+    afterEach(async () => {
+      if (server) {
+        await server.stop();
+        server.cleanup();
+      }
     });
 
     it('should allow requests from configured allowed origins', async () => {

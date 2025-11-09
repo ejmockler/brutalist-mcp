@@ -730,10 +730,10 @@ export class SessionChannelManager extends EventEmitter {
    */
   private startMaintenance(): void {
     // Cleanup stale sessions every 5 minutes
-    setInterval(() => {
+    const cleanupInterval = setInterval(() => {
       const now = Date.now();
       const staleThreshold = this.config.ttl;
-      
+
       for (const [sessionId, session] of this.sessions.entries()) {
         if (now - session.lastActivity > staleThreshold) {
           logger.info(`Maintenance cleanup: stale session ${sessionId}`);
@@ -741,11 +741,13 @@ export class SessionChannelManager extends EventEmitter {
         }
       }
     }, 5 * 60 * 1000);
-    
+    cleanupInterval.unref();
+
     // Update metrics every minute
-    setInterval(() => {
+    const metricsInterval = setInterval(() => {
       this.updateMetrics();
     }, 60 * 1000);
+    metricsInterval.unref();
   }
   
   /**

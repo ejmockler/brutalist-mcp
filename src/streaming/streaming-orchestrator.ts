@@ -480,6 +480,8 @@ export class StreamingCLIOrchestrator extends EventEmitter {
     this.cleanupTimer = setInterval(() => {
       this.performCleanup();
     }, this.config.cleanupInterval);
+    // Allow Node.js to exit if this is the only active timer
+    this.cleanupTimer.unref();
   }
   
   /**

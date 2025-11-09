@@ -275,6 +275,8 @@ export class EnhancedSSETransport extends EventEmitter {
     this.heartbeatInterval = setInterval(() => {
       this.checkConnectionHealth();
     }, this.HEARTBEAT_INTERVAL);
+    // Allow Node.js to exit if this is the only active timer
+    this.heartbeatInterval.unref();
   }
   
   /**

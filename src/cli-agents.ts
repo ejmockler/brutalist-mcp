@@ -929,8 +929,6 @@ export class CLIAgentOrchestrator {
         // Use provided model or default to gpt-5-codex
         const model = options.models?.codex || AVAILABLE_MODELS.codex.default;
         args.push('--model', model);
-        // SECURITY: Use read-only sandbox to prevent filesystem modifications
-        args.push('--sandbox', 'read-only');
         // OPTIONAL: Use --json flag to get structured output (can be disabled for compatibility)
         if (process.env.CODEX_USE_JSON !== 'false') {
           args.push('--json');
@@ -974,9 +972,6 @@ export class CLIAgentOrchestrator {
         // Use provided model or default to gemini-2.5-pro
         const modelName = options.models?.gemini || AVAILABLE_MODELS.gemini.default;
         args.push('--model', modelName);
-
-        // SECURITY: Enable sandbox to restrict filesystem access
-        args.push('--sandbox');
 
         // DEFENSIVE: Disable MCP if Gemini supports it (currently no known MCP support)
         // This prevents potential stdio deadlock if Gemini adds MCP in the future

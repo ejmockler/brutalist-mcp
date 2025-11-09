@@ -263,7 +263,9 @@ export class IntelligentBuffer {
   
   constructor() {
     // Periodic cleanup of stale sessions
-    setInterval(() => this.cleanupStaleSessions(), 60000); // Every minute
+    const cleanupInterval = setInterval(() => this.cleanupStaleSessions(), 60000); // Every minute
+    // Allow Node.js to exit if this is the only active timer
+    cleanupInterval.unref();
   }
   
   /**

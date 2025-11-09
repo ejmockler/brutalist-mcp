@@ -332,10 +332,12 @@ describe('EnhancedSSETransport', () => {
 
     it('should cleanup stale connections on heartbeat', async () => {
       // Make write throw on heartbeat to simulate connection failure
-      let heartbeatCount = 0;
+      // Note: sendEvent() performs 3 writes (id, event, data), so we need to count in groups of 3
+      let writeCount = 0;
       (mockResponse.write as jest.Mock).mockImplementation(() => {
-        heartbeatCount++;
-        if (heartbeatCount > 1) { // First write is connection event
+        writeCount++;
+        // First 3 writes are connection event, next 3 are heartbeat
+        if (writeCount > 3) {
           throw new Error('Connection lost');
         }
         return true;
@@ -385,9 +387,16 @@ describe('EnhancedSSETransport', () => {
         'session-1'
       );
 
+      // Create fresh mock for second connection
+      const mockResponse2 = createMockResponse();
+      const mockRequest2 = {
+        headers: { origin: 'http://localhost:3000' },
+        on: jest.fn<(event: string, handler: (...args: any[]) => void) => any>()
+      };
+
       await transport.connect(
-        mockRequest as Request,
-        { ...mockResponse } as Response,
+        mockRequest2 as any,
+        mockResponse2 as Response,
         'session-2'
       );
 
@@ -446,6 +455,12 @@ describe('EnhancedSSETransport', () => {
         'test-session'
       );
 
+      // Verify first connection succeeded
+      expect(transport.getStats().totalConnections).toBe(1);
+
+      // Advance time to ensure unique connection IDs (connectionId = `${sessionId}-${Date.now()}`)
+      jest.advanceTimersByTime(1);
+
       await transport.connect(
         mockRequest2 as any,
         mockResponse2 as Response,
@@ -486,9 +501,16 @@ describe('EnhancedSSETransport', () => {
         'session-1'
       );
 
+      // Create fresh mock for second connection
+      const mockResponse2 = createMockResponse();
+      const mockRequest2 = {
+        headers: { origin: 'http://localhost:3000' },
+        on: jest.fn<(event: string, handler: (...args: any[]) => void) => any>()
+      };
+
       await transport.connect(
-        mockRequest as Request,
-        { ...mockResponse } as Response,
+        mockRequest2 as any,
+        mockResponse2 as Response,
         'session-2'
       );
 

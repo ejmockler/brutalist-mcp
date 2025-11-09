@@ -35,6 +35,7 @@ export class BrutalistServer {
   private httpTransport?: StreamableHTTPServerTransport;
   private responseCache: ResponseCache;
   private actualPort?: number;
+  private httpServer?: any; // Store HTTP server reference for proper cleanup
   private shutdownHandler?: () => void;
   // Session tracking for security
   private activeSessions = new Map<string, {
@@ -316,16 +317,16 @@ export class BrutalistServer {
     const port = this.config.httpPort ?? 3000;
     
     return new Promise<void>((resolve, reject) => {
-      const server = app.listen(port, '127.0.0.1', () => {
-        const actualPort = (server.address() as any)?.port || port;
+      this.httpServer = app.listen(port, '127.0.0.1', () => {
+        const actualPort = (this.httpServer.address() as any)?.port || port;
         this.actualPort = actualPort;
         logger.info(`HTTP server listening on port ${actualPort}`);
         logger.info(`MCP endpoint: http://localhost:${actualPort}/mcp`);
         logger.info(`Health check: http://localhost:${actualPort}/health`);
         resolve();
       });
-      
-      server.on('error', (error) => {
+
+      this.httpServer.on('error', (error: Error) => {
         logger.error('HTTP server failed to start', error);
         reject(error);
       });
@@ -334,7 +335,7 @@ export class BrutalistServer {
       if (!this.shutdownHandler) {
         this.shutdownHandler = () => {
           logger.info('Received SIGTERM, shutting down gracefully');
-          server.close(() => {
+          this.httpServer?.close(() => {
             logger.info('HTTP server closed');
             process.exit(0);
           });
@@ -347,6 +348,20 @@ export class BrutalistServer {
   // Getter for actual listening port (useful for tests)
   public getActualPort(): number | undefined {
     return this.actualPort;
+  }
+
+  // Stop the HTTP server gracefully
+  public async stop(): Promise<void> {
+    if (this.httpServer) {
+      return new Promise((resolve) => {
+        this.httpServer!.close(() => {
+          logger.info('HTTP server stopped');
+          this.httpServer = undefined;
+          this.actualPort = undefined;
+          resolve();
+        });
+      });
+    }
   }
 
   // Cleanup method for tests - remove event listeners

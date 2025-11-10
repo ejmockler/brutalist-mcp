@@ -45,9 +45,11 @@ claude mcp add brutalist --scope user -- npx -y @brutalist/mcp@latest
 Add to `~/.cursor/mcp.json`:
 ```json
 {
-  "brutalist": {
-    "command": "npx",
-    "args": ["-y", "@brutalist/mcp@latest"]
+  "mcpServers": {
+    "brutalist": {
+      "command": "npx",
+      "args": ["-y", "@brutalist/mcp@latest"]
+    }
   }
 }
 ```
@@ -61,9 +63,11 @@ code --add-mcp '{"name":"brutalist","command":"npx","args":["-y","@brutalist/mcp
 Add to `~/.codeium/windsurf/mcp_config.json`:
 ```json
 {
-  "brutalist": {
-    "command": "npx",
-    "args": ["-y", "@brutalist/mcp@latest"]
+  "mcpServers": {
+    "brutalist": {
+      "command": "npx",
+      "args": ["-y", "@brutalist/mcp@latest"]
+    }
   }
 }
 ```

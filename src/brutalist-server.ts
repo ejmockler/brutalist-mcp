@@ -556,24 +556,46 @@ export class BrutalistServer {
 
       logger.info(`🔧 DEBUG: explicitPaginationRequested=${explicitPaginationRequested}, offset=${args.offset}, limit=${args.limit}, cursor=${args.cursor}, context_id=${args.context_id}`);
 
-      // Check cache if context_id provided
+      // Check cache if context_id provided - detect conversation continuation
+      let conversationHistory: import('./utils/response-cache.js').ConversationMessage[] | undefined;
       if (args.context_id && !args.force_refresh) {
-        const cachedContent = await this.responseCache.get(args.context_id, sessionId);
-        if (cachedContent) {
+        const cachedResponse = await this.responseCache.getByContextId(args.context_id, sessionId);
+        if (cachedResponse) {
           logger.info(`🎯 Cache HIT for context_id: ${args.context_id}`);
-          const cachedResult: BrutalistResponse = {
-            success: true,
-            responses: [{
-              agent: 'cached' as any,
+
+          // Check if this is a continuation (new user prompt provided)
+          // For text-based tools, check 'content' field; for filesystem tools, check primaryArgField
+          const textContent = args.content || args.idea || args.architecture || args.research || args.product || args.security || args.infrastructure;
+          const primaryArg = textContent || args[config.primaryArgField];
+
+          // Check if content is different from the last message in conversation history
+          const lastUserMessage = cachedResponse.conversationHistory
+            ?.filter(msg => msg.role === 'user')
+            .pop();
+          const isDifferentContent = !lastUserMessage || (primaryArg && primaryArg.trim() !== lastUserMessage.content.trim());
+          const hasNewUserPrompt = primaryArg && primaryArg.trim() !== '' && isDifferentContent;
+
+          if (hasNewUserPrompt) {
+            // CONVERSATION CONTINUATION: User is adding a new prompt to the thread
+            logger.info(`💬 Detected conversation continuation - new prompt: "${primaryArg.substring(0, 50)}..."`);
+            conversationHistory = cachedResponse.conversationHistory || [];
+            // Don't return cached - fall through to execute new analysis with history
+          } else {
+            // PAGINATION: Just retrieving previous response (no new prompt)
+            logger.info(`📖 Pagination request - returning cached response`);
+            const cachedResult: BrutalistResponse = {
               success: true,
-              output: cachedContent,
-              executionTime: 0
-            }]
-          };
-          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, args.context_id, explicitPaginationRequested);
+              responses: [{
+                agent: 'cached' as any,
+                success: true,
+                output: cachedResponse.content,
+                executionTime: 0
+              }]
+            };
+            return this.formatToolResponse(cachedResult, args.verbose, paginationParams, args.context_id, explicitPaginationRequested);
+          }
         } else {
           logger.warn(`❌ Cache MISS for context_id: ${args.context_id}, session: ${sessionId}`);
-          // Don't silently re-run - context_id should always hit cache or error
           throw new Error(
             `Context ID "${args.context_id}" not found in cache. ` +
             `It may have expired (2 hour TTL) or belong to a different session. ` +
@@ -615,10 +637,24 @@ export class BrutalistServer {
       }
       
       // Build context with custom builder if available
-      const context = config.contextBuilder ? config.contextBuilder(args) : args.context;
-      
+      let context = config.contextBuilder ? config.contextBuilder(args) : args.context;
+
       // Get the primary argument (targetPath, idea, architecture, etc.)
-      const primaryArg = args[config.primaryArgField];
+      // For text-based tools, use content field; for filesystem tools, use primaryArgField
+      const textContent = args.content || args.idea || args.architecture || args.research || args.product || args.security || args.infrastructure;
+      const primaryArg = textContent || args[config.primaryArgField];
+
+      // If we have conversation history, inject it into the context
+      if (conversationHistory && conversationHistory.length > 0) {
+        const conversationContext = conversationHistory.map(msg => {
+          const role = msg.role === 'user' ? 'User' : 'Assistant';
+          return `${role}: ${msg.content}`;
+        }).join('\n\n---\n\n');
+
+        const contextPrefix = `## Previous Conversation\n\n${conversationContext}\n\n---\n\n## New User Prompt\n\n`;
+        context = contextPrefix + (context || '');
+        logger.info(`💬 Injected ${conversationHistory.length} previous messages into context`);
+      }
 
       logger.debug(`Primary arg: ${config.primaryArgField}="${primaryArg}", analysisType="${config.analysisType}"`);
 
@@ -648,15 +684,38 @@ export class BrutalistServer {
             return acc;
           }, {} as Record<string, any>);
 
-          const { contextId: newId } = await this.responseCache.set(
-            cacheData,
-            fullContent,
-            cacheKey,
-            sessionId,  // Bind to session
-            requestId   // Track request
-          );
-          contextId = newId;
-          logger.info(`✅ Cached analysis result with context ID: ${contextId} for session: ${sessionId?.substring(0, 8)}`);
+          // Build updated conversation history
+          const now = Date.now();
+          const updatedConversation: import('./utils/response-cache.js').ConversationMessage[] = [
+            ...(conversationHistory || []),
+            { role: 'user', content: primaryArg, timestamp: now },
+            { role: 'assistant', content: fullContent, timestamp: now }
+          ];
+
+          // If continuing a conversation, reuse the existing context_id
+          if (args.context_id && conversationHistory) {
+            // Update existing cache entry with extended conversation
+            contextId = args.context_id as string; // TypeScript: we know this is defined from the if condition
+            await this.responseCache.updateByContextId(
+              contextId,
+              fullContent,
+              updatedConversation,
+              sessionId || 'anonymous'
+            );
+            logger.info(`✅ Updated conversation ${contextId} (now ${updatedConversation.length} messages)`);
+          } else {
+            // New conversation - create new context_id
+            const { contextId: newId } = await this.responseCache.set(
+              cacheData,
+              fullContent,
+              cacheKey,
+              sessionId,
+              requestId,
+              updatedConversation
+            );
+            contextId = newId;
+            logger.info(`✅ Cached new conversation with context ID: ${contextId} for session: ${sessionId?.substring(0, 8)}`);
+          }
         }
       }
 

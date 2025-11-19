@@ -6,6 +6,12 @@ import { logger } from '../logger.js';
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 
+export interface ConversationMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: number;
+}
+
 export interface CachedResponse {
   content: string;
   timestamp: number;
@@ -16,6 +22,7 @@ export interface CachedResponse {
   size: number;
   sessionId?: string; // Session binding for security
   requestId?: string; // Request tracking
+  conversationHistory?: ConversationMessage[]; // Full conversation thread
 }
 
 // Context ID mapping for secure lookup
@@ -35,6 +42,7 @@ interface CachedResponseEntry {
   compressed?: boolean;
   sessionId?: string;
   requestId?: string;
+  conversationHistory?: ConversationMessage[]; // Conversation thread
 }
 
 export interface CacheStats {
@@ -156,14 +164,15 @@ export class ResponseCache {
   }
 
   /**
-   * Store response with session binding
+   * Store response with session binding and conversation history
    */
   async set(
     data: Record<string, any>,
     content: string,
     cacheKey?: string,
     sessionId?: string,
-    requestId?: string
+    requestId?: string,
+    conversationHistory?: ConversationMessage[]
   ): Promise<{ contextId: string; cacheKey: string }> {
     const finalCacheKey = cacheKey || this.generateCacheKey(data);
     const contextId = this.generateContextId(finalCacheKey);
@@ -191,18 +200,19 @@ export class ResponseCache {
     // Create cache entry with session binding
     const entry: CachedResponseEntry = {
       content: finalContent,
-      metadata: { 
-        ...data, 
+      metadata: {
+        ...data,
         sessionId,
         requestId,
-        originalSize: sizeInMB 
+        originalSize: sizeInMB
       },
       timestamp: Date.now(),
       accessCount: 1,
       size: Buffer.byteLength(finalContent, 'utf8'),
       compressed,
       sessionId,
-      requestId
+      requestId,
+      conversationHistory // Store conversation thread
     };
     
     // Store in cache
@@ -406,6 +416,62 @@ export class ResponseCache {
   }
 
   /**
+   * Update existing cache entry (for conversation continuation)
+   */
+  async updateByContextId(
+    contextId: string,
+    content: string,
+    conversationHistory: ConversationMessage[],
+    sessionId?: string
+  ): Promise<void> {
+    const mapping = this.contextIdMap.get(contextId);
+    if (!mapping) {
+      throw new Error(`Cannot update: context_id ${contextId} not found`);
+    }
+
+    // Validate session
+    if (sessionId && mapping.sessionId !== sessionId && mapping.sessionId !== 'anonymous') {
+      throw new Error(`Session mismatch: cannot update context from different session`);
+    }
+
+    const entry = this.entries.get(mapping.cacheKey);
+    if (!entry) {
+      throw new Error(`Cache entry not found for context_id ${contextId}`);
+    }
+
+    // Check size limits
+    const sizeInMB = Buffer.byteLength(content, 'utf8') / (1024 * 1024);
+    if (sizeInMB > this.maxEntrySizeMB) {
+      throw new Error(`Response too large: ${sizeInMB.toFixed(2)}MB > ${this.maxEntrySizeMB}MB limit`);
+    }
+
+    // Compress if needed
+    let finalContent = content;
+    let compressed = false;
+    if (sizeInMB > this.compressionThresholdMB) {
+      try {
+        const compressedBuffer = await gzipAsync(Buffer.from(content, 'utf8'));
+        finalContent = compressedBuffer.toString('base64');
+        compressed = true;
+      } catch (error) {
+        logger.warn("Failed to compress cache entry, storing uncompressed", error);
+      }
+    }
+
+    // Update entry
+    entry.content = finalContent;
+    entry.compressed = compressed;
+    entry.size = Buffer.byteLength(finalContent, 'utf8');
+    entry.conversationHistory = conversationHistory;
+    entry.timestamp = Date.now(); // Update timestamp for TTL
+
+    // Update access order
+    this.updateAccessOrder(mapping.cacheKey);
+
+    logger.debug(`✅ Updated cache entry for context_id: ${contextId}`);
+  }
+
+  /**
    * Retrieve response by context ID, returning full cached response object
    */
   async getByContextId(contextId: string, sessionId?: string): Promise<CachedResponse | null> {
@@ -467,7 +533,8 @@ export class ResponseCache {
       compressed: entry.compressed || false,
       size: entry.size,
       sessionId: entry.sessionId,
-      requestId: entry.requestId
+      requestId: entry.requestId,
+      conversationHistory: entry.conversationHistory
     };
   }
 

@@ -379,14 +379,14 @@ describe('BrutalistServer', () => {
           '/tmp/test',
           'codex',
           false,
-          { codex: 'gpt-5-codex', gemini: 'gemini-2.5-pro' },
+          { codex: 'gpt-5.1-codex-max', gemini: 'gemini-3-pro-preview' },
           undefined
         );
 
         const callArgs = mockCLIOrchestrator.executeBrutalistAnalysis.mock.calls[0];
         expect(callArgs[4]).toMatchObject({
           preferredCLI: 'codex',
-          models: { codex: 'gpt-5-codex', gemini: 'gemini-2.5-pro' }
+          models: { codex: 'gpt-5.1-codex-max', gemini: 'gemini-3-pro-preview' }
         });
       });
     });

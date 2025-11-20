@@ -270,17 +270,20 @@ As of September 2025, you can specify exact models for each CLI agent:
 - Default: Uses your configured Claude model
 
 **Codex CLI:**
+- `gpt-5.1-codex-max` - Latest frontier model with compaction for long-horizon tasks ✅ (RECOMMENDED)
+- `gpt-5.1-codex` - GPT-5.1 optimized for coding ✅
+- `gpt-5.1-codex-mini` - Smaller, cost-efficient 5.1 model ✅
+- `gpt-5-codex` - Legacy GPT-5 optimized for coding ✅
 - `gpt-5` - GPT-5 base model ✅
-- `gpt-5-codex` - GPT-5 optimized for coding ✅
 - `o4-mini` - Smaller efficient model ✅
-- `o3` - ❌ Unsupported (falls back to gpt-5-codex)
-- Default: `gpt-5`
+- Default: `gpt-5.1-codex-max`
 
 **Gemini CLI:**
-- `gemini-2.5-flash` - Best price/performance ✅
+- `gemini-3-pro-preview` - Latest frontier model with best agentic capabilities ✅ (RECOMMENDED)
 - `gemini-2.5-pro` - Advanced reasoning ✅
+- `gemini-2.5-flash` - Best price/performance ✅
 - `gemini-2.5-flash-lite` - Cost-efficient ✅
-- Default: `gemini-2.5-flash`
+- Default: `gemini-3-pro-preview`
 
 #### Usage Examples
 
@@ -288,7 +291,7 @@ As of September 2025, you can specify exact models for each CLI agent:
 # Use specific models for complex analysis
 roast_codebase(
   targetPath="/src",
-  models={"claude": "opus", "codex": "gpt-5-codex", "gemini": "gemini-2.5-pro"}
+  models={"claude": "opus", "codex": "gpt-5.1-codex-max", "gemini": "gemini-3-pro-preview"}
 )
 
 # Speed vs. accuracy trade-offs
@@ -299,7 +302,7 @@ roast_idea(
 
 roast_security(
   system="Critical financial system",
-  models={"claude": "opus", "gemini": "gemini-2.5-pro"}  // Most thorough
+  models={"claude": "opus", "gemini": "gemini-3-pro-preview"}  // Most thorough
 )
 ```
 
@@ -307,8 +310,8 @@ roast_security(
 
 **For Complex Reasoning & Architecture:**
 - Claude: `opus` or `claude-opus-4-1-20250805`
-- Codex: `gpt-5-codex` (optimized for coding)
-- Gemini: `gemini-2.5-pro`
+- Codex: `gpt-5.1-codex-max` (latest with compaction for long-horizon tasks)
+- Gemini: `gemini-3-pro-preview` (latest with best agentic capabilities)
 
 **For Speed & Cost Efficiency:**
 - Claude: `sonnet` (balanced performance)
@@ -316,7 +319,7 @@ roast_security(
 - Gemini: `gemini-2.5-flash-lite`
 
 **For Balanced Analysis (Recommended):**
-- Use defaults: Claude user setting, Codex `gpt-5`, Gemini `gemini-2.5-flash`
+- Use defaults: Claude user setting, Codex `gpt-5.1-codex-max`, Gemini `gemini-3-pro-preview`
 
 ### Custom System Prompts
 
@@ -383,7 +386,7 @@ const assistantMessages = parseCodexJsonOutput(stdout);
 #### Gemini CLI (Working)
 ```javascript
 // Uses combined prompt as positional argument
-const args = ['--model', 'gemini-2.5-flash'];
+const args = ['--model', 'gemini-3-pro-preview'];
 if (sandbox) args.push('--sandbox');
 const combinedPrompt = `${systemPrompt}\n\n${userPrompt}`;
 args.push(combinedPrompt); // Positional argument, NOT stdin

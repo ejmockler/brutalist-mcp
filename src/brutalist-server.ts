@@ -404,8 +404,8 @@ export class BrutalistServer {
         workingDirectory: z.string().optional().describe("Working directory for analysis"),
         models: z.object({
           claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5, gpt-5-codex, o3, o3-mini, o3-pro, o4-mini"),
-          gemini: z.enum(['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite']).optional().describe("Gemini model")
+          codex: z.string().optional().describe("Codex model: gpt-5.1-codex-max (latest), gpt-5.1-codex, gpt-5.1-codex-mini, gpt-5-codex, gpt-5, o4-mini"),
+          gemini: z.string().optional().describe("Gemini model: gemini-3-pro-preview (latest), gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite")
         }).optional().describe("Specific models to use for each CLI agent")
       },
       async (args) => {

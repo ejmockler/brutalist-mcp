@@ -50,14 +50,14 @@ export const AVAILABLE_MODELS = {
     recommended: 'opus' // Highest capacity Claude model
   },
   codex: {
-    default: 'gpt-5-codex', // Optimized for coding with high capacity
-    models: ['gpt-5', 'gpt-5-codex', 'o3', 'o3-mini', 'o3-pro', 'o4-mini'],
-    recommended: 'gpt-5-codex' // Best balance of capacity and code understanding
+    default: 'gpt-5.1-codex-max', // Latest model optimized for long-horizon coding tasks
+    models: ['gpt-5.1-codex-max', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5-codex', 'gpt-5', 'o4-mini'],
+    recommended: 'gpt-5.1-codex-max' // Frontier model with compaction for multi-window workflows
   },
   gemini: {
-    default: 'gemini-2.5-pro', // Highest capacity Gemini model
-    models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'],
-    recommended: 'gemini-2.5-pro' // Frontier model with advanced reasoning
+    default: 'gemini-3-pro-preview', // Latest frontier model with best agentic capabilities
+    models: ['gemini-3-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+    recommended: 'gemini-3-pro-preview' // #1 on LMArena, best coding model
   }
 } as const;
 

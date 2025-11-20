@@ -614,8 +614,8 @@ describe('Debate Tool Tests', () => {
     it('should pass model configurations to CLI execution', async () => {
       const models = {
         claude: 'opus',
-        codex: 'gpt-5-codex',
-        gemini: 'gemini-2.5-pro'
+        codex: 'gpt-5.1-codex-max',
+        gemini: 'gemini-3-pro-preview'
       };
 
       mockOrchestrator.executeSingleCLI.mockImplementation(async (agent: any, prompt: any, systemPrompt?: any, options?: any) => {
@@ -650,7 +650,7 @@ describe('Debate Tool Tests', () => {
         expect.any(String),
         expect.any(String),
         expect.objectContaining({
-          models: { codex: 'gpt-5-codex' }
+          models: { codex: 'gpt-5.1-codex-max' }
         })
       );
 
@@ -659,7 +659,7 @@ describe('Debate Tool Tests', () => {
         expect.any(String),
         expect.any(String),
         expect.objectContaining({
-          models: { gemini: 'gemini-2.5-pro' }
+          models: { gemini: 'gemini-3-pro-preview' }
         })
       );
     });

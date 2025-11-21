@@ -50,14 +50,14 @@ export const AVAILABLE_MODELS = {
     recommended: 'opus' // Highest capacity Claude model
   },
   codex: {
-    default: 'gpt-5.1-codex-max', // Latest model optimized for long-horizon coding tasks
+    default: undefined, // Uses Codex CLI's default model (stays current automatically)
     models: ['gpt-5.1-codex-max', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5-codex', 'gpt-5', 'o4-mini'],
-    recommended: 'gpt-5.1-codex-max' // Frontier model with compaction for multi-window workflows
+    recommended: 'gpt-5.1-codex-max' // Current frontier model with compaction
   },
   gemini: {
-    default: 'gemini-3-pro-preview', // Latest frontier model with best agentic capabilities
+    default: undefined, // Uses Gemini CLI's default model (stays current automatically)
     models: ['gemini-3-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-    recommended: 'gemini-3-pro-preview' // #1 on LMArena, best coding model
+    recommended: 'gemini-3-pro-preview' // Current #1 on LMArena
   }
 } as const;
 
@@ -926,9 +926,11 @@ export class CLIAgentOrchestrator {
         // Instruct Codex to analyze immediately in one shot without waiting for approval
         const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}\n\nExecute the complete analysis now in a single response without creating a plan first or waiting for input. Provide your full findings immediately.`;
         const args = ['exec'];
-        // Use provided model or default to gpt-5-codex
+        // Use provided model or let Codex use its default
         const model = options.models?.codex || AVAILABLE_MODELS.codex.default;
-        args.push('--model', model);
+        if (model) {
+          args.push('--model', model);
+        }
         // OPTIONAL: Use --json flag to get structured output (can be disabled for compatibility)
         if (process.env.CODEX_USE_JSON !== 'false') {
           args.push('--json');
@@ -969,9 +971,11 @@ export class CLIAgentOrchestrator {
       { ...options },
       (userPrompt, systemPromptSpec, options) => {
         const args = [];
-        // Use provided model or default to gemini-2.5-pro
+        // Use provided model or let Gemini use its default
         const modelName = options.models?.gemini || AVAILABLE_MODELS.gemini.default;
-        args.push('--model', modelName);
+        if (modelName) {
+          args.push('--model', modelName);
+        }
 
         // DEFENSIVE: Disable MCP if Gemini supports it (currently no known MCP support)
         // This prevents potential stdio deadlock if Gemini adds MCP in the future

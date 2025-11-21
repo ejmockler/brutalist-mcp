@@ -276,14 +276,14 @@ As of September 2025, you can specify exact models for each CLI agent:
 - `gpt-5-codex` - Legacy GPT-5 optimized for coding ✅
 - `gpt-5` - GPT-5 base model ✅
 - `o4-mini` - Smaller efficient model ✅
-- Default: `gpt-5.1-codex-max`
+- Default: Uses Codex CLI's default (stays current automatically)
 
 **Gemini CLI:**
 - `gemini-3-pro-preview` - Latest frontier model with best agentic capabilities ✅ (RECOMMENDED)
 - `gemini-2.5-pro` - Advanced reasoning ✅
 - `gemini-2.5-flash` - Best price/performance ✅
 - `gemini-2.5-flash-lite` - Cost-efficient ✅
-- Default: `gemini-3-pro-preview`
+- Default: Uses Gemini CLI's default (stays current automatically)
 
 #### Usage Examples
 
@@ -319,7 +319,8 @@ roast_security(
 - Gemini: `gemini-2.5-flash-lite`
 
 **For Balanced Analysis (Recommended):**
-- Use defaults: Claude user setting, Codex `gpt-5.1-codex-max`, Gemini `gemini-3-pro-preview`
+- Use defaults: Don't specify models parameter - each CLI uses its own latest default
+- This ensures you're always using the most current models without MCP updates
 
 ### Custom System Prompts
 
@@ -363,11 +364,15 @@ await spawnAsync('claude', args, {
 });
 ```
 
-#### Codex CLI (Working - Verbose Output Suppressed)  
+#### Codex CLI (Working - Verbose Output Suppressed)
 ```javascript
 // Uses exec with --json flag to suppress thinking steps
 const args = ['exec'];
-args.push('--model', model);
+// Only add --model if user explicitly specified one
+const model = options.models?.codex;
+if (model) {
+  args.push('--model', model);
+}
 if (sandbox) args.push('--sandbox', 'read-only');
 args.push('--json'); // CRITICAL: Outputs structured JSON, suppresses verbose thinking
 const combinedPrompt = `CONTEXT AND INSTRUCTIONS:\n${systemPrompt}\n\nANALYZE:\n${userPrompt}`;
@@ -386,7 +391,12 @@ const assistantMessages = parseCodexJsonOutput(stdout);
 #### Gemini CLI (Working)
 ```javascript
 // Uses combined prompt as positional argument
-const args = ['--model', 'gemini-3-pro-preview'];
+const args = [];
+// Only add --model if user explicitly specified one
+const model = options.models?.gemini;
+if (model) {
+  args.push('--model', model);
+}
 if (sandbox) args.push('--sandbox');
 const combinedPrompt = `${systemPrompt}\n\n${userPrompt}`;
 args.push(combinedPrompt); // Positional argument, NOT stdin

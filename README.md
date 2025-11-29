@@ -49,6 +49,19 @@ npm i -g @brutalist/mcp
 codex mcp add brutalist -- brutalist-mcp
 ```
 
+**Configuring `tool_timeout_sec` for Codex:**
+The `tool_timeout_sec` parameter (defaulting to 60 seconds) for your Brutalist MCP server needs to be configured directly in your Codex configuration file at `~/.codex/config.toml`. It cannot be passed via the `codex mcp add` command directly.
+
+To set a custom timeout (e.g., 5 minutes or 300 seconds), add or modify the `[mcp_servers.brutalist]` section in `~/.codex/config.toml` as follows:
+
+```toml
+[mcp_servers.brutalist]
+command = "brutalist-mcp" # Ensure this matches your installation command
+args = [] # Depending on your setup, this might be empty or contain arguments
+tool_timeout_sec = 300 # Set your desired timeout in seconds
+```
+
+
 **Cursor:**
 Add to `~/.cursor/mcp.json`:
 ```json

@@ -41,6 +41,14 @@ Choose your IDE:
 claude mcp add brutalist --scope user -- npx -y @brutalist/mcp@latest
 ```
 
+**Codex:**
+```bash
+# Install globally once to avoid npx startup chatter
+npm i -g @brutalist/mcp
+# Add MCP using the installed binary (clean stdio)
+codex mcp add brutalist -- brutalist-mcp
+```
+
 **Cursor:**
 Add to `~/.cursor/mcp.json`:
 ```json

@@ -138,7 +138,8 @@ export class BrutalistToolGenerator {
     const toneDesc = this.describeTone(persona.tone);
     const modeDesc = this.describeMode(strategy.mode);
 
-    return `Deploy ${toneDesc} AI critics to ${modeDesc} your ${domain.name.toLowerCase()}. These agents will ${this.describeCapabilities(domain.capabilities)} and expose every issue in your ${domain.artifactTypes[0]}.`;
+    // Combine the flavorful intro with the domain's detailed description
+    return `Deploy ${toneDesc} AI critics to ${modeDesc} your ${domain.name.toLowerCase()}. ${domain.description}.`;
   }
 
   private describeTone(tone: string): string {
@@ -161,6 +162,7 @@ export class BrutalistToolGenerator {
     }
   }
 
+  // NOTE: This method is now unused, as domain.description is directly injected
   private describeCapabilities(capabilities: string[]): string {
     const first = capabilities[0] || 'analyze';
     return first.replace(/_/g, ' ');

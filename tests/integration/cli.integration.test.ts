@@ -335,16 +335,22 @@ describe('CLI Integration Tests', () => {
     });
 
     it('should sanitize environment variables', async () => {
-      // Test that environment doesn't leak sensitive data
+      // Test that custom environment variables are properly passed to spawned processes
+      // Must include PATH for the 'env' command to be found
       const result = await processManager.spawn('env', [], {
         env: {
+          PATH: process.env.PATH || '/usr/bin:/bin',
+          HOME: process.env.HOME || '/tmp',
           SAFE_VAR: 'safe_value',
-          API_KEY: 'secret_key', // Should be filtered or handled carefully
+          API_KEY: 'secret_key', // In production, sensitive keys are handled by CLI agents
         }
       });
 
+      // Verify the process ran successfully and captured custom variables
+      expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain('SAFE_VAR=safe_value');
-      // In production, API keys should be filtered, but for test we just verify it runs
+      // Note: ProcessManager passes through all env vars - filtering is done at CLI agent level
+      // See cli-agents.ts cleanEnv pattern for production sanitization
     });
 
     it('should handle working directory changes securely', async () => {
@@ -375,7 +381,7 @@ describe('CLI Integration Tests', () => {
   describe('Multi-CLI Orchestration', () => {
     it('should execute brutalist analysis with multiple agents', async () => {
       const context = await orchestrator.detectCLIContext();
-      
+
       if (context.availableCLIs.length === 0) {
         console.log('Skipping multi-CLI test - no CLIs available');
         return;
@@ -387,7 +393,7 @@ describe('CLI Integration Tests', () => {
         'You are a brutal startup critic',
         'Testing multi-CLI execution',
         {
-          timeout: 60000,
+          timeout: 120000, // 2 minutes for CLI execution
           analysisType: 'idea',
           workingDirectory: await testIsolation.createWorkspace()
         }
@@ -408,7 +414,7 @@ describe('CLI Integration Tests', () => {
       const successfulResponses = responses.filter(r => r.success);
       // At least got responses back
       expect(responses.length).toBeGreaterThanOrEqual(0);
-    });
+    }, 180000); // 3 minute Jest timeout for multi-CLI analysis
 
     it('should synthesize responses into coherent feedback', async () => {
       const context = await orchestrator.detectCLIContext();
@@ -478,26 +484,26 @@ describe('CLI Integration Tests', () => {
 
     it('should handle concurrent executions', async () => {
       const context = await orchestrator.detectCLIContext();
-      
+
       if (context.availableCLIs.length === 0) {
         return;
       }
 
-      // Execute multiple analyses concurrently
+      // Execute multiple analyses concurrently with extended timeout for each
       const workspace = await testIsolation.createWorkspace();
       const promises = [
-        orchestrator.executeBrutalistAnalysis('idea', 'Idea 1', 'Critic 1', 'Test 1', { workingDirectory: workspace }),
-        orchestrator.executeBrutalistAnalysis('idea', 'Idea 2', 'Critic 2', 'Test 2', { workingDirectory: workspace }),
-        orchestrator.executeBrutalistAnalysis('idea', 'Idea 3', 'Critic 3', 'Test 3', { workingDirectory: workspace })
+        orchestrator.executeBrutalistAnalysis('idea', 'Idea 1', 'Critic 1', 'Test 1', { workingDirectory: workspace, timeout: 120000 }),
+        orchestrator.executeBrutalistAnalysis('idea', 'Idea 2', 'Critic 2', 'Test 2', { workingDirectory: workspace, timeout: 120000 }),
+        orchestrator.executeBrutalistAnalysis('idea', 'Idea 3', 'Critic 3', 'Test 3', { workingDirectory: workspace, timeout: 120000 })
       ];
 
       const results = await Promise.all(promises);
-      
+
       expect(results).toHaveLength(3);
       results.forEach(responses => {
         expect(Array.isArray(responses)).toBe(true);
       });
-    });
+    }, 180000); // 3 minute Jest timeout for 3 concurrent analyses
 
     it('should handle CLI crashes gracefully', async () => {
       const context = await orchestrator.detectCLIContext();

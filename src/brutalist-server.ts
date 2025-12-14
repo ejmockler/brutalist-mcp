@@ -406,7 +406,15 @@ export class BrutalistServer {
           claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
           codex: z.string().optional().describe("Codex model: gpt-5.1-codex-max (latest), gpt-5.1-codex, gpt-5.1-codex-mini, gpt-5-codex, gpt-5, o4-mini"),
           gemini: z.string().optional().describe("Gemini model: gemini-3-pro-preview (latest), gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite")
-        }).optional().describe("Specific models to use for each CLI agent")
+        }).optional().describe("Specific models to use for each CLI agent"),
+        // Pagination and continuation parameters
+        context_id: z.string().optional().describe("Context ID from previous response for pagination or conversation continuation"),
+        resume: z.boolean().optional().describe("Continue debate with history injection (requires context_id)"),
+        offset: z.number().min(0).optional().describe("Pagination offset"),
+        limit: z.number().min(1000).max(100000).optional().describe("Max chars/chunk (default: 90000)"),
+        cursor: z.string().optional().describe("Pagination cursor"),
+        force_refresh: z.boolean().optional().describe("Ignore cache"),
+        verbose: z.boolean().optional().describe("Detailed output")
       },
       async (args) => {
         // CRITICAL: Prevent recursion
@@ -420,17 +428,7 @@ export class BrutalistServer {
           };
         }
 
-        return this.handleToolExecution(async () => {
-          const debateRounds = Math.min(args.debateRounds || 2, 10); // Limit to max 10 rounds to prevent DoS
-          const responses = await this.executeCLIDebate(
-            args.targetPath,
-            debateRounds,
-            args.context,
-            args.workingDirectory,
-            args.models
-          );
-          return responses;
-        });
+        return this.handleDebateToolExecution(args);
       }
     );
 
@@ -473,12 +471,16 @@ export class BrutalistServer {
           roster += "## Current CLI Context\n";
           roster += `**Available CLIs:** ${cliContext.availableCLIs.join(', ') || 'None detected'}\n\n`;
           
-          roster += "## Pagination Support (NEW in v0.5.2)\n";
-          roster += "**All tools now support intelligent pagination:**\n";
-          roster += "- Analysis results are cached with 2-hour TTL\n";
-          roster += "- Use `context_id` from response to resume conversation\n";
-          roster += "- Smart text chunking preserves readability\n";
-          roster += "- Example: `roast_codebase(context_id: 'a3f5c2d8', offset: 25000)`\n\n";
+          roster += "## Pagination & Conversation Continuation\n";
+          roster += "**Two distinct modes for using context_id:**\n\n";
+          roster += "**1. Pagination** (cached result retrieval):\n";
+          roster += "- `context_id` alone returns cached response at different offsets\n";
+          roster += "- Example: `roast_codebase(context_id: 'abc123', offset: 25000)`\n\n";
+          roster += "**2. Conversation Continuation** (resume dialogue with history):\n";
+          roster += "- `context_id` + `resume: true` + new content continues the conversation\n";
+          roster += "- Prior conversation is injected into CLI agent context\n";
+          roster += "- Example: `roast_codebase(context_id: 'abc123', resume: true, content: 'Explain issue #3 in detail')`\n\n";
+          roster += "**Cache TTL:** 2 hours\n\n";
           
           roster += "## Brutalist Philosophy\n";
           roster += "*All tools use CLI agents with brutal system prompts for maximum reality-based criticism.*\n";
@@ -554,34 +556,49 @@ export class BrutalistServer {
         args.cursor !== undefined ||
         args.context_id !== undefined;
 
-      logger.info(`🔧 DEBUG: explicitPaginationRequested=${explicitPaginationRequested}, offset=${args.offset}, limit=${args.limit}, cursor=${args.cursor}, context_id=${args.context_id}`);
+      logger.info(`🔧 DEBUG: explicitPaginationRequested=${explicitPaginationRequested}, offset=${args.offset}, limit=${args.limit}, cursor=${args.cursor}, context_id=${args.context_id}, resume=${args.resume}`);
 
-      // Check cache if context_id provided - detect conversation continuation
+      // Validate resume flag requires context_id
+      if (args.resume && !args.context_id) {
+        throw new Error(
+          `The 'resume' flag requires a 'context_id' from a previous response. ` +
+          `Run an initial analysis first, then use the returned context_id with resume: true.`
+        );
+      }
+
+      // Check cache if context_id provided
+      // Two modes: PAGINATION (context_id alone) vs CONTINUATION (context_id + resume: true)
       let conversationHistory: import('./utils/response-cache.js').ConversationMessage[] | undefined;
+      let resumeFollowUpQuestion: string | undefined; // Store follow-up for conversation history
+      let resumeOriginalParams: Record<string, unknown> | undefined; // Original params for filesystem tools
       if (args.context_id && !args.force_refresh) {
         const cachedResponse = await this.responseCache.getByContextId(args.context_id, sessionId);
         if (cachedResponse) {
           logger.info(`🎯 Cache HIT for context_id: ${args.context_id}`);
 
-          // Check if this is a continuation (new user prompt provided)
-          // For text-based tools, check 'content' field; for filesystem tools, check primaryArgField
-          const textContent = args.content || args.idea || args.architecture || args.research || args.product || args.security || args.infrastructure;
-          const primaryArg = textContent || args[config.primaryArgField];
+          if (args.resume === true) {
+            // CONVERSATION CONTINUATION: User explicitly wants to continue with history injection
+            const textContent = args.content || args.idea || args.architecture || args.research || args.product || args.security || args.infrastructure;
+            const primaryArg = textContent || args[config.primaryArgField];
 
-          // Check if content is different from the last message in conversation history
-          const lastUserMessage = cachedResponse.conversationHistory
-            ?.filter(msg => msg.role === 'user')
-            .pop();
-          const isDifferentContent = !lastUserMessage || (primaryArg && primaryArg.trim() !== lastUserMessage.content.trim());
-          const hasNewUserPrompt = primaryArg && primaryArg.trim() !== '' && isDifferentContent;
+            if (!primaryArg || primaryArg.trim() === '') {
+              throw new Error(
+                `Conversation continuation (resume: true) requires new content/prompt. ` +
+                `Provide your follow-up question or comment in the content field.`
+              );
+            }
 
-          if (hasNewUserPrompt) {
-            // CONVERSATION CONTINUATION: User is adding a new prompt to the thread
-            logger.info(`💬 Detected conversation continuation - new prompt: "${primaryArg.substring(0, 50)}..."`);
+            // Store the follow-up question for conversation history
+            resumeFollowUpQuestion = primaryArg;
+
+            // Store original request params (for filesystem tools that need original targetPath)
+            resumeOriginalParams = cachedResponse.requestParams;
+
+            logger.info(`💬 Conversation continuation - new prompt: "${primaryArg.substring(0, 50)}..."`);
             conversationHistory = cachedResponse.conversationHistory || [];
-            // Don't return cached - fall through to execute new analysis with history
+            // Fall through to execute new analysis with history
           } else {
-            // PAGINATION: Just retrieving previous response (no new prompt)
+            // PAGINATION: Just retrieving previous response (no resume flag)
             logger.info(`📖 Pagination request - returning cached response`);
             const cachedResult: BrutalistResponse = {
               success: true,
@@ -642,7 +659,24 @@ export class BrutalistServer {
       // Get the primary argument (targetPath, idea, architecture, etc.)
       // For text-based tools, use content field; for filesystem tools, use primaryArgField
       const textContent = args.content || args.idea || args.architecture || args.research || args.product || args.security || args.infrastructure;
-      const primaryArg = textContent || args[config.primaryArgField];
+      let primaryArg = textContent || args[config.primaryArgField];
+
+      // For resume mode with filesystem tools, use original targetPath from cached params
+      // and inject the follow-up question into context instead
+      const filesystemTools = ['codebase', 'fileStructure', 'dependencies', 'gitHistory', 'testCoverage'];
+      if (resumeOriginalParams && filesystemTools.includes(config.analysisType)) {
+        // Use original targetPath for the CLI execution (needed for path validation)
+        const originalTargetPath = resumeOriginalParams.targetPath as string;
+        if (originalTargetPath) {
+          logger.info(`🔄 Resume mode: Using original targetPath="${originalTargetPath}" for filesystem tool`);
+          primaryArg = originalTargetPath;
+
+          // Also restore workingDirectory if available
+          if (resumeOriginalParams.workingDirectory) {
+            args.workingDirectory = resumeOriginalParams.workingDirectory as string;
+          }
+        }
+      }
 
       // If we have conversation history, inject it into the context
       if (conversationHistory && conversationHistory.length > 0) {
@@ -651,7 +685,9 @@ export class BrutalistServer {
           return `${role}: ${msg.content}`;
         }).join('\n\n---\n\n');
 
-        const contextPrefix = `## Previous Conversation\n\n${conversationContext}\n\n---\n\n## New User Prompt\n\n`;
+        // For resume mode, inject the follow-up question into the context
+        const followUpContent = resumeFollowUpQuestion || '';
+        const contextPrefix = `## Previous Conversation\n\n${conversationContext}\n\n---\n\n## New User Prompt\n\n${followUpContent}\n\n`;
         context = contextPrefix + (context || '');
         logger.info(`💬 Injected ${conversationHistory.length} previous messages into context`);
       }
@@ -685,17 +721,19 @@ export class BrutalistServer {
           }, {} as Record<string, any>);
 
           // Build updated conversation history
+          // For resume mode, use the follow-up question; otherwise use primaryArg
           const now = Date.now();
+          const userMessageContent = resumeFollowUpQuestion || primaryArg;
           const updatedConversation: import('./utils/response-cache.js').ConversationMessage[] = [
             ...(conversationHistory || []),
-            { role: 'user', content: primaryArg, timestamp: now },
+            { role: 'user', content: userMessageContent, timestamp: now },
             { role: 'assistant', content: fullContent, timestamp: now }
           ];
 
-          // If continuing a conversation, reuse the existing context_id
-          if (args.context_id && conversationHistory) {
+          // If continuing a conversation (resume: true), update existing context_id
+          if (args.resume && args.context_id && conversationHistory) {
             // Update existing cache entry with extended conversation
-            contextId = args.context_id as string; // TypeScript: we know this is defined from the if condition
+            contextId = args.context_id as string;
             await this.responseCache.updateByContextId(
               contextId,
               fullContent,
@@ -1308,20 +1346,29 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
 
   private formatErrorResponse(error: unknown) {
     logger.error("Tool execution failed", error);
-    
+
     // Sanitize error message to prevent information leakage
     let sanitizedMessage = "Analysis failed";
-    
+
     if (error instanceof Error) {
       // Only expose safe, generic error types
       if (error.message.includes('timeout') || error.message.includes('Timeout')) {
         sanitizedMessage = "Analysis timed out - try reducing scope or increasing timeout";
       } else if (error.message.includes('ENOENT') || error.message.includes('no such file')) {
-        sanitizedMessage = `DEBUG: Target path not found - Original error: ${error.message}`;
+        sanitizedMessage = "Target path not found - verify the path exists and is accessible";
       } else if (error.message.includes('EACCES') || error.message.includes('permission denied')) {
         sanitizedMessage = "Permission denied - check file access";
       } else if (error.message.includes('No CLI agents available')) {
         sanitizedMessage = "No CLI agents available for analysis";
+      } else if (error.message.includes('resume') && error.message.includes('context_id')) {
+        // User-facing validation errors for resume/continuation feature
+        sanitizedMessage = error.message;
+      } else if (error.message.includes('Context ID') && error.message.includes('not found')) {
+        // Context ID not found in cache
+        sanitizedMessage = error.message;
+      } else if (error.message.includes('continuation') && error.message.includes('requires')) {
+        // Continuation validation errors
+        sanitizedMessage = error.message;
       } else {
         // Generic message for other errors to prevent path/info leakage
         sanitizedMessage = "Analysis failed due to internal error";
@@ -1342,6 +1389,188 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     try {
       const result = await handler();
       return this.formatToolResponse(result);
+    } catch (error) {
+      return this.formatErrorResponse(error);
+    }
+  }
+
+  /**
+   * Handle debate tool execution with caching, pagination, and conversation continuation
+   */
+  private async handleDebateToolExecution(args: {
+    targetPath: string;
+    debateRounds?: number;
+    context?: string;
+    workingDirectory?: string;
+    models?: { claude?: string; codex?: string; gemini?: string };
+    context_id?: string;
+    resume?: boolean;
+    offset?: number;
+    limit?: number;
+    cursor?: string;
+    force_refresh?: boolean;
+    verbose?: boolean;
+  }): Promise<any> {
+    try {
+      // Build pagination params
+      const paginationParams: PaginationParams = {
+        offset: args.offset || 0,
+        limit: args.limit || PAGINATION_DEFAULTS.DEFAULT_LIMIT_TOKENS
+      };
+
+      if (args.cursor) {
+        const cursorParams = parseCursor(args.cursor);
+        Object.assign(paginationParams, cursorParams);
+      }
+
+      const explicitPaginationRequested =
+        args.offset !== undefined ||
+        args.limit !== undefined ||
+        args.cursor !== undefined ||
+        args.context_id !== undefined;
+
+      // Validate resume flag requires context_id
+      if (args.resume && !args.context_id) {
+        throw new Error(
+          `The 'resume' flag requires a 'context_id' from a previous debate. ` +
+          `Run an initial debate first, then use the returned context_id with resume: true.`
+        );
+      }
+
+      // Check cache if context_id provided
+      let conversationHistory: import('./utils/response-cache.js').ConversationMessage[] | undefined;
+      if (args.context_id && !args.force_refresh) {
+        const cachedResponse = await this.responseCache.getByContextId(args.context_id);
+        if (cachedResponse) {
+          logger.info(`🎯 Debate cache HIT for context_id: ${args.context_id}`);
+
+          if (args.resume === true) {
+            // CONVERSATION CONTINUATION: Continue the debate
+            if (!args.targetPath || args.targetPath.trim() === '') {
+              throw new Error(
+                `Debate continuation (resume: true) requires a new prompt/question. ` +
+                `Provide your follow-up in the targetPath field.`
+              );
+            }
+
+            logger.info(`💬 Debate continuation - new prompt: "${args.targetPath.substring(0, 50)}..."`);
+            conversationHistory = cachedResponse.conversationHistory || [];
+            // Fall through to execute new debate round with history
+          } else {
+            // PAGINATION: Return cached debate result
+            logger.info(`📖 Debate pagination request - returning cached response`);
+            const cachedResult: BrutalistResponse = {
+              success: true,
+              responses: [{
+                agent: 'cached' as any,
+                success: true,
+                output: cachedResponse.content,
+                executionTime: 0
+              }]
+            };
+            return this.formatToolResponse(cachedResult, args.verbose, paginationParams, args.context_id, explicitPaginationRequested);
+          }
+        } else {
+          logger.warn(`❌ Debate cache MISS for context_id: ${args.context_id}`);
+          throw new Error(
+            `Context ID "${args.context_id}" not found in cache. ` +
+            `It may have expired (2 hour TTL) or belong to a different session. ` +
+            `Remove context_id parameter to run a new debate.`
+          );
+        }
+      }
+
+      // Generate cache key for this debate
+      const cacheKey = this.responseCache.generateCacheKey({
+        tool: 'roast_cli_debate',
+        targetPath: args.targetPath,
+        debateRounds: args.debateRounds,
+        context: args.context,
+        models: args.models
+      });
+
+      // Check cache for identical request (if not resuming)
+      if (!args.force_refresh && !args.resume) {
+        const cachedContent = await this.responseCache.get(cacheKey);
+        if (cachedContent) {
+          const existingContextId = this.responseCache.findContextIdForKey(cacheKey);
+          const contextId = existingContextId
+            ? this.responseCache.createAlias(existingContextId, cacheKey)
+            : this.responseCache.generateContextId(cacheKey);
+          logger.info(`🎯 Debate cache hit for new request, using context_id: ${contextId}`);
+          const cachedResult: BrutalistResponse = {
+            success: true,
+            responses: [{
+              agent: 'cached' as any,
+              success: true,
+              output: cachedContent,
+              executionTime: 0
+            }]
+          };
+          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, contextId, explicitPaginationRequested);
+        }
+      }
+
+      // Build context with conversation history if resuming
+      let debateContext = args.context || '';
+      if (conversationHistory && conversationHistory.length > 0) {
+        const previousDebate = conversationHistory.map(msg => {
+          const role = msg.role === 'user' ? 'User Question' : 'Debate Response';
+          return `${role}:\n${msg.content}`;
+        }).join('\n\n---\n\n');
+
+        debateContext = `## Previous Debate Context\n\n${previousDebate}\n\n---\n\n## New Follow-up Question\n\nThe user wants to continue this debate with a new question or direction.\n\n${debateContext}`;
+        logger.info(`💬 Injected ${conversationHistory.length} previous messages into debate context`);
+      }
+
+      // Execute the debate
+      const debateRounds = Math.min(args.debateRounds || 2, 10);
+      const result = await this.executeCLIDebate(
+        args.targetPath,
+        debateRounds,
+        debateContext,
+        args.workingDirectory,
+        args.models
+      );
+
+      // Cache the result
+      let contextId: string | undefined;
+      if (result.success && result.responses.length > 0) {
+        const fullContent = this.extractFullContent(result);
+        if (fullContent) {
+          const now = Date.now();
+          const updatedConversation: import('./utils/response-cache.js').ConversationMessage[] = [
+            ...(conversationHistory || []),
+            { role: 'user', content: args.targetPath, timestamp: now },
+            { role: 'assistant', content: fullContent, timestamp: now }
+          ];
+
+          if (args.resume && args.context_id && conversationHistory) {
+            // Update existing cache entry
+            contextId = args.context_id;
+            await this.responseCache.updateByContextId(
+              contextId,
+              fullContent,
+              updatedConversation
+            );
+            logger.info(`✅ Updated debate conversation ${contextId} (now ${updatedConversation.length} messages)`);
+          } else {
+            // New debate - create new context_id
+            const { contextId: newId } = await this.responseCache.set(
+              { tool: 'roast_cli_debate', targetPath: args.targetPath },
+              fullContent,
+              cacheKey,
+              undefined,
+              undefined,
+              updatedConversation
+            );
+            contextId = newId;
+            logger.info(`✅ Cached new debate with context ID: ${contextId}`);
+          }
+        }
+      }
+
+      return this.formatToolResponse(result, args.verbose, paginationParams, contextId, explicitPaginationRequested);
     } catch (error) {
       return this.formatErrorResponse(error);
     }

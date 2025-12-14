@@ -43,8 +43,8 @@ export const ARGUMENT_SPACES: Record<string, ArgumentSpace> = {
     name: 'Extended Text Input',
     base: FILESYSTEM_ARGUMENT_SPACE.base,
     domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
-      resources: z.string().optional().describe("Available resources (budget, team, time, skills)"),
-      timeline: z.string().optional().describe("Expected timeline or deadline")
+      resources: z.string().optional().describe("Available resources (budget, team, time)"),
+      timeline: z.string().optional().describe("Expected timeline")
     }),
     computed: (args) => ({
       workingDirectory: args.targetPath || '.',
@@ -58,9 +58,9 @@ export const ARGUMENT_SPACES: Record<string, ArgumentSpace> = {
     name: 'Architecture Specific',
     base: FILESYSTEM_ARGUMENT_SPACE.base,
     domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
-      scale: z.string().optional().describe("Expected scale/load (users, requests, data)"),
-      constraints: z.string().optional().describe("Budget, timeline, or technical constraints"),
-      deployment: z.string().optional().describe("Deployment environment and strategy")
+      scale: z.string().optional().describe("Expected scale/load"),
+      constraints: z.string().optional().describe("Technical/budget constraints"),
+      deployment: z.string().optional().describe("Deployment strategy")
     }),
     computed: (args) => ({
       workingDirectory: args.targetPath || '.',
@@ -75,9 +75,9 @@ export const ARGUMENT_SPACES: Record<string, ArgumentSpace> = {
     name: 'Research Specific',
     base: FILESYSTEM_ARGUMENT_SPACE.base,
     domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
-      field: z.string().optional().describe("Research field (ML, systems, theory, etc.)"),
-      claims: z.string().optional().describe("Main claims or contributions"),
-      data: z.string().optional().describe("Data sources, datasets, or experimental setup")
+      field: z.string().optional().describe("Research field"),
+      claims: z.string().optional().describe("Main claims"),
+      data: z.string().optional().describe("Data sources/setup")
     }),
     computed: (args) => ({
       workingDirectory: args.targetPath || '.',
@@ -92,9 +92,9 @@ export const ARGUMENT_SPACES: Record<string, ArgumentSpace> = {
     name: 'Security Specific',
     base: FILESYSTEM_ARGUMENT_SPACE.base,
     domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
-      assets: z.string().optional().describe("Critical assets or data to protect"),
-      threatModel: z.string().optional().describe("Known threats or attack vectors to consider"),
-      compliance: z.string().optional().describe("Compliance requirements (GDPR, HIPAA, etc.)")
+      assets: z.string().optional().describe("Critical assets to protect"),
+      threatModel: z.string().optional().describe("Known threats"),
+      compliance: z.string().optional().describe("Compliance requirements")
     }),
     computed: (args) => ({
       workingDirectory: args.targetPath || '.',
@@ -109,9 +109,9 @@ export const ARGUMENT_SPACES: Record<string, ArgumentSpace> = {
     name: 'Product Specific',
     base: FILESYSTEM_ARGUMENT_SPACE.base,
     domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
-      users: z.string().optional().describe("Target users or user personas"),
-      competition: z.string().optional().describe("Competitive landscape or alternatives"),
-      metrics: z.string().optional().describe("Success metrics or KPIs")
+      users: z.string().optional().describe("Target users"),
+      competition: z.string().optional().describe("Competitors"),
+      metrics: z.string().optional().describe("Success metrics")
     }),
     computed: (args) => ({
       workingDirectory: args.targetPath || '.',
@@ -126,9 +126,9 @@ export const ARGUMENT_SPACES: Record<string, ArgumentSpace> = {
     name: 'Infrastructure Specific',
     base: FILESYSTEM_ARGUMENT_SPACE.base,
     domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
-      scale: z.string().optional().describe("Expected scale and load patterns"),
-      sla: z.string().optional().describe("SLA requirements or uptime targets"),
-      budget: z.string().optional().describe("Infrastructure budget or cost constraints")
+      scale: z.string().optional().describe("Expected scale"),
+      sla: z.string().optional().describe("SLA/uptime targets"),
+      budget: z.string().optional().describe("Cost constraints")
     }),
     computed: (args) => ({
       workingDirectory: args.targetPath || '.',

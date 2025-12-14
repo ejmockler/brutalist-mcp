@@ -31,31 +31,37 @@ export interface ArgumentSpace {
  * Standard base arguments shared by all tools
  */
 export const BASE_ARGUMENTS = z.object({
-  context: z.string().optional().describe("Additional context for the analysis"),
+  context: z.string().optional().describe("Additional context"),
 
   models: z.object({
     claude: z.string().optional(),
     codex: z.string().optional(),
     gemini: z.string().optional()
-  }).optional().describe("Specific models to use for each CLI agent"),
+  }).optional().describe("Specific models per agent"),
 
   preferredCLI: z.enum(['claude', 'codex', 'gemini']).optional()
-    .describe("Preferred CLI agent to use (default: use all available CLIs)"),
+    .describe("Preferred CLI agent"),
 
   force_refresh: z.boolean().optional()
-    .describe("Force re-analysis even if cached result exists (default: false)"),
+    .describe("Ignore cache"),
+
+  context_id: z.string().optional()
+    .describe("Context ID from previous response for pagination or conversation continuation"),
+
+  resume: z.boolean().optional()
+    .describe("Continue conversation with history injection (requires context_id)"),
 
   limit: z.number().min(1000).max(100000).optional()
-    .describe("Maximum characters per response chunk (default: 90000, max: 100000)"),
+    .describe("Max chars/chunk (default: 90000)"),
 
   offset: z.number().min(0).optional()
-    .describe("Character offset for response pagination (default: 0)"),
+    .describe("Pagination offset"),
 
   cursor: z.string().optional()
-    .describe("Pagination cursor from previous response"),
+    .describe("Pagination cursor"),
 
   verbose: z.boolean().optional()
-    .describe("Include detailed execution information in output (default: false)")
+    .describe("Detailed output")
 });
 
 /**
@@ -66,7 +72,7 @@ export const FILESYSTEM_ARGUMENT_SPACE: ArgumentSpace = {
   name: 'Filesystem Analysis',
   base: BASE_ARGUMENTS,
   domain: z.object({
-    targetPath: z.string().describe("Directory or file path to analyze")
+    targetPath: z.string().describe("Path to analyze")
   }),
   computed: (args) => ({
     workingDirectory: args.targetPath
@@ -81,8 +87,8 @@ export const TEXT_INPUT_ARGUMENT_SPACE: ArgumentSpace = {
   name: 'Text Input',
   base: BASE_ARGUMENTS,
   domain: z.object({
-    content: z.string().describe("Text content to analyze"),
-    targetPath: z.string().describe("Working directory context (can be '.' for current directory)")
+    content: z.string().describe("Text to analyze"),
+    targetPath: z.string().describe("Working dir (default: '.')")
   }),
   computed: (args) => ({
     workingDirectory: args.targetPath || '.'
@@ -97,8 +103,8 @@ export const FILESYSTEM_WITH_DEPTH: ArgumentSpace = {
   name: 'Filesystem with Depth Control',
   base: BASE_ARGUMENTS,
   domain: z.object({
-    targetPath: z.string().describe("Directory path to analyze"),
-    depth: z.number().optional().describe("Maximum directory depth to analyze (default: 3)")
+    targetPath: z.string().describe("Path to analyze"),
+    depth: z.number().optional().describe("Max depth (default: 3)")
   }),
   computed: (args) => ({
     workingDirectory: args.targetPath,
@@ -114,8 +120,8 @@ export const PACKAGE_MANIFEST_SPACE: ArgumentSpace = {
   name: 'Package Manifest',
   base: BASE_ARGUMENTS,
   domain: z.object({
-    targetPath: z.string().describe("Path to package file (package.json, requirements.txt, Cargo.toml, etc.)"),
-    includeDevDeps: z.boolean().optional().describe("Include development dependencies in analysis (default: true)")
+    targetPath: z.string().describe("Package file path (package.json, etc.)"),
+    includeDevDeps: z.boolean().optional().describe("Include dev dependencies (default: true)")
   }),
   computed: (args) => ({
     workingDirectory: require('path').dirname(args.targetPath),
@@ -131,8 +137,8 @@ export const GIT_REPOSITORY_SPACE: ArgumentSpace = {
   name: 'Git Repository',
   base: BASE_ARGUMENTS,
   domain: z.object({
-    targetPath: z.string().describe("Git repository path to analyze"),
-    commitRange: z.string().optional().describe("Commit range to analyze (e.g., 'HEAD~10..HEAD', default: last 20 commits)")
+    targetPath: z.string().describe("Repo path"),
+    commitRange: z.string().optional().describe("Commit range (default: last 20)")
   }),
   computed: (args) => ({
     workingDirectory: args.targetPath,
@@ -148,8 +154,8 @@ export const TEST_SUITE_SPACE: ArgumentSpace = {
   name: 'Test Suite',
   base: BASE_ARGUMENTS,
   domain: z.object({
-    targetPath: z.string().describe("Path to test directory or test configuration file"),
-    runCoverage: z.boolean().optional().describe("Attempt to run coverage analysis (default: true)")
+    targetPath: z.string().describe("Test dir or config"),
+    runCoverage: z.boolean().optional().describe("Run coverage (default: true)")
   }),
   computed: (args) => ({
     workingDirectory: args.targetPath,
@@ -189,11 +195,14 @@ export function mergeArgumentSpaces(...spaces: ArgumentSpace[]): ArgumentSpace {
 
 /**
  * Helper to infer cache key fields from an argument space
+ *
+ * NOTE: Excludes pagination/continuation fields (context_id, resume, offset, limit, cursor, force_refresh)
+ * as these don't affect the actual analysis content.
  */
 export function inferCacheKeys(space: ArgumentSpace): string[] {
   const keys: string[] = [];
 
-  // Always include these base fields if present
+  // Always include these base fields if present (excludes pagination/continuation params)
   const baseKeys = ['context', 'models', 'preferredCLI'];
   keys.push(...baseKeys);
 

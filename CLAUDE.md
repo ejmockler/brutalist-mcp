@@ -192,32 +192,65 @@ Consider other CLI agents for:
 - **Infrastructure**: Gemini excels at cloud architecture analysis
 - **Quick checks**: Gemini tends to be faster for simple validations
 
-## Response Pagination (New in v0.5.0)
+## Pagination & Conversation Continuation
 
-### Solving the 25K Token Limit
+### Two Distinct Modes
 
-The brutalist MCP now supports intelligent pagination to handle responses larger than Claude Code's default 25,000 token limit:
+The brutalist MCP distinguishes between two uses of `context_id`:
+
+| Mode | Parameters | Behavior |
+|------|------------|----------|
+| **Pagination** | `context_id` alone | Returns cached response at specified offset |
+| **Continuation** | `context_id` + `resume: true` + content | Injects conversation history, runs new analysis |
+
+### Pagination Mode (Cached Result Retrieval)
+
+Use pagination to navigate through large cached responses:
 
 ```bash
-# Default behavior (no pagination)
+# Initial analysis (returns first chunk + context_id)
 roast_codebase({targetPath: "/src"})
 
-# Enable pagination with custom chunk size
-roast_codebase({targetPath: "/src", limit: 15000})
+# Get next chunk of same result
+roast_codebase({context_id: "abc123", offset: 25000})
 
-# Continue reading from offset
-roast_codebase({targetPath: "/src", offset: 15000, limit: 15000})
-
-# Use cursor-based navigation
-roast_codebase({targetPath: "/src", cursor: "offset:15000"})
+# Custom chunk size
+roast_codebase({context_id: "abc123", offset: 25000, limit: 15000})
 ```
 
-### Pagination Parameters
+### Conversation Continuation Mode (Resume Dialogue)
 
-All brutalist tools now support:
+Use `resume: true` to continue a conversation with full history injection:
+
+```bash
+# Initial analysis
+roast_codebase({targetPath: "/src"})
+# Returns context_id: "abc123"
+
+# Continue the conversation (history is injected into CLI agent)
+roast_codebase({
+  context_id: "abc123",
+  resume: true,
+  content: "Explain issue #3 in more detail"
+})
+
+# Continue further
+roast_codebase({
+  context_id: "abc123",
+  resume: true,
+  content: "How would you fix that issue?"
+})
+```
+
+### Parameters
+
+All brutalist tools support:
+- **context_id**: Reference to previous analysis (required for pagination/continuation)
+- **resume**: Boolean flag to enable conversation continuation (requires context_id + content)
 - **offset**: Character position to start from (default: 0)
 - **limit**: Maximum characters per chunk (1,000 - 100,000, default: 25,000)
 - **cursor**: Navigation token from previous response
+- **force_refresh**: Bypass cache and run fresh analysis
 
 ### Smart Chunking Features
 

@@ -752,4 +752,165 @@ describe('Debate Tool Tests', () => {
       );
     });
   });
+
+  describe('Debate Continuation and Caching', () => {
+    beforeEach(() => {
+      mockOrchestrator.detectCLIContext.mockResolvedValue({
+        availableCLIs: ['claude', 'codex'],
+      });
+
+      mockOrchestrator.executeSingleCLI.mockImplementation(async (agent: any, prompt: any, systemPrompt?: any, options?: any) => {
+        return {
+          agent,
+          success: true,
+          output: `Debate response from ${agent}: ${prompt.substring(0, 100)}...`,
+          executionTime: 100
+        };
+      });
+    });
+
+    it('should return context_id in debate response', async () => {
+      const result = await (brutalistServer as any).handleDebateToolExecution({
+        targetPath: 'Should we adopt microservices?',
+        debateRounds: 1
+      });
+
+      // The response should be formatted and include context_id
+      expect(result.content).toBeDefined();
+      expect(result.content[0].text).toContain('Context ID');
+    });
+
+    it('should throw error when resume is true without context_id', async () => {
+      const result = await (brutalistServer as any).handleDebateToolExecution({
+        targetPath: 'Follow-up question',
+        resume: true
+        // No context_id provided
+      });
+
+      expect(result.content[0].text).toContain('requires a \'context_id\'');
+    });
+
+    it('should throw error when resume is true with invalid context_id', async () => {
+      const result = await (brutalistServer as any).handleDebateToolExecution({
+        targetPath: 'Follow-up question',
+        resume: true,
+        context_id: 'non-existent-id'
+      });
+
+      expect(result.content[0].text).toContain('not found in cache');
+    });
+
+    it('should cache debate results for pagination', async () => {
+      // First call - creates cached result
+      const firstResult = await (brutalistServer as any).handleDebateToolExecution({
+        targetPath: 'Should we use GraphQL?',
+        debateRounds: 1
+      });
+
+      // Extract context_id from response
+      const contextIdMatch = firstResult.content[0].text.match(/Context ID:\*\*\s*([a-f0-9-]+)/i);
+      expect(contextIdMatch).toBeTruthy();
+      const contextId = contextIdMatch![1];
+
+      // Second call with same context_id (pagination) - should return cached
+      const secondResult = await (brutalistServer as any).handleDebateToolExecution({
+        targetPath: 'Should we use GraphQL?',
+        context_id: contextId,
+        offset: 0
+      });
+
+      // Should return cached content without re-executing
+      expect(secondResult.content[0].text).toBeDefined();
+      // CLI should not have been called again for pagination
+      const callCountBeforePagination = mockOrchestrator.executeSingleCLI.mock.calls.length;
+
+      await (brutalistServer as any).handleDebateToolExecution({
+        targetPath: 'Should we use GraphQL?',
+        context_id: contextId,
+        offset: 1000
+      });
+
+      // No new CLI calls for pagination
+      expect(mockOrchestrator.executeSingleCLI.mock.calls.length).toBe(callCountBeforePagination);
+    });
+
+    it('should support conversation continuation with resume flag', async () => {
+      // Initial debate
+      const initialResult = await (brutalistServer as any).handleDebateToolExecution({
+        targetPath: 'Should we migrate to Kubernetes?',
+        debateRounds: 1
+      });
+
+      const contextIdMatch = initialResult.content[0].text.match(/Context ID:\*\*\s*([a-f0-9-]+)/i);
+      expect(contextIdMatch).toBeTruthy();
+      const contextId = contextIdMatch![1];
+
+      const callCountAfterInitial = mockOrchestrator.executeSingleCLI.mock.calls.length;
+
+      // Continue the debate with resume flag
+      const continuationResult = await (brutalistServer as any).handleDebateToolExecution({
+        targetPath: 'What about the security implications?',
+        context_id: contextId,
+        resume: true,
+        debateRounds: 1
+      });
+
+      // Should have made new CLI calls for continuation
+      expect(mockOrchestrator.executeSingleCLI.mock.calls.length).toBeGreaterThan(callCountAfterInitial);
+      expect(continuationResult.content[0].text).toBeDefined();
+    });
+
+    it('should inject previous debate context when resuming', async () => {
+      // Initial debate
+      const initialResult = await (brutalistServer as any).handleDebateToolExecution({
+        targetPath: 'REST vs GraphQL for our API',
+        debateRounds: 1
+      });
+
+      const contextIdMatch = initialResult.content[0].text.match(/Context ID:\*\*\s*([a-f0-9-]+)/i);
+      const contextId = contextIdMatch![1];
+
+      // Clear mock calls to check new calls
+      mockOrchestrator.executeSingleCLI.mockClear();
+
+      // Continue with a follow-up
+      await (brutalistServer as any).handleDebateToolExecution({
+        targetPath: 'But what about caching strategies?',
+        context_id: contextId,
+        resume: true,
+        debateRounds: 1
+      });
+
+      // Check that the prompts include previous debate context
+      const calls = mockOrchestrator.executeSingleCLI.mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+
+      // At least one call should contain the previous debate context indicator
+      const hasContextInjection = calls.some((call: any[]) => {
+        const prompt = call[1] as string;
+        return prompt.includes('Previous Debate Context') || prompt.includes('Follow-up Question');
+      });
+      expect(hasContextInjection).toBe(true);
+    });
+
+    it('should require new content when resume is true', async () => {
+      // Initial debate
+      const initialResult = await (brutalistServer as any).handleDebateToolExecution({
+        targetPath: 'Initial debate topic',
+        debateRounds: 1
+      });
+
+      const contextIdMatch = initialResult.content[0].text.match(/Context ID:\*\*\s*([a-f0-9-]+)/i);
+      const contextId = contextIdMatch![1];
+
+      // Try to resume without content
+      const result = await (brutalistServer as any).handleDebateToolExecution({
+        targetPath: '', // Empty content
+        context_id: contextId,
+        resume: true
+      });
+
+      expect(result.content[0].text).toContain('requires a new prompt');
+    });
+  });
 });

@@ -45,19 +45,37 @@ const activeProcesses = new Map<number, { startTime: number; memoryChecks: numbe
 export const AVAILABLE_MODELS = {
   claude: {
     default: undefined, // Uses user's configured model (respects preferences)
-    aliases: ['opus', 'sonnet', 'haiku'],
-    full: ['claude-opus-4-1-20250805', 'claude-sonnet-4-20250514'],
-    recommended: 'opus' // Highest capacity Claude model
+    aliases: ['opus', 'sonnet', 'haiku', 'opus-4.5', 'sonnet-4.5'],
+    full: [
+      'claude-opus-4-5-20251101', 
+      'claude-sonnet-4-5-20250929', 
+      'claude-haiku-4-5-20251001',
+      'claude-opus-4-1-20250805'
+    ],
+    recommended: 'claude-opus-4-5-20251101' // Highest capacity Claude model
   },
   codex: {
     default: undefined, // Uses Codex CLI's default model (stays current automatically)
-    models: ['gpt-5.1-codex-max', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5-codex', 'gpt-5', 'o4-mini'],
+    models: [
+      'gpt-5.1-codex-max', 
+      'gpt-5.1-codex', 
+      'gpt-5.1', 
+      'gpt-5-thinking-pro',
+      'gpt-5', 
+      'gpt-5-mini',
+      'o4-mini'
+    ],
     recommended: 'gpt-5.1-codex-max' // Current frontier model with compaction
   },
   gemini: {
     default: undefined, // Uses Gemini CLI's default model (stays current automatically)
-    models: ['gemini-3-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-    recommended: 'gemini-3-pro-preview' // Current #1 on LMArena
+    models: [
+      'gemini-3-pro',
+      'gemini-2.5-pro', 
+      'gemini-2.5-flash', 
+      'gemini-2.5-flash-lite'
+    ],
+    recommended: 'gemini-3-pro' // Current #1 on LMArena
   }
 } as const;
 

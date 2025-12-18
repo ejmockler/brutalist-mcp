@@ -490,53 +490,127 @@ export class CLIAgentOrchestrator {
       return chunk;
     }
   }
-  
+
+  // Parse NDJSON with proper JSON boundary detection
+  // Handles JSON objects that contain embedded newlines without data loss
+  private parseNDJSON(input: string): object[] {
+    if (!input || !input.trim()) {
+      return [];
+    }
+
+    const results: object[] = [];
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let start = 0;
+
+    for (let i = 0; i < input.length; i++) {
+      const char = input[i];
+
+      // Handle escape sequences
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (char === '\\') {
+        escape = true;
+        continue;
+      }
+
+      // Track string boundaries
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      // Only count braces/brackets outside of strings
+      if (inString) continue;
+
+      // Track depth
+      if (char === '{' || char === '[') {
+        depth++;
+      } else if (char === '}' || char === ']') {
+        depth--;
+
+        // When depth returns to 0, we've found a complete JSON object
+        if (depth === 0) {
+          const jsonStr = input.slice(start, i + 1).trim();
+          if (jsonStr) {
+            try {
+              const parsed = JSON.parse(jsonStr);
+              results.push(parsed);
+            } catch (e) {
+              // Log unparseable segments (not silent)
+              logger.warn(`Failed to parse JSON segment at position ${start}-${i + 1}:`, {
+                preview: jsonStr.substring(0, 100),
+                error: e instanceof Error ? e.message : String(e)
+              });
+            }
+          }
+          // Move start pointer past this object and any whitespace
+          start = i + 1;
+          while (start < input.length && /\s/.test(input[start])) {
+            start++;
+          }
+          i = start - 1; // Will be incremented by loop
+        }
+      }
+    }
+
+    // Warn about incomplete JSON at end of input
+    if (start < input.length) {
+      const remaining = input.slice(start).trim();
+      if (remaining) {
+        logger.warn(`Incomplete JSON at end of input:`, {
+          preview: remaining.substring(0, 100)
+        });
+      }
+    }
+
+    return results;
+  }
+
   // Decode Claude's stream-json NDJSON output into plain text
   private decodeClaudeStreamJson(ndjsonOutput: string): string {
     if (!ndjsonOutput || !ndjsonOutput.trim()) {
       return '';
     }
-    
+
     const textParts: string[] = [];
-    const lines = ndjsonOutput.split('\n');
-    
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      
-      try {
-        const event = JSON.parse(line);
-        
-        // Handle different event types from Claude's stream-json format
-        if (event.type === 'message' && event.message?.content) {
-          // Full message event
-          const content = event.message.content;
-          if (Array.isArray(content)) {
-            for (const item of content) {
-              if (item.type === 'text' && item.text) {
-                textParts.push(item.text);
-              }
-            }
-          }
-        } else if (event.type === 'content_block_delta' && event.delta?.text) {
-          // Incremental text delta
-          textParts.push(event.delta.text);
-        } else if (event.type === 'assistant' && event.message?.content) {
-          // Assistant message format (same as parseClaudeStreamOutput)
-          const content = event.message.content;
-          if (Array.isArray(content)) {
-            for (const item of content) {
-              if (item.type === 'text' && item.text) {
-                textParts.push(item.text);
-              }
+    const events = this.parseNDJSON(ndjsonOutput);
+
+    for (const event of events) {
+      if (typeof event !== 'object' || event === null) continue;
+
+      const typedEvent = event as { type?: string; message?: any; delta?: any };
+
+      // Handle different event types from Claude's stream-json format
+      if (typedEvent.type === 'message' && typedEvent.message?.content) {
+        // Full message event
+        const content = typedEvent.message.content;
+        if (Array.isArray(content)) {
+          for (const item of content) {
+            if (item.type === 'text' && item.text) {
+              textParts.push(item.text);
             }
           }
         }
-      } catch {
-        // Skip invalid JSON lines
-        continue;
+      } else if (typedEvent.type === 'content_block_delta' && typedEvent.delta?.text) {
+        // Incremental text delta
+        textParts.push(typedEvent.delta.text);
+      } else if (typedEvent.type === 'assistant' && typedEvent.message?.content) {
+        // Assistant message format (same as parseClaudeStreamOutput)
+        const content = typedEvent.message.content;
+        if (Array.isArray(content)) {
+          for (const item of content) {
+            if (item.type === 'text' && item.text) {
+              textParts.push(item.text);
+            }
+          }
+        }
       }
     }
-    
+
     return textParts.join('');
   }
 
@@ -548,35 +622,29 @@ export class CLIAgentOrchestrator {
     }
 
     const agentMessages: string[] = [];
-    const lines = jsonOutput.split('\n');
+    const events = this.parseNDJSON(jsonOutput);
 
-    logger.debug(`extractCodexAgentMessage: processing ${lines.length} lines`);
+    logger.debug(`extractCodexAgentMessage: processing ${events.length} JSON events`);
 
-    for (const line of lines) {
-      if (!line.trim()) continue;
+    for (const event of events) {
+      if (typeof event !== 'object' || event === null) continue;
 
-      try {
-        const event = JSON.parse(line);
+      const typedEvent = event as { type?: string; item?: any };
 
-        logger.debug(`extractCodexAgentMessage: parsed event type=${event.type}, item.type=${event.item?.type}`);
+      logger.debug(`extractCodexAgentMessage: parsed event type=${typedEvent.type}, item.type=${typedEvent.item?.type}`);
 
-        // Codex --json outputs events with structure: {"type":"item.completed","item":{...}}
-        // Only extract agent_message type - this is the actual response
-        if (event.type === 'item.completed' && event.item) {
-          if (event.item.type === 'agent_message' && event.item.text) {
-            // Agent's actual response text
-            logger.info(`✅ extractCodexAgentMessage: found agent_message with ${event.item.text.length} chars`);
-            agentMessages.push(event.item.text);
-          }
-          // Skip all other types:
-          // - reasoning: internal thinking steps
-          // - command_execution: file reads, bash commands
-          // - error: will be in stderr
+      // Codex --json outputs events with structure: {"type":"item.completed","item":{...}}
+      // Only extract agent_message type - this is the actual response
+      if (typedEvent.type === 'item.completed' && typedEvent.item) {
+        if (typedEvent.item.type === 'agent_message' && typedEvent.item.text) {
+          // Agent's actual response text
+          logger.info(`✅ extractCodexAgentMessage: found agent_message with ${typedEvent.item.text.length} chars`);
+          agentMessages.push(typedEvent.item.text);
         }
-      } catch (e) {
-        // Skip non-JSON lines (config output, prompts, etc.)
-        logger.debug(`extractCodexAgentMessage: failed to parse line: ${line.substring(0, 50)}`);
-        continue;
+        // Skip all other types:
+        // - reasoning: internal thinking steps
+        // - command_execution: file reads, bash commands
+        // - error: will be in stderr
       }
     }
 

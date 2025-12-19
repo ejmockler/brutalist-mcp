@@ -1,42 +1,50 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { randomUUID } from "crypto";
-import express, { Request, Response, NextFunction } from "express";
 import { z } from "zod";
-import { CLIAgentOrchestrator, BrutalistPromptType, StreamingEvent } from './cli-agents.js';
+import { CLIAgentOrchestrator, StreamingEvent } from './cli-agents.js';
 import { logger } from './logger.js';
 import { ToolConfig, BASE_ROAST_SCHEMA } from './types/tool-config.js';
 import { TOOL_CONFIGS } from './tool-definitions-generated.js';
-import { 
-  BrutalistServerConfig, 
-  BrutalistResponse, 
-  RoastOptions, 
-  CLIAgentResponse,
+import {
+  BrutalistServerConfig,
+  BrutalistResponse,
   PaginationParams
 } from './types/brutalist.js';
-import { 
-  extractPaginationParams, 
+import {
+  extractPaginationParams,
   parseCursor,
-  PAGINATION_DEFAULTS,
-  ResponseChunker,
-  createPaginationMetadata,
-  formatPaginationStatus,
-  estimateTokenCount
+  PAGINATION_DEFAULTS
 } from './utils/pagination.js';
 import { ResponseCache } from './utils/response-cache.js';
+import { ResponseFormatter } from './formatting/response-formatter.js';
+import { HttpTransport } from './transport/http-transport.js';
+import { ToolHandler } from './handlers/tool-handler.js';
+
 // Use environment variable or fallback to manual version
 const PACKAGE_VERSION = process.env.npm_package_version || "0.6.12";
 
+/**
+ * BrutalistServer - Composition root for the Brutalist MCP Server
+ *
+ * This class has been refactored to follow the Single Responsibility Principle.
+ * Responsibilities are now delegated to specialized modules:
+ * - ResponseFormatter: Handles all response formatting and pagination
+ * - HttpTransport: Manages HTTP server and CORS
+ * - ToolHandler: Handles roast tool execution, caching, and conversation continuation
+ */
 export class BrutalistServer {
   public server: McpServer;
   public config: BrutalistServerConfig;
+
+  // Core dependencies
   private cliOrchestrator: CLIAgentOrchestrator;
-  private httpTransport?: StreamableHTTPServerTransport;
   private responseCache: ResponseCache;
-  private actualPort?: number;
-  private httpServer?: any; // Store HTTP server reference for proper cleanup
-  private shutdownHandler?: () => void;
+
+  // Extracted modules
+  private formatter: ResponseFormatter;
+  private toolHandler: ToolHandler;
+  private httpTransport?: HttpTransport;
+
   // Session tracking for security
   private activeSessions = new Map<string, {
     startTime: number;
@@ -44,10 +52,15 @@ export class BrutalistServer {
     lastActivity: number;
   }>();
 
+  // Session cleanup configuration
+  private readonly MAX_SESSIONS = 10000;
+  private readonly SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  private sessionCleanupTimer?: NodeJS.Timeout;
+
   constructor(config: BrutalistServerConfig = {}) {
     this.config = {
       workingDirectory: process.cwd(),
-      defaultTimeout: 1800000, // 30 minutes - complex codebases need time (configurable via BRUTALIST_TIMEOUT env)
+      defaultTimeout: 1800000, // 30 minutes - complex codebases need time
       transport: 'stdio', // Default to stdio for backward compatibility
       httpPort: 3000,
       ...config
@@ -55,7 +68,7 @@ export class BrutalistServer {
 
     logger.debug("Initializing CLI Agent Orchestrator");
     this.cliOrchestrator = new CLIAgentOrchestrator();
-    
+
     // Initialize response cache with configurable TTL
     const cacheTTLHours = parseInt(process.env.BRUTALIST_CACHE_TTL_HOURS || '2', 10);
     this.responseCache = new ResponseCache({
@@ -67,6 +80,25 @@ export class BrutalistServer {
     });
     logger.info(`📦 Response cache initialized with ${cacheTTLHours} hour TTL`);
 
+    // Session cleanup timer - runs hourly
+    this.sessionCleanupTimer = setInterval(() => this.cleanupStaleSessions(), 60 * 60 * 1000);
+    this.sessionCleanupTimer.unref(); // Don't block Node.js exit
+    logger.info(`🔐 Session cleanup initialized (TTL: 24h, max: ${this.MAX_SESSIONS})`);
+
+    // Initialize extracted modules
+    this.formatter = new ResponseFormatter();
+    this.toolHandler = new ToolHandler(
+      this.cliOrchestrator,
+      this.responseCache,
+      this.formatter,
+      this.config,
+      this.activeSessions,
+      this.handleStreamingEvent,
+      this.handleProgressUpdate,
+      () => this.ensureSessionCapacity() // Session capacity management
+    );
+
+    // Initialize MCP server
     this.server = new McpServer(
       {
         name: "brutalist-mcp",
@@ -75,10 +107,8 @@ export class BrutalistServer {
       {
         capabilities: {
           tools: {},
-          logging: {},
-          experimental: {
-            streaming: true
-          }
+          logging: {}
+          // Removed experimental.streaming - caused Zod validation errors in Claude Code client
         }
       }
     );
@@ -86,6 +116,100 @@ export class BrutalistServer {
     this.registerTools();
   }
 
+  async start() {
+    logger.info("Starting Brutalist MCP Server with CLI Agents");
+
+    // Skip CLI detection at startup - will be done lazily on first request
+    logger.info("CLI context will be detected on first request");
+
+    if (this.config.transport === 'http') {
+      await this.startHttpServer();
+    } else {
+      await this.startStdioServer();
+    }
+
+    logger.info("Brutalist MCP Server started successfully");
+  }
+
+  private async startStdioServer() {
+    logger.info("Starting with stdio transport");
+    const transport = new StdioServerTransport();
+    await this.server.connect(transport);
+  }
+
+  private async startHttpServer() {
+    // Create and start HTTP transport
+    this.httpTransport = new HttpTransport(
+      this.config,
+      (transport) => {
+        // Connect MCP server to HTTP transport
+        this.server.connect(transport);
+      }
+    );
+
+    await this.httpTransport.start(PACKAGE_VERSION);
+  }
+
+  // Getter for actual listening port (useful for tests)
+  public getActualPort(): number | undefined {
+    return this.httpTransport?.getActualPort();
+  }
+
+  // Stop the HTTP server gracefully
+  public async stop(): Promise<void> {
+    if (this.httpTransport) {
+      await this.httpTransport.stop();
+    }
+  }
+
+  /**
+   * Clean up stale sessions that exceed TTL
+   */
+  private cleanupStaleSessions(): void {
+    const now = Date.now();
+    let cleaned = 0;
+    for (const [id, session] of this.activeSessions) {
+      if (now - session.lastActivity > this.SESSION_TTL_MS) {
+        this.activeSessions.delete(id);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) {
+      logger.info(`🧹 Cleaned ${cleaned} stale sessions (>${this.SESSION_TTL_MS / 3600000}h idle)`);
+    }
+  }
+
+  /**
+   * Ensure session capacity doesn't exceed MAX_SESSIONS
+   * Evicts oldest sessions when capacity is reached
+   */
+  public ensureSessionCapacity(): void {
+    while (this.activeSessions.size >= this.MAX_SESSIONS) {
+      // Remove oldest session (first entry in Map)
+      const oldestKey = this.activeSessions.keys().next().value;
+      if (oldestKey) {
+        this.activeSessions.delete(oldestKey);
+        logger.debug(`♻️ Evicted oldest session to maintain capacity`);
+      } else {
+        break;
+      }
+    }
+  }
+
+  // Cleanup method for tests - remove event listeners
+  public cleanup(): void {
+    if (this.httpTransport) {
+      this.httpTransport.cleanup();
+    }
+    if (this.sessionCleanupTimer) {
+      clearInterval(this.sessionCleanupTimer);
+      this.sessionCleanupTimer = undefined;
+    }
+  }
+
+  /**
+   * Handle streaming events from CLI agents
+   */
   private handleStreamingEvent = (event: StreamingEvent) => {
     try {
       if (!event.sessionId) {
@@ -96,11 +220,9 @@ export class BrutalistServer {
       logger.debug(`🔄 Session-scoped streaming: ${event.type} from ${event.agent} to session ${event.sessionId.substring(0, 8)}...`);
 
       // For HTTP transport: send session-specific notification if client supports it
-      if (this.httpTransport) {
+      const httpTransportInstance = this.httpTransport?.getTransport();
+      if (httpTransportInstance) {
         try {
-          // Debug: Check what capabilities the server has
-          logger.debug(`🔍 Server capabilities check: logging=${!!(this.server.server as any)._capabilities?.logging}`);
-
           // Use MCP server's notification system with session context
           this.server.server.notification({
             method: "notifications/message",
@@ -154,6 +276,9 @@ export class BrutalistServer {
     }
   };
 
+  /**
+   * Handle progress updates from CLI agents
+   */
   private handleProgressUpdate = (
     progressToken: string | number,
     progress: number,
@@ -194,184 +319,9 @@ export class BrutalistServer {
     }
   };
 
-  async start() {
-    logger.info("Starting Brutalist MCP Server with CLI Agents");
-    
-    // Skip CLI detection at startup - will be done lazily on first request
-    logger.info("CLI context will be detected on first request");
-    
-    if (this.config.transport === 'http') {
-      await this.startHttpServer();
-    } else {
-      await this.startStdioServer();
-    }
-    
-    logger.info("Brutalist MCP Server started successfully");
-  }
-
-  private async startStdioServer() {
-    logger.info("Starting with stdio transport");
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-  }
-
-  private async startHttpServer() {
-    logger.info(`Starting with HTTP streaming transport on port ${this.config.httpPort}`);
-    
-    // Create HTTP transport with streaming support
-    this.httpTransport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      enableJsonResponse: false, // Force SSE streaming
-      onsessioninitialized: (sessionId) => {
-        logger.info(`New session initialized: ${sessionId}`);
-      },
-      onsessionclosed: (sessionId) => {
-        logger.info(`Session closed: ${sessionId}`);
-      }
-    });
-
-    // Connect the MCP server to the HTTP transport
-    await this.server.connect(this.httpTransport);
-
-    // Create Express app for HTTP handling
-    const app = express();
-    app.use(express.json({ limit: '10mb' })); // Add JSON size limit for security
-    
-    // Secure CORS implementation
-    app.use((req: Request, res: Response, next: NextFunction) => {
-      const origin = req.headers.origin;
-      const isProduction = process.env.NODE_ENV === 'production';
-      
-      // Define safe default origins for development
-      const defaultDevOrigins = [
-        'http://localhost:3000',
-        'http://127.0.0.1:3000',
-        'http://localhost:8080',
-        'http://127.0.0.1:8080',
-        'http://localhost:3001',
-        'http://127.0.0.1:3001'
-      ];
-      
-      // Get allowed origins from config or use defaults
-      const allowedOrigins = this.config.corsOrigins || defaultDevOrigins;
-      const allowWildcard = this.config.allowCORSWildcard === true && !isProduction;
-      
-      // Determine if origin is allowed
-      let allowedOrigin: string | null = null;
-      
-      if (allowWildcard) {
-        // Only in development with explicit opt-in
-        allowedOrigin = '*';
-        logger.warn("⚠️ Using wildcard CORS - only safe in development!");
-      } else if (!origin) {
-        // No origin header (same-origin or direct server access)
-        allowedOrigin = defaultDevOrigins[0]; // Default fallback
-      } else if (allowedOrigins.includes(origin)) {
-        // Explicitly allowed origin
-        allowedOrigin = origin;
-      } else {
-        // Rejected origin
-        logger.warn(`🚫 CORS rejected origin: ${origin}`);
-        allowedOrigin = null;
-      }
-      
-      // Set headers only if origin is allowed
-      if (allowedOrigin) {
-        res.header('Access-Control-Allow-Origin', allowedOrigin);
-        res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        res.header('Access-Control-Allow-Headers', 'Content-Type, Mcp-Session-Id');
-        // Removed Authorization header for security
-        res.header('Access-Control-Allow-Credentials', 'false'); // Explicit false
-      }
-      
-      if (req.method === 'OPTIONS') {
-        if (allowedOrigin) {
-          res.sendStatus(200);
-        } else {
-          res.sendStatus(403); // Forbidden for disallowed origins
-        }
-        return;
-      }
-      
-      next();
-    });
-
-    // Route all MCP requests through the transport
-    app.all('/mcp', async (req: Request, res: Response) => {
-      try {
-        await this.httpTransport!.handleRequest(req, res, req.body);
-      } catch (error) {
-        logger.error("HTTP request handling failed", error);
-        if (!res.headersSent) {
-          res.status(500).json({ error: 'Internal server error' });
-        }
-      }
-    });
-
-    // Health check endpoint
-    app.get('/health', (req: Request, res: Response) => {
-      res.json({ status: 'ok', transport: 'http-streaming', version: PACKAGE_VERSION });
-    });
-
-    // Start the HTTP server - bind to localhost only for security
-    const port = this.config.httpPort ?? 3000;
-    
-    return new Promise<void>((resolve, reject) => {
-      this.httpServer = app.listen(port, '127.0.0.1', () => {
-        const actualPort = (this.httpServer.address() as any)?.port || port;
-        this.actualPort = actualPort;
-        logger.info(`HTTP server listening on port ${actualPort}`);
-        logger.info(`MCP endpoint: http://localhost:${actualPort}/mcp`);
-        logger.info(`Health check: http://localhost:${actualPort}/health`);
-        resolve();
-      });
-
-      this.httpServer.on('error', (error: Error) => {
-        logger.error('HTTP server failed to start', error);
-        reject(error);
-      });
-
-      // Handle graceful shutdown - avoid duplicate listeners
-      if (!this.shutdownHandler) {
-        this.shutdownHandler = () => {
-          logger.info('Received SIGTERM, shutting down gracefully');
-          this.httpServer?.close(() => {
-            logger.info('HTTP server closed');
-            process.exit(0);
-          });
-        };
-        process.on('SIGTERM', this.shutdownHandler);
-      }
-    });
-  }
-
-  // Getter for actual listening port (useful for tests)
-  public getActualPort(): number | undefined {
-    return this.actualPort;
-  }
-
-  // Stop the HTTP server gracefully
-  public async stop(): Promise<void> {
-    if (this.httpServer) {
-      return new Promise((resolve) => {
-        this.httpServer!.close(() => {
-          logger.info('HTTP server stopped');
-          this.httpServer = undefined;
-          this.actualPort = undefined;
-          resolve();
-        });
-      });
-    }
-  }
-
-  // Cleanup method for tests - remove event listeners
-  public cleanup(): void {
-    if (this.shutdownHandler) {
-      process.removeListener('SIGTERM', this.shutdownHandler);
-      this.shutdownHandler = undefined;
-    }
-  }
-
+  /**
+   * Register all MCP tools
+   */
   private registerTools() {
     // Register all roast tools using unified handler - DRY principle
     TOOL_CONFIGS.forEach(config => {
@@ -379,12 +329,12 @@ export class BrutalistServer {
         ...config.schemaExtensions,
         ...BASE_ROAST_SCHEMA
       };
-      
+
       this.server.tool(
         config.name,
         config.description,
         schema,
-        async (args, extra) => this.handleRoastTool(config, args, extra)
+        async (args, extra) => this.toolHandler.handleRoastTool(config, args, extra)
       );
     });
 
@@ -392,6 +342,9 @@ export class BrutalistServer {
     this.registerSpecialTools();
   }
 
+  /**
+   * Register special tools (debate, roster)
+   */
   private registerSpecialTools() {
     // ROAST_CLI_DEBATE: Adversarial analysis between different CLI agents
     this.server.tool(
@@ -403,10 +356,10 @@ export class BrutalistServer {
         context: z.string().optional().describe("Additional context for the debate"),
         workingDirectory: z.string().optional().describe("Working directory for analysis"),
         models: z.object({
-          claude: z.string().optional().describe("Claude model: opus, sonnet, or full name like claude-opus-4-1-20250805"),
-          codex: z.string().optional().describe("Codex model: gpt-5.1-codex-max (latest), gpt-5.1-codex, gpt-5.1-codex-mini, gpt-5-codex, gpt-5, o4-mini"),
-          gemini: z.string().optional().describe("Gemini model: gemini-3-pro-preview (latest), gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite")
-        }).optional().describe("Specific models to use for each CLI agent"),
+          claude: z.string().optional().describe("Claude model: opus (recommended), sonnet, haiku, opusplan, or full name like claude-opus-4-5-20251101. Default: user's configured model"),
+          codex: z.string().optional().describe("Codex model: gpt-5.1-codex-max (recommended), gpt-5.2, gpt-5.1-codex, gpt-5.1-codex-mini, gpt-5-codex, o4-mini. Default: CLI's default"),
+          gemini: z.string().optional().describe("Gemini model: gemini-3-pro (recommended), gemini-3-flash, gemini-2.5-pro, gemini-2.5-flash. Default: Auto routing")
+        }).optional().describe("Specific models to use for each CLI agent - defaults let each CLI use its own latest model"),
         // Pagination and continuation parameters
         context_id: z.string().optional().describe("Context ID from previous response for pagination or conversation continuation"),
         resume: z.boolean().optional().describe("Continue debate with history injection (requires context_id)"),
@@ -440,7 +393,7 @@ export class BrutalistServer {
       async (args) => {
         try {
           let roster = "# Brutalist CLI Agent Arsenal\n\n";
-          
+
           roster += "## Available AI Critics (13 Tools Total)\n\n";
           roster += "**Abstract Analysis Tools (6):**\n";
           roster += "- `roast_idea` - Destroy any business/technical/creative concept\n";
@@ -449,28 +402,28 @@ export class BrutalistServer {
           roster += "- `roast_security` - Annihilate security designs\n";
           roster += "- `roast_product` - Eviscerate UX and market concepts\n";
           roster += "- `roast_infrastructure` - Obliterate DevOps setups\n\n";
-          
+
           roster += "**File-System Analysis Tools (5):**\n";
           roster += "- `roast_codebase` - Analyze actual source code\n";
           roster += "- `roast_file_structure` - Examine directory organization\n";
           roster += "- `roast_dependencies` - Review package management\n";
           roster += "- `roast_git_history` - Analyze version control workflow\n";
           roster += "- `roast_test_coverage` - Evaluate testing strategy\n\n";
-          
+
           roster += "**Meta Tools (2):**\n";
           roster += "- `roast_cli_debate` - CLI vs CLI adversarial analysis\n";
           roster += "- `cli_agent_roster` - This tool (show capabilities)\n\n";
-          
+
           roster += "## CLI Agent Capabilities\n";
           roster += "**Claude Code** - Advanced analysis with direct system prompt injection\n";
           roster += "**Codex** - Secure execution with embedded brutal prompts\n";
           roster += "**Gemini CLI** - Workspace context with environment variable system prompts\n\n";
-          
+
           // Add CLI context information
           const cliContext = await this.cliOrchestrator.detectCLIContext();
           roster += "## Current CLI Context\n";
           roster += `**Available CLIs:** ${cliContext.availableCLIs.join(', ') || 'None detected'}\n\n`;
-          
+
           roster += "## Pagination & Conversation Continuation\n";
           roster += "**Two distinct modes for using context_id:**\n\n";
           roster += "**1. Pagination** (cached result retrieval):\n";
@@ -481,921 +434,23 @@ export class BrutalistServer {
           roster += "- Prior conversation is injected into CLI agent context\n";
           roster += "- Example: `roast_codebase(context_id: 'abc123', resume: true, content: 'Explain issue #3 in detail')`\n\n";
           roster += "**Cache TTL:** 2 hours\n\n";
-          
+
           roster += "## Brutalist Philosophy\n";
           roster += "*All tools use CLI agents with brutal system prompts for maximum reality-based criticism.*\n";
-          
+
           return {
             content: [{ type: "text" as const, text: roster }]
           };
         } catch (error) {
-          return this.formatErrorResponse(error);
+          return this.formatter.formatErrorResponse(error);
         }
       }
     );
   }
-  /**
-   * Unified handler for all roast tools - DRY principle
-   */
-  private async handleRoastTool(
-    config: ToolConfig,
-    args: any,
-    extra: any
-  ): Promise<any> {
-    try {
-      // CRITICAL: Prevent recursion - reject tool calls from brutalist-spawned subprocesses
-      if (process.env.BRUTALIST_SUBPROCESS === '1') {
-        logger.warn(`🚫 Rejecting tool call from brutalist subprocess (recursion prevented)`);
-        return {
-          content: [{
-            type: "text" as const,
-            text: `ERROR: Brutalist MCP tools cannot be used from within a brutalist-spawned CLI subprocess (recursion prevented)`
-          }]
-        };
-      }
-
-      const progressToken = extra._meta?.progressToken;
-
-      // Extract session context for security
-      // IMPORTANT: Use consistent "anonymous" for all anonymous users to enable cache sharing
-      const sessionId = extra?.sessionId ||
-                        extra?._meta?.sessionId ||
-                        extra?.headers?.['mcp-session-id'] ||
-                        'anonymous'; // Consistent for cache sharing across pagination requests
-
-      const requestId = `${sessionId}-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-
-      logger.debug(`🔐 Processing request with session: ${sessionId.substring(0, 8)}..., request: ${requestId.substring(0, 12)}...`);
-      
-      // Track session activity
-      if (!this.activeSessions.has(sessionId)) {
-        this.activeSessions.set(sessionId, {
-          startTime: Date.now(),
-          requestCount: 0,
-          lastActivity: Date.now()
-        });
-      }
-      const sessionInfo = this.activeSessions.get(sessionId)!;
-      sessionInfo.requestCount++;
-      sessionInfo.lastActivity = Date.now();
-
-      logger.debug(`Tool execution: ${config.name}, primaryArgField=${config.primaryArgField}`);
-      logger.debug(`Args: ${JSON.stringify(args, null, 2)}`);
-
-      // Extract pagination parameters
-      const paginationParams = extractPaginationParams(args);
-      if (args.cursor) {
-        const cursorParams = parseCursor(args.cursor);
-        Object.assign(paginationParams, cursorParams);
-      }
-
-      // Determine if pagination was explicitly requested by the user
-      const explicitPaginationRequested =
-        args.offset !== undefined ||
-        args.limit !== undefined ||
-        args.cursor !== undefined ||
-        args.context_id !== undefined;
-
-      logger.info(`🔧 DEBUG: explicitPaginationRequested=${explicitPaginationRequested}, offset=${args.offset}, limit=${args.limit}, cursor=${args.cursor}, context_id=${args.context_id}, resume=${args.resume}`);
-
-      // Validate resume flag requires context_id
-      if (args.resume && !args.context_id) {
-        throw new Error(
-          `The 'resume' flag requires a 'context_id' from a previous response. ` +
-          `Run an initial analysis first, then use the returned context_id with resume: true.`
-        );
-      }
-
-      // Check cache if context_id provided
-      // Two modes: PAGINATION (context_id alone) vs CONTINUATION (context_id + resume: true)
-      let conversationHistory: import('./utils/response-cache.js').ConversationMessage[] | undefined;
-      let resumeFollowUpQuestion: string | undefined; // Store follow-up for conversation history
-      let resumeOriginalParams: Record<string, unknown> | undefined; // Original params for filesystem tools
-      if (args.context_id && !args.force_refresh) {
-        const cachedResponse = await this.responseCache.getByContextId(args.context_id, sessionId);
-        if (cachedResponse) {
-          logger.info(`🎯 Cache HIT for context_id: ${args.context_id}`);
-
-          if (args.resume === true) {
-            // CONVERSATION CONTINUATION: User explicitly wants to continue with history injection
-            const textContent = args.content || args.idea || args.architecture || args.research || args.product || args.security || args.infrastructure;
-            const primaryArg = textContent || args[config.primaryArgField];
-
-            if (!primaryArg || primaryArg.trim() === '') {
-              throw new Error(
-                `Conversation continuation (resume: true) requires new content/prompt. ` +
-                `Provide your follow-up question or comment in the content field.`
-              );
-            }
-
-            // Store the follow-up question for conversation history
-            resumeFollowUpQuestion = primaryArg;
-
-            // Store original request params (for filesystem tools that need original targetPath)
-            resumeOriginalParams = cachedResponse.requestParams;
-
-            logger.info(`💬 Conversation continuation - new prompt: "${primaryArg.substring(0, 50)}..."`);
-            conversationHistory = cachedResponse.conversationHistory || [];
-            // Fall through to execute new analysis with history
-          } else {
-            // PAGINATION: Just retrieving previous response (no resume flag)
-            logger.info(`📖 Pagination request - returning cached response`);
-            const cachedResult: BrutalistResponse = {
-              success: true,
-              responses: [{
-                agent: 'cached' as any,
-                success: true,
-                output: cachedResponse.content,
-                executionTime: 0
-              }]
-            };
-            return this.formatToolResponse(cachedResult, args.verbose, paginationParams, args.context_id, explicitPaginationRequested);
-          }
-        } else {
-          logger.warn(`❌ Cache MISS for context_id: ${args.context_id}, session: ${sessionId}`);
-          throw new Error(
-            `Context ID "${args.context_id}" not found in cache. ` +
-            `It may have expired (2 hour TTL) or belong to a different session. ` +
-            `Remove context_id parameter to run a new analysis.`
-          );
-        }
-      }
-
-      // Generate cache key for this request
-      const cacheKey = this.responseCache.generateCacheKey(
-        config.cacheKeyFields.reduce((acc, field) => {
-          acc.tool = config.name;
-          if (args[field] !== undefined) acc[field] = args[field];
-          return acc;
-        }, {} as Record<string, any>)
-      );
-
-      // Check if we have a cached result (unless forcing refresh)
-      if (!args.force_refresh) {
-        const cachedContent = await this.responseCache.get(cacheKey, sessionId);
-        if (cachedContent) {
-          // Get existing context_id or create new alias
-          const existingContextId = this.responseCache.findContextIdForKey(cacheKey);
-          const contextId = existingContextId
-            ? this.responseCache.createAlias(existingContextId, cacheKey)
-            : this.responseCache.generateContextId(cacheKey);
-          logger.info(`🎯 Cache hit for new request, using context_id: ${contextId}`);
-          const cachedResult: BrutalistResponse = {
-            success: true,
-            responses: [{
-              agent: 'cached' as any,
-              success: true,
-              output: cachedContent,
-              executionTime: 0
-            }]
-          };
-          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, contextId, explicitPaginationRequested);
-        }
-      }
-      
-      // Build context with custom builder if available
-      let context = config.contextBuilder ? config.contextBuilder(args) : args.context;
-
-      // Get the primary argument (targetPath, idea, architecture, etc.)
-      // For text-based tools, use content field; for filesystem tools, use primaryArgField
-      const textContent = args.content || args.idea || args.architecture || args.research || args.product || args.security || args.infrastructure;
-      let primaryArg = textContent || args[config.primaryArgField];
-
-      // For resume mode with filesystem tools, use original targetPath from cached params
-      // and inject the follow-up question into context instead
-      const filesystemTools = ['codebase', 'fileStructure', 'dependencies', 'gitHistory', 'testCoverage'];
-      if (resumeOriginalParams && filesystemTools.includes(config.analysisType)) {
-        // Use original targetPath for the CLI execution (needed for path validation)
-        const originalTargetPath = resumeOriginalParams.targetPath as string;
-        if (originalTargetPath) {
-          logger.info(`🔄 Resume mode: Using original targetPath="${originalTargetPath}" for filesystem tool`);
-          primaryArg = originalTargetPath;
-
-          // Also restore workingDirectory if available
-          if (resumeOriginalParams.workingDirectory) {
-            args.workingDirectory = resumeOriginalParams.workingDirectory as string;
-          }
-        }
-      }
-
-      // If we have conversation history, inject it into the context
-      if (conversationHistory && conversationHistory.length > 0) {
-        const conversationContext = conversationHistory.map(msg => {
-          const role = msg.role === 'user' ? 'User' : 'Assistant';
-          return `${role}: ${msg.content}`;
-        }).join('\n\n---\n\n');
-
-        // For resume mode, inject the follow-up question into the context
-        const followUpContent = resumeFollowUpQuestion || '';
-        const contextPrefix = `## Previous Conversation\n\n${conversationContext}\n\n---\n\n## New User Prompt\n\n${followUpContent}\n\n`;
-        context = contextPrefix + (context || '');
-        logger.info(`💬 Injected ${conversationHistory.length} previous messages into context`);
-      }
-
-      logger.debug(`Primary arg: ${config.primaryArgField}="${primaryArg}", analysisType="${config.analysisType}"`);
-
-      // Run the analysis
-      const result = await this.executeBrutalistAnalysis(
-        config.analysisType,
-        primaryArg,
-        config.systemPrompt,
-        context,
-        args.workingDirectory,
-        args.preferredCLI,
-        args.verbose,
-        args.models,
-        progressToken,
-        sessionId,
-        requestId
-      );
-      
-      // Cache the result if successful
-      let contextId: string | undefined;
-      if (result.success && result.responses.length > 0) {
-        const fullContent = this.extractFullContent(result);
-        if (fullContent) {
-          const cacheData = config.cacheKeyFields.reduce((acc, field) => {
-            acc.tool = config.name;
-            if (args[field] !== undefined) acc[field] = args[field];
-            return acc;
-          }, {} as Record<string, any>);
-
-          // Build updated conversation history
-          // For resume mode, use the follow-up question; otherwise use primaryArg
-          const now = Date.now();
-          const userMessageContent = resumeFollowUpQuestion || primaryArg;
-          const updatedConversation: import('./utils/response-cache.js').ConversationMessage[] = [
-            ...(conversationHistory || []),
-            { role: 'user', content: userMessageContent, timestamp: now },
-            { role: 'assistant', content: fullContent, timestamp: now }
-          ];
-
-          // If continuing a conversation (resume: true), update existing context_id
-          if (args.resume && args.context_id && conversationHistory) {
-            // Update existing cache entry with extended conversation
-            contextId = args.context_id as string;
-            await this.responseCache.updateByContextId(
-              contextId,
-              fullContent,
-              updatedConversation,
-              sessionId || 'anonymous'
-            );
-            logger.info(`✅ Updated conversation ${contextId} (now ${updatedConversation.length} messages)`);
-          } else {
-            // New conversation - create new context_id
-            const { contextId: newId } = await this.responseCache.set(
-              cacheData,
-              fullContent,
-              cacheKey,
-              sessionId,
-              requestId,
-              updatedConversation
-            );
-            contextId = newId;
-            logger.info(`✅ Cached new conversation with context ID: ${contextId} for session: ${sessionId?.substring(0, 8)}`);
-          }
-        }
-      }
-
-      return this.formatToolResponse(result, args.verbose, paginationParams, contextId, explicitPaginationRequested);
-    } catch (error) {
-      return this.formatErrorResponse(error);
-    }
-  }
-
-  private async executeCLIDebate(
-    targetPath: string,
-    debateRounds: number,
-    context?: string,
-    workingDirectory?: string,
-    models?: {
-      claude?: string;
-      codex?: string;
-      gemini?: string;
-    }
-  ): Promise<BrutalistResponse> {
-    logger.debug("Executing CLI debate", { 
-      targetPath,
-      debateRounds,
-      workingDirectory,
-          });
-
-    try {
-      // Get CLI context
-      const cliContext = await this.cliOrchestrator.detectCLIContext();
-      const availableAgents = cliContext.availableCLIs;
-      
-      if (availableAgents.length < 2) {
-        throw new Error(`Need at least 2 CLI agents for debate. Available: ${availableAgents.join(', ')}`);
-      }
-      
-      const debateContext: CLIAgentResponse[] = [];
-      const fullDebateTranscript: Map<string, string[]> = new Map();
-      
-      // Initialize transcript for each agent
-      availableAgents.forEach(agent => fullDebateTranscript.set(agent, []));
-      
-      // Assign opposing positions to each agent based on the debate topic
-      const agentPositions = new Map<string, string>();
-      const positions = [
-        "PRO-POSITION: Argue strongly FOR the proposed action/idea",
-        "CONTRA-POSITION: Argue strongly AGAINST the proposed action/idea"
-      ];
-      
-      availableAgents.forEach((agent, index) => {
-        agentPositions.set(agent, positions[index % positions.length]);
-      });
-      
-      // Round 1: Initial positions with assigned stances
-      logger.debug(`Starting debate round 1: Initial positions`);
-      
-      for (const [agent, position] of agentPositions.entries()) {
-        const assignedPrompt = `You are ${agent.toUpperCase()}, a PASSIONATE ADVOCATE who strongly believes in this position: ${position}
-
-DEBATE TOPIC: ${targetPath}
-CONTEXT: ${context || ''}
-
-You are completely convinced your position is correct and critically important. You will argue forcefully and never concede ground to the opposing view.
-
-YOUR MISSION:
-1. Present devastating critiques of the opposing position
-2. Show why alternative approaches lead to serious problems
-3. Use sharp, direct language - call out flawed reasoning and poor assumptions
-4. Never hedge or qualify your stance
-5. Be completely confident in your position
-6. Treat this as an intellectually crucial debate
-
-Remember: You are ${agent.toUpperCase()}, the passionate champion of ${position.split(':')[0]}. Argue with conviction.`;
-        
-        logger.info(`🎭 ${agent.toUpperCase()} preparing initial position: ${position.split(':')[0]}`);
-        
-        const response = await this.cliOrchestrator.executeSingleCLI(
-          agent as 'claude' | 'codex' | 'gemini',
-          assignedPrompt,
-          assignedPrompt,
-          {
-            workingDirectory: workingDirectory || this.config.workingDirectory,
-            timeout: (this.config.defaultTimeout || 60000) * 2,
-            models: models ? { [agent]: models[agent as keyof typeof models] } : undefined
-          }
-        );
-        
-        if (response.success) {
-          debateContext.push(response);
-          if (response.output) {
-            fullDebateTranscript.get(agent)?.push(response.output);
-          }
-        }
-      }
-      
-      // Subsequent rounds: Turn-based responses attacking specific arguments
-      for (let round = 2; round <= debateRounds; round++) {
-        logger.debug(`Starting debate round ${round}: Adversarial engagement`);
-        
-        // Build confrontational context from ALL previous responses
-        const previousPositions = Array.from(fullDebateTranscript.entries())
-          .map(([agent, outputs]) => {
-            const latestOutput = outputs[outputs.length - 1];
-            return `${agent.toUpperCase()} argued:\n${latestOutput}`;
-          })
-          .join('\n\n---\n\n');
-        
-        // Execute turn-based responses with fixed positions
-        for (const [currentAgent, assignedPosition] of agentPositions.entries()) {
-          const opponents = Array.from(agentPositions.entries()).filter(([a, _]) => a !== currentAgent);
-          const opponentPositions = opponents
-            .map(([opponent, oppPosition]) => {
-              const transcript = fullDebateTranscript.get(opponent) || [];
-              const latestPosition = transcript[transcript.length - 1] || 'No position stated';
-              return `${opponent.toUpperCase()} (arguing ${oppPosition.split(':')[0]}):\n${latestPosition}`;
-            })
-            .join('\n\n---\n\n');
-          
-          const confrontationalPrompt = `You are ${currentAgent.toUpperCase()}, PASSIONATE ADVOCATE for ${assignedPosition.split(':')[0]} (Round ${round})
-
-YOUR OPPONENTS HAVE ARGUED:
-${opponentPositions}
-
-You strongly disagree with their reasoning and conclusions.
-
-YOUR RESPONSE TASK:
-1. QUOTE their specific claims and systematically refute them
-2. Point out flawed logic, poor assumptions, and dangerous consequences
-3. Show why their approach leads to serious problems
-4. Use direct, forceful language to make your case
-5. Never concede any ground to their arguments
-6. Demonstrate why your position is the only sound choice
-
-Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assignedPosition.split(':')[0]}. Argue with conviction.`;
-          
-          logger.info(`🔥 Round ${round}: ${currentAgent.toUpperCase()} responding to opponents (${assignedPosition.split(':')[0]})`);
-          
-          const response = await this.cliOrchestrator.executeSingleCLI(
-            currentAgent as 'claude' | 'codex' | 'gemini',
-            confrontationalPrompt,
-            confrontationalPrompt,
-            {
-              workingDirectory: workingDirectory || this.config.workingDirectory,
-              timeout: (this.config.defaultTimeout || 60000) * 2,
-              models: models ? { [currentAgent]: models[currentAgent as keyof typeof models] } : undefined
-            }
-          );
-          
-          if (response.success) {
-            debateContext.push(response);
-            if (response.output) {
-              fullDebateTranscript.get(currentAgent)?.push(response.output);
-            }
-          }
-        }
-      }
-
-      const synthesis = this.synthesizeDebate(debateContext, targetPath, debateRounds, agentPositions);
-
-      return {
-        success: debateContext.some(r => r.success),
-        responses: debateContext,
-        synthesis,
-        analysisType: 'cli_debate',
-        targetPath
-      };
-    } catch (error) {
-      logger.error("CLI debate execution failed", error);
-      throw error;
-    }
-  }
-
-  private synthesizeDebate(responses: CLIAgentResponse[], targetPath: string, rounds: number, agentPositions?: Map<string, string>): string {
-    const successfulResponses = responses.filter(r => r.success);
-    
-    if (successfulResponses.length === 0) {
-      return `# CLI Debate Failed\n\nEven our brutal critics couldn't engage in proper adversarial combat.\n\nErrors:\n${responses.map(r => `- ${r.agent}: ${r.error}`).join('\n')}`;
-    }
-
-    let synthesis = `# Brutalist CLI Agent Debate Results\n\n`;
-    synthesis += `**Target:** ${targetPath}\n`;
-    synthesis += `**Rounds:** ${rounds}\n`;
-    
-    if (agentPositions) {
-      synthesis += `**Debaters and Positions:**\n`;
-      Array.from(agentPositions.entries()).forEach(([agent, position]) => {
-        synthesis += `- **${agent.toUpperCase()}**: ${position}\n`;
-      });
-      synthesis += '\n';
-    } else {
-      synthesis += `**Participants:** ${Array.from(new Set(successfulResponses.map(r => r.agent))).join(', ')}\n\n`;
-    }
-
-    // Identify key points of conflict
-    const agents = Array.from(new Set(successfulResponses.map(r => r.agent)));
-    const agentOutputs = new Map<string, string[]>();
-    
-    successfulResponses.forEach(response => {
-      if (!agentOutputs.has(response.agent)) {
-        agentOutputs.set(response.agent, []);
-      }
-      if (response.output) {
-        agentOutputs.get(response.agent)?.push(response.output);
-      }
-    });
-    
-    synthesis += `## Key Points of Conflict\n\n`;
-    
-    // Extract disagreements by looking for contradictory keywords
-    const conflictIndicators = ['wrong', 'incorrect', 'flawed', 'fails', 'ignores', 'misses', 'overlooks', 'contradicts', 'however', 'but', 'actually', 'contrary'];
-    const conflicts: string[] = [];
-    
-    agentOutputs.forEach((positions, agent) => {
-      positions.forEach((position: string) => {
-        const lines = position.split('\n');
-        lines.forEach((line: string) => {
-          if (conflictIndicators.some(indicator => line.toLowerCase().includes(indicator))) {
-            conflicts.push(`**${agent.toUpperCase()}:** ${line.trim()}`);
-          }
-        });
-      });
-    });
-    
-    if (conflicts.length > 0) {
-      synthesis += conflicts.slice(0, 10).join('\n\n') + '\n\n';
-    } else {
-      synthesis += `*No explicit conflicts identified - agents may be in unexpected agreement*\n\n`;
-    }
-    
-    // Group responses by round with clear speaker identification
-    synthesis += `## Full Debate Transcript\n\n`;
-    
-    const responsesPerRound = Math.ceil(successfulResponses.length / rounds);
-    
-    for (let i = 0; i < rounds; i++) {
-      const start = i * responsesPerRound;
-      const end = Math.min((i + 1) * responsesPerRound, successfulResponses.length);
-      const roundResponses = successfulResponses.slice(start, end);
-      
-      synthesis += `### Round ${i + 1}: ${i === 0 ? 'Initial Positions' : `Adversarial Engagement ${i}`}\n\n`;
-      
-      roundResponses.forEach((response) => {
-        const agentPosition = agentPositions?.get(response.agent);
-        const positionLabel = agentPosition ? ` [${agentPosition.split(':')[0]}]` : '';
-        synthesis += `#### ${response.agent.toUpperCase()}${positionLabel} speaks (${response.executionTime}ms):\n\n`;
-        synthesis += `${response.output}\n\n`;
-        synthesis += `---\n\n`;
-      });
-    }
-
-    synthesis += `## Debate Synthesis\n`;
-    synthesis += `After ${rounds} rounds of brutal adversarial analysis involving ${Array.from(new Set(successfulResponses.map(r => r.agent))).length} CLI agents, `;
-    synthesis += `your work has been systematically demolished from multiple perspectives. `;
-    synthesis += `The convergent criticisms above represent the collective wisdom of AI agents that disagree on methods but agree on destruction.\n\n`;
-    
-    if (responses.some(r => !r.success)) {
-      synthesis += `*Note: ${responses.filter(r => !r.success).length} debate contributions failed - probably casualties of the intellectual warfare.*`;
-    }
-
-    return synthesis;
-  }
-
-  private async executeBrutalistAnalysis(
-    analysisType: BrutalistPromptType,
-    primaryContent: string, 
-    systemPromptSpec: string,
-    context?: string,
-    workingDirectory?: string,
-    preferredCLI?: 'claude' | 'codex' | 'gemini',
-    verbose?: boolean,
-    models?: {
-      claude?: string;
-      codex?: string;
-      gemini?: string;
-    },
-    progressToken?: string | number,
-    sessionId?: string,
-    requestId?: string
-  ): Promise<BrutalistResponse> {
-    logger.info(`🏢 Starting brutalist analysis: ${analysisType}`);
-    logger.info(`🔧 DEBUG: preferredCLI=${preferredCLI}, primaryContent=${primaryContent}`);
-    logger.debug("Executing brutalist analysis", { 
-      primaryContent,
-      analysisType,
-      systemPromptSpec,
-      workingDirectory,
-      preferredCLI
-    });
-
-    try {
-      // Get CLI context for execution summary
-      logger.info(`🔧 DEBUG: About to detect CLI context`);
-      await this.cliOrchestrator.detectCLIContext();
-      logger.info(`🔧 DEBUG: CLI context detected successfully`);
-      
-      // Execute CLI agent analysis (single or multi-CLI based on preferences)
-      logger.info(`🔍 Executing brutalist analysis with timeout: ${this.config.defaultTimeout}ms`);
-      logger.info(`🔧 DEBUG: About to call cliOrchestrator.executeBrutalistAnalysis`);
-      const responses = await this.cliOrchestrator.executeBrutalistAnalysis(
-        analysisType,
-        primaryContent,
-        systemPromptSpec,
-        context,
-        {
-          workingDirectory: workingDirectory || this.config.workingDirectory,
-          timeout: this.config.defaultTimeout,
-          preferredCLI,
-          analysisType: analysisType as BrutalistPromptType,
-          models,
-          onStreamingEvent: this.handleStreamingEvent,
-          progressToken,
-          onProgress: progressToken && sessionId ? 
-            (progress: number, total: number, message: string) => 
-              this.handleProgressUpdate(progressToken, progress, total, message, sessionId) : undefined,
-          sessionId,
-          requestId
-        }
-      );
-      logger.info(`🔧 DEBUG: cliOrchestrator.executeBrutalistAnalysis returned ${responses.length} responses`);
-      
-      const successfulResponses = responses.filter(r => r.success);
-      const totalExecutionTime = responses.reduce((sum, r) => sum + r.executionTime, 0);
-      
-      logger.info(`📊 Analysis complete: ${successfulResponses.length}/${responses.length} CLIs successful (${totalExecutionTime}ms total)`);
-      logger.info(`🔧 DEBUG: About to synthesize feedback`);
-      const synthesis = this.cliOrchestrator.synthesizeBrutalistFeedback(responses, analysisType);
-      logger.info(`🔧 DEBUG: Synthesis length: ${synthesis.length} characters`);
-
-      const result = {
-        success: successfulResponses.length > 0,
-        responses,
-        synthesis,
-        analysisType,
-        targetPath: primaryContent,
-        executionSummary: {
-          totalCLIs: responses.length,
-          successfulCLIs: successfulResponses.length,
-          failedCLIs: responses.length - successfulResponses.length,
-          totalExecutionTime,
-          selectedCLI: responses.length === 1 ? responses[0].agent : undefined,
-          selectionMethod: responses.length === 1 ? (responses[0] as any).selectionMethod : 'multi-cli'
-        }
-      };
-      logger.info(`🔧 DEBUG: Returning result with success=${result.success}`);
-      return result;
-    } catch (error) {
-      logger.error("Brutalist analysis execution failed", error);
-      throw error;
-    }
-  }
-
-
-  /**
-   * Extract full content from analysis result for caching
-   */
-  private extractFullContent(result: BrutalistResponse): string | null {
-    if (result.synthesis) {
-      return result.synthesis;
-    } else if (result.responses && result.responses.length > 0) {
-      const successfulResponses = result.responses.filter(r => r.success);
-      if (successfulResponses.length > 0) {
-        let output = `${successfulResponses.length} AI critics have systematically demolished your work.\n\n`;
-        
-        successfulResponses.forEach((response, index) => {
-          output += `## Critic ${index + 1}: ${response.agent.toUpperCase()}\n`;
-          output += `*Execution time: ${response.executionTime}ms*\n\n`;
-          output += response.output;
-          // Only add separator between critics, not after the last one
-          if (index < successfulResponses.length - 1) {
-            output += '\n\n---\n\n';
-          }
-        });
-        
-        return output;
-      }
-    }
-    return null;
-  }
-
-  private formatToolResponse(
-    result: BrutalistResponse,
-    verbose: boolean = false,
-    paginationParams?: PaginationParams,
-    contextId?: string,
-    explicitPaginationRequested: boolean = false
-  ) {
-    logger.info(`🔧 DEBUG: formatToolResponse called with synthesis length: ${result.synthesis?.length || 0}`);
-    logger.info(`🔧 DEBUG: result.success=${result.success}, responses.length=${result.responses?.length || 0}`);
-    logger.info(`🔧 DEBUG: pagination params:`, paginationParams);
-    logger.info(`🔧 DEBUG: explicitPaginationRequested=${explicitPaginationRequested}`);
-
-    // Get the primary content to paginate
-    let primaryContent = '';
-
-    if (result.synthesis) {
-      primaryContent = result.synthesis;
-      logger.info(`🔧 DEBUG: Using synthesis content (${primaryContent.length} characters)`);
-    } else if (result.responses) {
-      const successfulResponses = result.responses.filter(r => r.success);
-      if (successfulResponses.length > 0) {
-        primaryContent = successfulResponses.map(r => r.output).join('\n\n---\n\n');
-        logger.info(`🔧 DEBUG: Using raw CLI output (${primaryContent.length} characters)`);
-      }
-    }
-
-    // Estimate token count to determine if pagination is needed
-    const estimatedTokens = estimateTokenCount(primaryContent);
-    const maxTokensWithoutPagination = 25000;
-    const needsAutoPagination = estimatedTokens > maxTokensWithoutPagination;
-
-    // CRITICAL: Always apply pagination if content is too large, even if not explicitly requested
-    // This prevents MCP protocol errors when response exceeds client token limits
-    if (needsAutoPagination || explicitPaginationRequested) {
-      if (needsAutoPagination && !explicitPaginationRequested) {
-        logger.info(`🔧 AUTO-PAGINATING: ${estimatedTokens} tokens exceeds ${maxTokensWithoutPagination} limit - forcing first page`);
-        // Force pagination params to show first chunk (use token-based limit)
-        const forcedParams: PaginationParams = {
-          offset: 0,
-          limit: PAGINATION_DEFAULTS.DEFAULT_LIMIT_TOKENS // Use token-based limit
-        };
-        return this.formatPaginatedResponse(primaryContent, forcedParams, result, verbose, contextId);
-      } else if (paginationParams) {
-        logger.info(`🔧 DEBUG: Applying pagination (explicitly requested)`);
-        return this.formatPaginatedResponse(primaryContent, paginationParams, result, verbose, contextId);
-      }
-    }
-
-    // Non-paginated response (only for content that fits within token limit)
-    if (primaryContent) {
-      logger.info(`🔧 DEBUG: Returning full response (${estimatedTokens} tokens < ${maxTokensWithoutPagination} limit)`);
-
-      // Include context_id even for non-paginated responses (for future pagination/caching)
-      let responseText = '';
-      if (contextId) {
-        responseText += `# Brutalist Analysis Results\n\n`;
-        responseText += `**🔑 Context ID:** ${contextId}\n\n`;
-        responseText += `---\n\n`;
-        responseText += primaryContent;
-      } else {
-        responseText = primaryContent;
-      }
-
-      return {
-        content: [{
-          type: "text" as const,
-          text: responseText
-        }]
-      };
-    }
-    
-    // Error handling - no successful content
-    let errorOutput = '';
-    if (result.responses) {
-      const failedResponses = result.responses.filter(r => !r.success);
-      if (failedResponses.length > 0) {
-        errorOutput = `❌ All CLI agents failed:\n` + 
-                     failedResponses.map(r => `- ${r.agent.toUpperCase()}: ${r.error}`).join('\n');
-      } else {
-        errorOutput = '❌ No CLI responses available';
-      }
-    } else {
-      errorOutput = '❌ No analysis results';
-    }
-
-    return {
-      content: [{ 
-        type: "text" as const, 
-        text: errorOutput
-      }]
-    };
-  }
-
-  private formatPaginatedResponse(
-    content: string,
-    paginationParams: PaginationParams,
-    result: BrutalistResponse,
-    verbose: boolean,
-    contextId?: string
-  ) {
-    // Using imported pagination utilities
-
-    const offset = paginationParams.offset || 0;
-    // Convert character-based limit to token-based limit (1 token ≈ 4 chars)
-    const limitChars = paginationParams.limit || PAGINATION_DEFAULTS.DEFAULT_LIMIT;
-    const limitTokens = Math.ceil(limitChars / 4); // Convert chars to tokens
-
-    logger.info(`🔧 DEBUG: Paginating content - offset: ${offset}, limitChars: ${limitChars}, limitTokens: ${limitTokens}, total: ${content.length} chars`);
-
-    // Use ResponseChunker for intelligent boundary detection (TOKEN-BASED)
-    const chunker = new ResponseChunker(limitTokens, PAGINATION_DEFAULTS.CHUNK_OVERLAP_TOKENS);
-    const chunks = chunker.chunkText(content);
-
-    // Find the appropriate chunk based on offset
-    let targetChunk = chunks[0]; // Default to first chunk
-    let targetChunkIndex = 0;
-    let currentOffset = 0;
-
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      if (offset >= chunk.startOffset && offset < chunk.endOffset) {
-        targetChunk = chunk;
-        targetChunkIndex = i;
-        break;
-      }
-      currentOffset = chunk.endOffset;
-    }
-
-    const chunkContent = targetChunk.content;
-    const actualOffset = targetChunk.startOffset;
-    const endOffset = targetChunk.endOffset;
-
-    // Create pagination metadata using actual chunk boundaries
-    const pagination = createPaginationMetadata(content.length, paginationParams, limitTokens, chunks, targetChunkIndex);
-    const statusLine = formatPaginationStatus(pagination);
-    
-    // Estimate token usage for user awareness
-    const chunkTokens = estimateTokenCount(chunkContent);
-    const totalTokens = estimateTokenCount(content);
-    
-    // Format response with pagination info
-    let paginatedText = '';
-    
-    // Add header
-    paginatedText += `# Brutalist Analysis Results\n\n`;
-    
-    // Show pagination metadata
-    const needsPagination = pagination.totalChunks > 1 || pagination.hasMore;
-    const isFirstRequest = offset === 0;
-
-    // Always show context_id on first request for future pagination
-    if (isFirstRequest && contextId) {
-      paginatedText += `**🔑 Context ID:** ${contextId}\n`;
-      paginatedText += `**🔢 Token Estimate:** ~${totalTokens.toLocaleString()} tokens (total)\n\n`;
-    }
-
-    if (needsPagination) {
-      paginatedText += `**📊 Pagination Status:** ${statusLine}\n`;
-      if (!isFirstRequest && contextId) {
-        paginatedText += `**🔑 Context ID:** ${contextId}\n`;
-      }
-      paginatedText += `**🔢 Token Estimate:** ~${chunkTokens.toLocaleString()} tokens (chunk) / ~${totalTokens.toLocaleString()} tokens (total)\n\n`;
-
-      if (pagination.hasMore) {
-        if (contextId) {
-          paginatedText += `**⏭️ Continue Reading:** Use \`context_id: "${contextId}", offset: ${endOffset}\`\n\n`;
-        } else {
-          paginatedText += `**⏭️ Continue Reading:** Use \`offset: ${endOffset}\` for next chunk\n\n`;
-        }
-      }
-    }
-    
-    paginatedText += `---\n\n`;
-    
-    // Add the actual content chunk
-    paginatedText += chunkContent;
-    
-    // Add footer
-    if (needsPagination) {
-      paginatedText += `\n\n---\n\n`;
-      if (pagination.hasMore) {
-        paginatedText += `📖 **End of chunk ${pagination.chunkIndex}/${pagination.totalChunks}**\n`;
-        if (contextId) {
-          paginatedText += `🔄 To continue: Include \`context_id: "${contextId}"\` with \`offset: ${endOffset}\` in next request`;
-        } else {
-          paginatedText += `🔄 To continue: Use same tool with \`offset: ${endOffset}\``;
-        }
-      } else {
-        paginatedText += `✅ **Complete analysis shown** (${content.length.toLocaleString()} characters total)`;
-      }
-    }
-    
-    // Add verbose execution details if requested
-    if (verbose && result.executionSummary) {
-      paginatedText += `\n\n### Execution Summary\n`;
-      paginatedText += `- **CLI Agents:** ${result.executionSummary.successfulCLIs}/${result.executionSummary.totalCLIs} successful\n`;
-      paginatedText += `- **Total Time:** ${result.executionSummary.totalExecutionTime}ms\n`;
-      if (result.executionSummary.selectedCLI) {
-        paginatedText += `- **Selected CLI:** ${result.executionSummary.selectedCLI}\n`;
-      }
-    }
-    
-    logger.info(`🔧 DEBUG: Returning paginated chunk - ${chunkContent.length} chars (${chunkTokens} tokens)`);
-    
-    return {
-      content: [{ 
-        type: "text" as const, 
-        text: paginatedText 
-      }]
-    };
-  }
-
-  private formatErrorResponse(error: unknown) {
-    logger.error("Tool execution failed", error);
-
-    // Sanitize error message to prevent information leakage
-    let sanitizedMessage = "Analysis failed";
-
-    if (error instanceof Error) {
-      // Only expose safe, generic error types
-      if (error.message.includes('timeout') || error.message.includes('Timeout')) {
-        sanitizedMessage = "Analysis timed out - try reducing scope or increasing timeout";
-      } else if (error.message.includes('ENOENT') || error.message.includes('no such file')) {
-        sanitizedMessage = "Target path not found - verify the path exists and is accessible";
-      } else if (error.message.includes('EACCES') || error.message.includes('permission denied')) {
-        sanitizedMessage = "Permission denied - check file access";
-      } else if (error.message.includes('No CLI agents available')) {
-        sanitizedMessage = "No CLI agents available for analysis";
-      } else if (error.message.includes('resume') && error.message.includes('context_id')) {
-        // User-facing validation errors for resume/continuation feature
-        sanitizedMessage = error.message;
-      } else if (error.message.includes('Context ID') && error.message.includes('not found')) {
-        // Context ID not found in cache
-        sanitizedMessage = error.message;
-      } else if (error.message.includes('continuation') && error.message.includes('requires')) {
-        // Continuation validation errors
-        sanitizedMessage = error.message;
-      } else {
-        // Generic message for other errors to prevent path/info leakage
-        sanitizedMessage = "Analysis failed due to internal error";
-      }
-    }
-    
-    return {
-      content: [{
-        type: "text" as const,
-        text: `Brutalist MCP Error: ${sanitizedMessage}`
-      }]
-    };
-  }
-
-  private async handleToolExecution(
-    handler: () => Promise<BrutalistResponse>
-  ): Promise<any> {
-    try {
-      const result = await handler();
-      return this.formatToolResponse(result);
-    } catch (error) {
-      return this.formatErrorResponse(error);
-    }
-  }
 
   /**
    * Handle debate tool execution with caching, pagination, and conversation continuation
+   * Delegated mostly to ToolHandler but kept here for CLI debate-specific logic
    */
   private async handleDebateToolExecution(args: {
     targetPath: string;
@@ -1468,7 +523,7 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
                 executionTime: 0
               }]
             };
-            return this.formatToolResponse(cachedResult, args.verbose, paginationParams, args.context_id, explicitPaginationRequested);
+            return this.formatter.formatToolResponse(cachedResult, args.verbose, paginationParams, args.context_id, explicitPaginationRequested);
           }
         } else {
           logger.warn(`❌ Debate cache MISS for context_id: ${args.context_id}`);
@@ -1507,7 +562,7 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
               executionTime: 0
             }]
           };
-          return this.formatToolResponse(cachedResult, args.verbose, paginationParams, contextId, explicitPaginationRequested);
+          return this.formatter.formatToolResponse(cachedResult, args.verbose, paginationParams, contextId, explicitPaginationRequested);
         }
       }
 
@@ -1536,7 +591,7 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
       // Cache the result
       let contextId: string | undefined;
       if (result.success && result.responses.length > 0) {
-        const fullContent = this.extractFullContent(result);
+        const fullContent = this.formatter.extractFullContent(result);
         if (fullContent) {
           const now = Date.now();
           const updatedConversation: import('./utils/response-cache.js').ConversationMessage[] = [
@@ -1570,9 +625,264 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
         }
       }
 
-      return this.formatToolResponse(result, args.verbose, paginationParams, contextId, explicitPaginationRequested);
+      return this.formatter.formatToolResponse(result, args.verbose, paginationParams, contextId, explicitPaginationRequested);
     } catch (error) {
-      return this.formatErrorResponse(error);
+      return this.formatter.formatErrorResponse(error);
     }
+  }
+
+  /**
+   * Execute CLI debate (kept in server for debate-specific logic)
+   */
+  private async executeCLIDebate(
+    targetPath: string,
+    debateRounds: number,
+    context?: string,
+    workingDirectory?: string,
+    models?: {
+      claude?: string;
+      codex?: string;
+      gemini?: string;
+    }
+  ): Promise<BrutalistResponse> {
+    logger.debug("Executing CLI debate", {
+      targetPath,
+      debateRounds,
+      workingDirectory
+    });
+
+    try {
+      // Get CLI context
+      const cliContext = await this.cliOrchestrator.detectCLIContext();
+      const availableAgents = cliContext.availableCLIs;
+
+      if (availableAgents.length < 2) {
+        throw new Error(`Need at least 2 CLI agents for debate. Available: ${availableAgents.join(', ')}`);
+      }
+
+      const debateContext: import('./types/brutalist.js').CLIAgentResponse[] = [];
+      const fullDebateTranscript: Map<string, string[]> = new Map();
+
+      // Initialize transcript for each agent
+      availableAgents.forEach(agent => fullDebateTranscript.set(agent, []));
+
+      // Assign opposing positions to each agent based on the debate topic
+      const agentPositions = new Map<string, string>();
+      const positions = [
+        "PRO-POSITION: Argue strongly FOR the proposed action/idea",
+        "CONTRA-POSITION: Argue strongly AGAINST the proposed action/idea"
+      ];
+
+      availableAgents.forEach((agent, index) => {
+        agentPositions.set(agent, positions[index % positions.length]);
+      });
+
+      // Round 1: Initial positions with assigned stances
+      logger.debug(`Starting debate round 1: Initial positions`);
+
+      for (const [agent, position] of agentPositions.entries()) {
+        const assignedPrompt = `You are ${agent.toUpperCase()}, a PASSIONATE ADVOCATE who strongly believes in this position: ${position}
+
+DEBATE TOPIC: ${targetPath}
+CONTEXT: ${context || ''}
+
+You are completely convinced your position is correct and critically important. You will argue forcefully and never concede ground to the opposing view.
+
+YOUR MISSION:
+1. Present devastating critiques of the opposing position
+2. Show why alternative approaches lead to serious problems
+3. Use sharp, direct language - call out flawed reasoning and poor assumptions
+4. Never hedge or qualify your stance
+5. Be completely confident in your position
+6. Treat this as an intellectually crucial debate
+
+Remember: You are ${agent.toUpperCase()}, the passionate champion of ${position.split(':')[0]}. Argue with conviction.`;
+
+        logger.info(`🎭 ${agent.toUpperCase()} preparing initial position: ${position.split(':')[0]}`);
+
+        const response = await this.cliOrchestrator.executeSingleCLI(
+          agent as 'claude' | 'codex' | 'gemini',
+          assignedPrompt,
+          assignedPrompt,
+          {
+            workingDirectory: workingDirectory || this.config.workingDirectory,
+            timeout: (this.config.defaultTimeout || 60000) * 2,
+            models: models ? { [agent]: models[agent as keyof typeof models] } : undefined
+          }
+        );
+
+        if (response.success) {
+          debateContext.push(response);
+          if (response.output) {
+            fullDebateTranscript.get(agent)?.push(response.output);
+          }
+        }
+      }
+
+      // Subsequent rounds: Turn-based responses attacking specific arguments
+      for (let round = 2; round <= debateRounds; round++) {
+        logger.debug(`Starting debate round ${round}: Adversarial engagement`);
+
+        // Execute turn-based responses with fixed positions
+        for (const [currentAgent, assignedPosition] of agentPositions.entries()) {
+          const opponents = Array.from(agentPositions.entries()).filter(([a, _]) => a !== currentAgent);
+          const opponentPositions = opponents
+            .map(([opponent, oppPosition]) => {
+              const transcript = fullDebateTranscript.get(opponent) || [];
+              const latestPosition = transcript[transcript.length - 1] || 'No position stated';
+              return `${opponent.toUpperCase()} (arguing ${oppPosition.split(':')[0]}):\n${latestPosition}`;
+            })
+            .join('\n\n---\n\n');
+
+          const confrontationalPrompt = `You are ${currentAgent.toUpperCase()}, PASSIONATE ADVOCATE for ${assignedPosition.split(':')[0]} (Round ${round})
+
+YOUR OPPONENTS HAVE ARGUED:
+${opponentPositions}
+
+You strongly disagree with their reasoning and conclusions.
+
+YOUR RESPONSE TASK:
+1. QUOTE their specific claims and systematically refute them
+2. Point out flawed logic, poor assumptions, and dangerous consequences
+3. Show why their approach leads to serious problems
+4. Use direct, forceful language to make your case
+5. Never concede any ground to their arguments
+6. Demonstrate why your position is the only sound choice
+
+Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assignedPosition.split(':')[0]}. Argue with conviction.`;
+
+          logger.info(`🔥 Round ${round}: ${currentAgent.toUpperCase()} responding to opponents (${assignedPosition.split(':')[0]})`);
+
+          const response = await this.cliOrchestrator.executeSingleCLI(
+            currentAgent as 'claude' | 'codex' | 'gemini',
+            confrontationalPrompt,
+            confrontationalPrompt,
+            {
+              workingDirectory: workingDirectory || this.config.workingDirectory,
+              timeout: (this.config.defaultTimeout || 60000) * 2,
+              models: models ? { [currentAgent]: models[currentAgent as keyof typeof models] } : undefined
+            }
+          );
+
+          if (response.success) {
+            debateContext.push(response);
+            if (response.output) {
+              fullDebateTranscript.get(currentAgent)?.push(response.output);
+            }
+          }
+        }
+      }
+
+      const synthesis = this.synthesizeDebate(debateContext, targetPath, debateRounds, agentPositions);
+
+      return {
+        success: debateContext.some(r => r.success),
+        responses: debateContext,
+        synthesis,
+        analysisType: 'cli_debate',
+        targetPath
+      };
+    } catch (error) {
+      logger.error("CLI debate execution failed", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Synthesize debate results into formatted output
+   */
+  private synthesizeDebate(
+    responses: import('./types/brutalist.js').CLIAgentResponse[],
+    targetPath: string,
+    rounds: number,
+    agentPositions?: Map<string, string>
+  ): string {
+    const successfulResponses = responses.filter(r => r.success);
+
+    if (successfulResponses.length === 0) {
+      return `# CLI Debate Failed\n\nEven our brutal critics couldn't engage in proper adversarial combat.\n\nErrors:\n${responses.map(r => `- ${r.agent}: ${r.error}`).join('\n')}`;
+    }
+
+    let synthesis = `# Brutalist CLI Agent Debate Results\n\n`;
+    synthesis += `**Target:** ${targetPath}\n`;
+    synthesis += `**Rounds:** ${rounds}\n`;
+
+    if (agentPositions) {
+      synthesis += `**Debaters and Positions:**\n`;
+      Array.from(agentPositions.entries()).forEach(([agent, position]) => {
+        synthesis += `- **${agent.toUpperCase()}**: ${position}\n`;
+      });
+      synthesis += '\n';
+    } else {
+      synthesis += `**Participants:** ${Array.from(new Set(successfulResponses.map(r => r.agent))).join(', ')}\n\n`;
+    }
+
+    // Identify key points of conflict
+    const agents = Array.from(new Set(successfulResponses.map(r => r.agent)));
+    const agentOutputs = new Map<string, string[]>();
+
+    successfulResponses.forEach(response => {
+      if (!agentOutputs.has(response.agent)) {
+        agentOutputs.set(response.agent, []);
+      }
+      if (response.output) {
+        agentOutputs.get(response.agent)?.push(response.output);
+      }
+    });
+
+    synthesis += `## Key Points of Conflict\n\n`;
+
+    // Extract disagreements by looking for contradictory keywords
+    const conflictIndicators = ['wrong', 'incorrect', 'flawed', 'fails', 'ignores', 'misses', 'overlooks', 'contradicts', 'however', 'but', 'actually', 'contrary'];
+    const conflicts: string[] = [];
+
+    agentOutputs.forEach((positions, agent) => {
+      positions.forEach((position: string) => {
+        const lines = position.split('\n');
+        lines.forEach((line: string) => {
+          if (conflictIndicators.some(indicator => line.toLowerCase().includes(indicator))) {
+            conflicts.push(`**${agent.toUpperCase()}:** ${line.trim()}`);
+          }
+        });
+      });
+    });
+
+    if (conflicts.length > 0) {
+      synthesis += conflicts.slice(0, 10).join('\n\n') + '\n\n';
+    } else {
+      synthesis += `*No explicit conflicts identified - agents may be in unexpected agreement*\n\n`;
+    }
+
+    // Group responses by round with clear speaker identification
+    synthesis += `## Full Debate Transcript\n\n`;
+
+    const responsesPerRound = Math.ceil(successfulResponses.length / rounds);
+
+    for (let i = 0; i < rounds; i++) {
+      const start = i * responsesPerRound;
+      const end = Math.min((i + 1) * responsesPerRound, successfulResponses.length);
+      const roundResponses = successfulResponses.slice(start, end);
+
+      synthesis += `### Round ${i + 1}: ${i === 0 ? 'Initial Positions' : `Adversarial Engagement ${i}`}\n\n`;
+
+      roundResponses.forEach((response) => {
+        const agentPosition = agentPositions?.get(response.agent);
+        const positionLabel = agentPosition ? ` [${agentPosition.split(':')[0]}]` : '';
+        synthesis += `#### ${response.agent.toUpperCase()}${positionLabel} speaks (${response.executionTime}ms):\n\n`;
+        synthesis += `${response.output}\n\n`;
+        synthesis += `---\n\n`;
+      });
+    }
+
+    synthesis += `## Debate Synthesis\n`;
+    synthesis += `After ${rounds} rounds of brutal adversarial analysis involving ${Array.from(new Set(successfulResponses.map(r => r.agent))).length} CLI agents, `;
+    synthesis += `your work has been systematically demolished from multiple perspectives. `;
+    synthesis += `The convergent criticisms above represent the collective wisdom of AI agents that disagree on methods but agree on destruction.\n\n`;
+
+    if (responses.some(r => !r.success)) {
+      synthesis += `*Note: ${responses.filter(r => !r.success).length} debate contributions failed - probably casualties of the intellectual warfare.*`;
+    }
+
+    return synthesis;
   }
 }

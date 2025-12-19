@@ -1,5 +1,5 @@
 import { spawn, exec } from 'child_process';
-import { realpathSync } from 'fs';
+import { promises as fs, realpathSync } from 'fs';
 import { promisify } from 'util';
 import path from 'path';
 import { logger } from './logger.js';
@@ -120,6 +120,36 @@ function validatePath(path: string, name: string): string {
   // Canonicalize the path (this also validates it exists and resolves symlinks)
   try {
     return realpathSync(path);
+  } catch (error) {
+    throw new Error(`Invalid ${name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+// Async version of validatePath for use in async contexts
+async function asyncValidatePath(path: string, name: string): Promise<string> {
+  if (!path) {
+    throw new Error(`${name} cannot be empty`);
+  }
+  
+  // Check for null bytes
+  if (path.includes('\0')) {
+    throw new Error(`${name} contains null byte`);
+  }
+  
+  // Check for dangerous path traversal patterns
+  if (path.includes('../') || path.includes('..\\') || path.includes('/..') || path.includes('\\..')) {
+    throw new Error(`${name} contains path traversal attempt: ${path}`);
+  }
+  
+  // Check path depth to prevent deeply nested attacks
+  const depth = path.split('/').length - 1;
+  if (depth > MAX_PATH_DEPTH) {
+    throw new Error(`${name} exceeds maximum depth: ${depth} > ${MAX_PATH_DEPTH}`);
+  }
+  
+  // Canonicalize the path (this also validates it exists and resolves symlinks)
+  try {
+    return await fs.realpath(path);
   } catch (error) {
     throw new Error(`Invalid ${name}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -437,6 +467,45 @@ export interface CLIContext {
   availableCLIs: ('claude' | 'codex' | 'gemini')[];
 }
 
+// CLI Builder Configuration Registry
+type CLIName = 'claude' | 'codex' | 'gemini';
+
+interface CLIBuilderConfig {
+  command: string;
+  defaultArgs: string[];
+  modelArgName: string;
+  promptWrapper?: (system: string, user: string) => string;
+  envExtras?: Record<string, string>;
+  jsonFlag?: string;
+  streamingArgs?: (options: CLIAgentOptions) => string[];
+  mpcEnvCleanup?: string[];
+}
+
+const CLI_BUILDER_CONFIGS: Record<CLIName, CLIBuilderConfig> = {
+  claude: {
+    command: 'claude',
+    defaultArgs: ['--print'],
+    modelArgName: '--model',
+    mpcEnvCleanup: ['CLAUDE_MCP_CONFIG', 'MCP_ENABLED', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
+    streamingArgs: (opts) => opts.progressToken ? ['--output-format', 'stream-json', '--verbose'] : []
+  },
+  codex: {
+    command: 'codex',
+    defaultArgs: ['exec'],
+    modelArgName: '--model',
+    jsonFlag: '--json',
+    mpcEnvCleanup: ['CODEX_MCP_CONFIG', 'MCP_ENABLED'],
+    promptWrapper: (sys, user) => `${sys}\n\n${user}\n\nExecute the complete analysis now in a single response without creating a plan first or waiting for input. Provide your full findings immediately.`
+  },
+  gemini: {
+    command: 'gemini',
+    defaultArgs: [],
+    modelArgName: '--model',
+    envExtras: { TERM: 'dumb', NO_COLOR: '1', CI: 'true' },
+    mpcEnvCleanup: ['GEMINI_MCP_CONFIG', 'MCP_ENABLED']
+  }
+};
+
 export class CLIAgentOrchestrator {
   private defaultTimeout = 1800000; // 30 minutes - complex codebases need time
   private defaultWorkingDir = process.cwd();
@@ -446,7 +515,7 @@ export class CLIAgentOrchestrator {
   private readonly CLI_CACHE_TTL = 300000; // 5 minutes cache
   private runningCLIs = 0; // Track concurrent CLI executions
   private readonly MAX_CONCURRENT_CLIS = MAX_CONCURRENT_CLIS; // Configurable concurrency limit
-  
+
   // Streaming throttle properties
   private streamingBuffers = new Map<string, { chunks: string[], lastFlush: number }>();
   private readonly STREAMING_FLUSH_INTERVAL = 200; // 200ms
@@ -459,7 +528,7 @@ export class CLIAgentOrchestrator {
     logger.info(`  - CLI check timeout: ${CLI_CHECK_TIMEOUT}ms`);
     logger.info(`  - Max buffer size: ${MAX_BUFFER_SIZE} bytes`);
     logger.info(`  - Max concurrent CLIs: ${MAX_CONCURRENT_CLIS}`);
-    
+
     // Detect CLI context at startup and cache it
     this.detectCLIContext().catch(error => {
       logger.error("Failed to detect CLI context at startup:", error);
@@ -714,6 +783,63 @@ export class CLIAgentOrchestrator {
       buffer.lastFlush = now;
     }
   }
+
+  private buildCLICommand(
+    cli: CLIName,
+    userPrompt: string,
+    systemPrompt: string,
+    options: CLIAgentOptions
+  ): { command: string; args: string[]; input: string; env: Record<string, string> } {
+    const config = CLI_BUILDER_CONFIGS[cli];
+
+    // Build args
+    const args = [...config.defaultArgs];
+    const model = options.models?.[cli] || AVAILABLE_MODELS[cli].default;
+    if (model) {
+      args.push(config.modelArgName, model);
+    }
+    if (config.jsonFlag && process.env.CODEX_USE_JSON !== 'false') {
+      args.push(config.jsonFlag);
+    }
+    if (config.streamingArgs) {
+      args.push(...config.streamingArgs(options));
+    }
+
+    // Build prompt
+    const combinedPrompt = config.promptWrapper
+      ? config.promptWrapper(systemPrompt, userPrompt)
+      : `${systemPrompt}\n\n${userPrompt}`;
+
+    // Build secure env
+    const secureEnv = createSecureEnvironment();
+
+    // Add CLI-specific env extras
+    if (config.envExtras) {
+      Object.assign(secureEnv, config.envExtras);
+    }
+
+    // Add required API key
+    const apiKeyMap: Record<CLIName, string[]> = {
+      claude: ['ANTHROPIC_API_KEY'],
+      codex: ['OPENAI_API_KEY'],
+      gemini: ['GOOGLE_API_KEY', 'GEMINI_API_KEY']
+    };
+    for (const key of apiKeyMap[cli]) {
+      if (process.env[key]) secureEnv[key] = process.env[key]!;
+    }
+
+    // Clean up MPC env vars that could cause deadlock
+    if (config.mpcEnvCleanup) {
+      for (const envVar of config.mpcEnvCleanup) {
+        delete secureEnv[envVar];
+      }
+    }
+
+    secureEnv.BRUTALIST_SUBPROCESS = '1';
+
+    return { command: config.command, args, input: combinedPrompt, env: secureEnv };
+  }
+
   async detectCLIContext(): Promise<CLIContext> {
     // Return cached context if still valid
     if (this.cliContextCached && Date.now() - this.cliContextCacheTime < this.CLI_CACHE_TTL) {
@@ -958,43 +1084,7 @@ export class CLIAgentOrchestrator {
       userPrompt,
       systemPromptSpec,
       options,
-      (userPrompt, systemPromptSpec, options) => {
-        const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
-        const args = ['--print'];
-
-        // Enable streaming for real-time progress if progress notifications are enabled
-        if (options.progressToken) {
-          args.push('--output-format', 'stream-json', '--verbose');
-        }
-
-        // Use provided model or let Claude use its default
-        const model = options.models?.claude || AVAILABLE_MODELS.claude.default;
-        if (model) {
-          args.push('--model', model);
-        }
-
-        // Use stdin to avoid MAX_ARG_LENGTH limit (4096 chars)
-        // Claude --print can read from stdin when no positional argument is provided
-
-        // DEFENSIVE: Disable MCP and Claude Code integration to prevent stdio deadlock
-        // When Claude CLI runs with MCP enabled or detects Claude Code context,
-        // it tries to communicate over stdio which conflicts with our stdin/stdout usage
-        const cleanEnv = { ...process.env };
-        delete cleanEnv.CLAUDE_MCP_CONFIG;
-        delete cleanEnv.MCP_ENABLED;
-        delete cleanEnv.CLAUDECODE;
-        delete cleanEnv.CLAUDE_CODE_ENTRYPOINT;
-
-        return {
-          command: 'claude',
-          args,
-          input: combinedPrompt,
-          env: {
-            ...cleanEnv,
-            BRUTALIST_SUBPROCESS: '1'  // Mark this as a brutalist-spawned subprocess
-          }
-        };
-      }
+      (user, sys, opts) => this.buildCLICommand('claude', user, sys, opts)
     );
   }
 
@@ -1007,41 +1097,8 @@ export class CLIAgentOrchestrator {
       'codex',
       userPrompt,
       systemPromptSpec,
-      { ...options },
-      (userPrompt, systemPromptSpec, options) => {
-        // Instruct Codex to analyze immediately in one shot without waiting for approval
-        const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}\n\nExecute the complete analysis now in a single response without creating a plan first or waiting for input. Provide your full findings immediately.`;
-        const args = ['exec'];
-        // Use provided model or let Codex use its default
-        const model = options.models?.codex || AVAILABLE_MODELS.codex.default;
-        if (model) {
-          args.push('--model', model);
-        }
-        // OPTIONAL: Use --json flag to get structured output (can be disabled for compatibility)
-        if (process.env.CODEX_USE_JSON !== 'false') {
-          args.push('--json');
-        }
-
-        // DEFENSIVE: Disable MCP if Codex supports it (currently no known MCP support)
-        // This prevents potential stdio deadlock if Codex adds MCP in the future
-        // Note: Codex CLI doesn't currently have documented MCP config flags
-
-        // Use stdin for the prompt instead of argv to avoid ARG_MAX limits
-        // Create clean environment without MCP-related variables
-        const cleanEnv = { ...process.env };
-        delete cleanEnv.CODEX_MCP_CONFIG;
-        delete cleanEnv.MCP_ENABLED;
-
-        return {
-          command: 'codex',
-          args,
-          input: combinedPrompt,
-          env: {
-            ...cleanEnv,
-            BRUTALIST_SUBPROCESS: '1'  // Mark this as a brutalist-spawned subprocess
-          }
-        };
-      }
+      options,
+      (user, sys, opts) => this.buildCLICommand('codex', user, sys, opts)
     );
   }
 
@@ -1054,42 +1111,8 @@ export class CLIAgentOrchestrator {
       'gemini',
       userPrompt,
       systemPromptSpec,
-      { ...options },
-      (userPrompt, systemPromptSpec, options) => {
-        const args = [];
-        // Use provided model or let Gemini use its default
-        const modelName = options.models?.gemini || AVAILABLE_MODELS.gemini.default;
-        if (modelName) {
-          args.push('--model', modelName);
-        }
-
-        // DEFENSIVE: Disable MCP if Gemini supports it (currently no known MCP support)
-        // This prevents potential stdio deadlock if Gemini adds MCP in the future
-        // Note: Gemini CLI doesn't currently have documented MCP config flags
-
-        const combinedPrompt = `${systemPromptSpec}\n\n${userPrompt}`;
-
-        // Use stdin to avoid MAX_ARG_LENGTH limit (4096 chars)
-        // Gemini CLI can read from stdin instead of positional argument
-
-        // Create clean environment without MCP-related variables
-        const cleanEnv = { ...process.env };
-        delete cleanEnv.GEMINI_MCP_CONFIG;
-        delete cleanEnv.MCP_ENABLED;
-
-        return {
-          command: 'gemini',
-          args: args,
-          input: combinedPrompt, // Pass prompt via stdin instead of args
-          env: {
-            ...cleanEnv,
-            TERM: 'dumb',
-            NO_COLOR: '1',
-            CI: 'true',
-            BRUTALIST_SUBPROCESS: '1'  // Mark this as a brutalist-spawned subprocess
-          }
-        };
-      }
+      options,
+      (user, sys, opts) => this.buildCLICommand('gemini', user, sys, opts)
     );
   }
 
@@ -1193,7 +1216,7 @@ export class CLIAgentOrchestrator {
     try {
       if (filesystemTools.includes(analysisType) && primaryContent && primaryContent.trim() !== '') {
         logger.debug(`Validating path: "${primaryContent}"`);
-        validatePath(primaryContent, 'targetPath');
+        await asyncValidatePath(primaryContent, 'targetPath');
       }
     } catch (error) {
       logger.error(`Path validation failed: ${error}`);
@@ -1203,7 +1226,7 @@ export class CLIAgentOrchestrator {
     // Validate workingDirectory if provided
     try {
       if (options.workingDirectory) {
-        validatePath(options.workingDirectory, 'workingDirectory');
+        await asyncValidatePath(options.workingDirectory, 'workingDirectory');
       }
     } catch (error) {
       throw new Error(`Security validation failed: ${error instanceof Error ? error.message : String(error)}`);

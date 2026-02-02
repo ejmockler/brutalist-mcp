@@ -216,20 +216,11 @@ describe('Transport Integration Tests', () => {
       expect(data.result).toHaveProperty('tools');
       expect(Array.isArray(data.result.tools)).toBe(true);
 
-      // Verify expected tools are present
+      // Verify only gateway tools are exposed (not individual domain tools)
       const expectedTools = [
-        'roast_codebase',
-        'roast_idea',
-        'roast_architecture', 
-        'roast_research',
-        'roast_security',
-        'roast_product',
-        'roast_infrastructure',
-        'roast_file_structure',
-        'roast_dependencies',
-        'roast_git_history',
-        'roast_test_coverage',
+        'roast',  // Unified tool - replaces all roast_* domain tools
         'roast_cli_debate',
+        'brutalist_discover',
         'cli_agent_roster'
       ];
 
@@ -238,10 +229,13 @@ describe('Transport Integration Tests', () => {
         expect(toolNames).toContain(expectedTool);
       });
 
+      // Verify only 4 tools are registered
+      expect(data.result.tools.length).toBe(4);
+
       // Verify tool structure
-      const sampleTool = data.result.tools.find((tool: any) => tool.name === 'roast_idea');
+      const sampleTool = data.result.tools.find((tool: any) => tool.name === 'roast');
       expect(sampleTool).toMatchObject({
-        name: 'roast_idea',
+        name: 'roast',
         description: expect.any(String),
         inputSchema: expect.any(Object)
       });
@@ -318,10 +312,11 @@ describe('Transport Integration Tests', () => {
       expect(content).toHaveProperty('text');
       expect(typeof content.text).toBe('string');
       
-      // Should contain information about available tools
+      // Should contain information about available tools (4 gateway tools after tool reduction)
       expect(content.text).toContain('Brutalist CLI Agent Arsenal');
-      expect(content.text).toContain('Abstract Analysis Tools');
-      expect(content.text).toContain('File-System Analysis Tools');
+      expect(content.text).toContain('Available Tools (4 Gateway Tools)');
+      expect(content.text).toContain('roast');
+      expect(content.text).toContain('roast_cli_debate');
     });
 
     it.skip('should execute roast_idea tool with proper arguments', async () => {
@@ -385,9 +380,11 @@ describe('Transport Integration Tests', () => {
       `);
 
       // Test file structure analysis - this may timeout without CLI agents
+      // Use unified 'roast' tool with domain parameter (after tool reduction)
       try {
-        const result = await serverHarness.executeTool('roast_file_structure', {
-          targetPath: workspace,
+        const result = await serverHarness.executeTool('roast', {
+          domain: 'file_structure',
+          target: workspace,
           depth: 2
         });
 

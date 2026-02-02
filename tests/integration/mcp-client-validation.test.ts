@@ -186,10 +186,11 @@ describe('MCP Client Validation Tests', () => {
         expect(tool.inputSchema).toHaveProperty('properties');
       });
 
-      // Verify expected tools are present
+      // Verify expected tools are present (4 gateway tools after tool reduction)
       const toolNames = toolsResult.tools.map(t => t.name);
-      expect(toolNames).toContain('roast_codebase');
-      expect(toolNames).toContain('roast_idea');
+      expect(toolNames).toContain('roast');  // Unified roast tool
+      expect(toolNames).toContain('roast_cli_debate');
+      expect(toolNames).toContain('brutalist_discover');
       expect(toolNames).toContain('cli_agent_roster');
     }, 30000);
 

@@ -355,18 +355,17 @@ describe('CLIAgentOrchestrator', () => {
   });
 
   describe('Error Handling', () => {
-    it('should handle CLI command not found', async () => {
-      // Test with a nonexistent CLI preference
-      const responses = await orchestrator.executeBrutalistAnalysis(
-        'idea',
-        'test path',
-        'test prompt',
-        undefined,
-        { preferredCLI: 'nonexistent' as any, timeout: 1000 }
-      );
-
-      expect(Array.isArray(responses)).toBe(true);
-      // Should handle CLI errors gracefully, possibly returning failed responses
+    it('should throw error for unavailable CLI', async () => {
+      // Test with a nonexistent CLI - should throw validation error
+      await expect(
+        orchestrator.executeBrutalistAnalysis(
+          'idea',
+          'test path',
+          'test prompt',
+          undefined,
+          { clis: ['nonexistent' as any], timeout: 1000 }
+        )
+      ).rejects.toThrow('Requested CLIs not available');
     });
 
     it('should handle CLI timeout', async () => {
@@ -544,7 +543,7 @@ describe('CLIAgentOrchestrator', () => {
         'You are a brutal startup critic. Be harsh but fair.',
         'Integration test of real CLI execution',
         {
-          preferredCLI: targetCLI,
+          clis: [targetCLI],
           timeout: 45000,
         }
       );
@@ -592,7 +591,7 @@ describe('CLIAgentOrchestrator', () => {
         'Perform an extremely detailed analysis of this entire codebase including every file, dependency, security vulnerability, performance issue, and architectural problem. Write a 10,000 word detailed report.',
         'Timeout test with complex prompt',
         {
-          preferredCLI: context.availableCLIs[0],
+          clis: [context.availableCLIs[0]],
           timeout: 2000, // 2 second timeout should cause timeout
         }
       );

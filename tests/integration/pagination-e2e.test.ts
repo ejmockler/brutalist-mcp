@@ -12,7 +12,7 @@ import {
 } from '../../src/utils/pagination.js';
 import { TestIsolation } from '../../src/test-utils/test-isolation.js';
 import { CLIAgentOrchestrator } from '../../src/cli-agents.js';
-import { TOOL_CONFIGS } from '../../src/tool-definitions.js';
+import { getToolConfigs } from '../../src/tool-definitions.js';
 
 // E2E Pagination Integration Tests
 // These tests verify pagination utility functions work correctly
@@ -319,7 +319,7 @@ describe('Pagination E2E Integration', () => {
       // This tests the fix for PAGINATION_BUGS.md - pagination should hit cache
 
       // Find roast_idea config
-      const ideaConfig = TOOL_CONFIGS.find(c => c.name === 'roast_idea')!;
+      const ideaConfig = getToolConfigs().find(c => c.name === 'roast_idea')!;
       expect(ideaConfig).toBeDefined();
 
       const toolArgs = {
@@ -367,7 +367,7 @@ describe('Pagination E2E Integration', () => {
       // This tests the fix for src/brutalist-server.ts:1112-1115
       // context_id should appear even when needsPagination = false
 
-      const ideaConfig = TOOL_CONFIGS.find(c => c.name === 'roast_idea')!;
+      const ideaConfig = getToolConfigs().find(c => c.name === 'roast_idea')!;
 
       // Mock smaller response that fits in one chunk
       mockExecuteBrutalistAnalysis.mockResolvedValueOnce([
@@ -396,7 +396,7 @@ describe('Pagination E2E Integration', () => {
     it('should throw error when using invalid context_id', async () => {
       // This tests that cache miss throws error instead of silently re-running
 
-      const ideaConfig = TOOL_CONFIGS.find(c => c.name === 'roast_idea')!;
+      const ideaConfig = getToolConfigs().find(c => c.name === 'roast_idea')!;
 
       const result = await (server as any).handleRoastTool(ideaConfig, {
         idea: 'test',
@@ -416,7 +416,7 @@ describe('Pagination E2E Integration', () => {
     it('should handle consistent anonymous session for pagination', async () => {
       // This tests that multiple requests without session share cache via 'anonymous'
 
-      const ideaConfig = TOOL_CONFIGS.find(c => c.name === 'roast_idea')!;
+      const ideaConfig = getToolConfigs().find(c => c.name === 'roast_idea')!;
 
       const toolArgs = {
         idea: 'Test idea',

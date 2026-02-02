@@ -15,7 +15,7 @@ interface RoastCodebaseParams {
   targetPath: string;
   context?: string;
   workingDirectory?: string;
-  preferredCLI?: "claude" | "codex" | "gemini";
+  clis?: ("claude" | "codex" | "gemini")[];
   verbose?: boolean;
   models?: {
     claude?: string;
@@ -211,27 +211,20 @@ describe('BrutalistServer', () => {
   });
 
   describe('Tool Registration', () => {
-    it('should register all 13 brutalist tools', () => {
+    it('should register only 4 gateway tools (not individual domain tools)', () => {
       new BrutalistServer();
-      
-      expect(mockTool).toHaveBeenCalledTimes(13);
-      
+
+      // Only gateway tools are exposed - individual roast_* tools are NOT registered
+      // This reduces cognitive load for AI agents while maintaining full functionality
+      expect(mockTool).toHaveBeenCalledTimes(4);
+
       const expectedTools = [
-        'roast_codebase',
-        'roast_file_structure', 
-        'roast_dependencies',
-        'roast_git_history',
-        'roast_test_coverage',
-        'roast_idea',
-        'roast_architecture',
-        'roast_research',
-        'roast_security',
-        'roast_product',
-        'roast_infrastructure',
+        'roast',  // Unified tool - replaces all roast_* domain tools
         'roast_cli_debate',
+        'brutalist_discover',
         'cli_agent_roster'
       ];
-      
+
       const registeredToolNames = mockTool.mock.calls.map(call => call[0]);
       expectedTools.forEach(toolName => {
         expect(registeredToolNames).toContain(toolName);
@@ -240,10 +233,10 @@ describe('BrutalistServer', () => {
 
     it('should register tools with brutal descriptions', () => {
       new BrutalistServer();
-      
-      const codebaseCall = mockTool.mock.calls.find(call => call[0] === 'roast_codebase');
-      expect(codebaseCall).toBeDefined();
-      expect(codebaseCall![1]).toContain('brutal');
+
+      const unifiedRoastCall = mockTool.mock.calls.find(call => call[0] === 'roast');
+      expect(unifiedRoastCall).toBeDefined();
+      expect(unifiedRoastCall![1]).toContain('brutal');
       
       const debateCall = mockTool.mock.calls.find(call => call[0] === 'roast_cli_debate');
       expect(debateCall).toBeDefined();
@@ -252,21 +245,25 @@ describe('BrutalistServer', () => {
 
     it('should register tools with proper Zod schemas', () => {
       new BrutalistServer();
-      
-      const codebaseCall = mockTool.mock.calls.find(call => call[0] === 'roast_codebase');
-      expect(codebaseCall).toBeDefined();
-      expect(codebaseCall!.length).toBeGreaterThan(2);
-      
+
+      // Check unified roast tool schema (replaces individual domain tools)
+      const roastCall = mockTool.mock.calls.find(call => call[0] === 'roast');
+      expect(roastCall).toBeDefined();
+      expect(roastCall!.length).toBeGreaterThan(2);
+
       // Should have a schema parameter (Zod object schema)
-      const schema = codebaseCall![2];
+      const schema = roastCall![2];
       expect(schema).toBeDefined();
-      
+
       // Schema should be a Zod object with field schemas
       if (schema && typeof schema === 'object') {
-        // Should have required targetPath field
-        expect(schema).toHaveProperty('targetPath');
-        expect((schema as any).targetPath).toHaveProperty('parse');
-        
+        // Unified tool requires domain and target fields
+        expect(schema).toHaveProperty('domain');
+        expect((schema as any).domain).toHaveProperty('parse');
+
+        expect(schema).toHaveProperty('target');
+        expect((schema as any).target).toHaveProperty('parse');
+
         // Should have optional parameters
         expect(schema).toHaveProperty('context');
         expect(schema).toHaveProperty('workingDirectory');
@@ -314,7 +311,7 @@ describe('BrutalistServer', () => {
           'You are a battle-scarred principal engineer who has debugged production disasters for 15 years.',
           'Critical production system',
           '/tmp/test',
-          undefined, // preferredCLI
+          undefined, // clis
           false, // verbose
           undefined, // models
           undefined // progressToken
@@ -375,7 +372,7 @@ describe('BrutalistServer', () => {
           'System prompt',
           undefined,
           '/tmp/test',
-          'codex',
+          ['codex'],
           false,
           { codex: 'gpt-5.1-codex-max', gemini: 'gemini-3-pro-preview' },
           undefined
@@ -383,7 +380,7 @@ describe('BrutalistServer', () => {
 
         const callArgs = mockCLIOrchestrator.executeBrutalistAnalysis.mock.calls[0];
         expect(callArgs[4]).toMatchObject({
-          preferredCLI: 'codex',
+          clis: ['codex'],
           models: { codex: 'gpt-5.1-codex-max', gemini: 'gemini-3-pro-preview' }
         });
       });

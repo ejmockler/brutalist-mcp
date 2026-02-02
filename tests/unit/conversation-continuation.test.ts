@@ -317,7 +317,7 @@ describe('Filesystem Tool Resume Mode', () => {
     const originalParams = {
       tool: 'roast_codebase',
       targetPath: '/path/to/original/project',
-      preferredCLI: 'claude'
+      clis: ['claude']
     };
 
     const { contextId } = await cache.set(
@@ -338,7 +338,7 @@ describe('Filesystem Tool Resume Mode', () => {
     expect(retrieved!.requestParams).toBeDefined();
     expect(retrieved!.requestParams.targetPath).toBe('/path/to/original/project');
     expect(retrieved!.requestParams.tool).toBe('roast_codebase');
-    expect(retrieved!.requestParams.preferredCLI).toBe('claude');
+    expect(retrieved!.requestParams.clis).toEqual(['claude']);
   });
 
   it('should allow retrieving original params for resume mode path restoration', async () => {

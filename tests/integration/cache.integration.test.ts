@@ -104,13 +104,13 @@ describe('Cache Integration Tests', () => {
       const params1 = {
         targetPath: '/src',
         context: 'test analysis',
-        preferredCLI: 'claude'
+        clis: ['claude']
       };
 
       const params2 = {
         targetPath: '/src',
         context: 'test analysis',
-        preferredCLI: 'claude'
+        clis: ['claude']
       };
 
       const key1 = cache.generateCacheKey(params1);
@@ -466,7 +466,7 @@ describe('Cache Integration Tests', () => {
       const mockParams = {
         targetPath: '/test/src',
         context: 'Integration test analysis',
-        preferredCLI: 'claude'
+        clis: ['claude']
       };
 
       // Simulate first analysis request
@@ -504,7 +504,7 @@ describe('Cache Integration Tests', () => {
       const params = {
         targetPath: '/real-project',
         context: 'Complete security audit',
-        preferredCLI: 'claude'
+        clis: ['claude']
       };
 
       const { cacheKey } = await cache.set(params, brutalistResponse);

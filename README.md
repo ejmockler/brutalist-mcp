@@ -215,22 +215,28 @@ Features:
 
 | Tool | Purpose |
 |------|---------|
+| `roast` | **Unified tool** - use `domain` parameter to select analysis type |
+| `brutalist_discover` | Find the best tool for your intent using natural language |
 | `roast_cli_debate` | Multi-agent discussion from different perspectives |
 | `cli_agent_roster` | Show available CLI agents on your system |
+
+> **Tip:** Use the unified `roast` tool with a domain parameter for a leaner schema, or use `brutalist_discover` to find the right tool based on your intent.
+
+See [docs/pagination.md](docs/pagination.md) for detailed pagination documentation.
 
 ## Advanced Usage
 
 ### Choose Specific CLI Agents
 
 ```bash
-# Use a specific agent
-roast_codebase(targetPath="/src", preferredCLI="claude")
+# Use specific agents (subset selection)
+roast(domain="codebase", target="/src", clis=["claude", "gemini"])
 
-# System automatically selects best agent for task
-roast_security "/auth/module"  # Typically uses Codex
+# Use a single agent
+roast(domain="codebase", target="/src", clis=["claude"])
 
-# Multi-agent analysis (default)
-roast_idea "..."  # All available agents provide perspectives
+# Multi-agent analysis (default - all available)
+roast(domain="idea", target="...")  # All available agents provide perspectives
 ```
 
 ### Agent Strengths

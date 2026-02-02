@@ -440,7 +440,7 @@ async function spawnAsync(
 export interface CLIAgentOptions {
   workingDirectory?: string;
   timeout?: number;
-  preferredCLI?: 'claude' | 'codex' | 'gemini';
+  clis?: ('claude' | 'codex' | 'gemini')[];
   analysisType?: BrutalistPromptType;
   models?: {
     claude?: string;
@@ -491,11 +491,11 @@ const CLI_BUILDER_CONFIGS: Record<CLIName, CLIBuilderConfig> = {
   },
   codex: {
     command: 'codex',
-    defaultArgs: ['exec'],
+    defaultArgs: ['exec', '--sandbox', 'read-only'],
     modelArgName: '--model',
     jsonFlag: '--json',
     mpcEnvCleanup: ['CODEX_MCP_CONFIG', 'MCP_ENABLED'],
-    promptWrapper: (sys, user) => `${sys}\n\n${user}\n\nExecute the complete analysis now in a single response without creating a plan first or waiting for input. Provide your full findings immediately.`
+    promptWrapper: (sys, user) => `${sys}\n\n${user}\n\nUse your shell tools to read files (cat, ls, find, grep, head, etc.) and analyze the codebase. You ARE allowed to run read-only commands. Explore the directory structure, read relevant source files, and provide a comprehensive brutal analysis based on what you find.`
   },
   gemini: {
     command: 'gemini',
@@ -1163,29 +1163,39 @@ export class CLIAgentOrchestrator {
     userPrompt: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse[]> {
-    const responses: CLIAgentResponse[] = [];
-    
-    for (const agent of cliAgents) {
-      if (['claude', 'codex', 'gemini'].includes(agent)) {
-        try {
-          const response = await this.executeCLIAgent(agent, systemPrompt, userPrompt, options);
-          responses.push(response);
-        } catch (error) {
-          responses.push({
-            agent: agent as 'claude' | 'codex' | 'gemini',
-            success: false,
-            output: '',
-            error: error instanceof Error ? error.message : String(error),
-            executionTime: 0,
-            command: `${agent} execution failed`,
-            workingDirectory: options.workingDirectory || process.cwd(),
-            exitCode: -1
-          });
-        }
-      }
+    // Filter to valid CLI agents
+    const validAgents = cliAgents.filter(agent =>
+      ['claude', 'codex', 'gemini'].includes(agent)
+    ) as ('claude' | 'codex' | 'gemini')[];
+
+    if (validAgents.length === 0) {
+      return [];
     }
-    
-    return responses;
+
+    // Execute all CLIs in parallel with Promise.allSettled
+    const promises = validAgents.map(async (agent) => {
+      try {
+        return await this.executeCLIAgent(agent, systemPrompt, userPrompt, options);
+      } catch (error) {
+        return {
+          agent,
+          success: false,
+          output: '',
+          error: error instanceof Error ? error.message : String(error),
+          executionTime: 0,
+          command: `${agent} execution failed`,
+          workingDirectory: options.workingDirectory || process.cwd(),
+          exitCode: -1
+        } as CLIAgentResponse;
+      }
+    });
+
+    const results = await Promise.allSettled(promises);
+    return results
+      .filter((result): result is PromiseFulfilledResult<CLIAgentResponse> =>
+        result.status === 'fulfilled'
+      )
+      .map(result => result.value);
   }
 
   async executeCLIAgent(
@@ -1209,7 +1219,8 @@ export class CLIAgentOrchestrator {
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse[]> {
     // Only validate filesystem paths for tools that actually operate on files/directories
-    const filesystemTools = ['codebase', 'file_structure', 'dependencies', 'git_history', 'test_coverage'];
+    // NOTE: Must match BrutalistPromptType values (camelCase)
+    const filesystemTools = ['codebase', 'fileStructure', 'dependencies', 'gitHistory', 'testCoverage'];
 
     logger.debug(`Validation check: analysisType="${analysisType}", isFilesystemTool=${filesystemTools.includes(analysisType)}`);
 
@@ -1233,45 +1244,42 @@ export class CLIAgentOrchestrator {
     }
     
     const userPrompt = this.constructUserPrompt(analysisType, primaryContent, context);
-    
-    // If preferred CLI is specified, use single CLI mode
-    if (options.preferredCLI) {
-      const selectedCLI = this.selectSingleCLI(
-        options.preferredCLI,
-        analysisType  // Use the direct parameter, not options.analysisType
-      );
-      
-      logger.info(`✅ Using preferred CLI: ${selectedCLI}`);
-      
-      const response = await this.executeSingleCLI(selectedCLI, userPrompt, systemPromptSpec, options);
-      
-      return [{
-        ...response,
-        selectionMethod: 'user-specified',
-        analysisType
-      } as CLIAgentResponse];
+
+    // Determine which CLIs to use
+    let clisToUse: ('claude' | 'codex' | 'gemini')[];
+
+    if (options.clis && options.clis.length > 0) {
+      // User specified which CLIs to use - validate they're available
+      const unavailable = options.clis.filter(cli => !this.cliContext.availableCLIs.includes(cli));
+      if (unavailable.length > 0) {
+        throw new Error(
+          `Requested CLIs not available: ${unavailable.join(', ')}. ` +
+          `Available: ${this.cliContext.availableCLIs.join(', ')}`
+        );
+      }
+      // Deduplicate
+      clisToUse = [...new Set(options.clis)];
+      logger.info(`🎯 Using user-specified CLIs: ${clisToUse.join(', ')}`);
+    } else {
+      // Default: use all available CLIs
+      clisToUse = [...this.cliContext.availableCLIs];
+      logger.info(`📋 Using all available CLIs: ${clisToUse.join(', ')}`);
     }
     
-    // Multi-CLI execution (default behavior)
-    logger.info(`🚀 Executing multi-CLI analysis`);
-
-    // Use all available CLIs - spawning separate processes is fine
-    let availableCLIs = [...this.cliContext.availableCLIs];
-    logger.info(`📋 Using all available CLIs: ${availableCLIs.join(', ')}`)
-    
-    if (availableCLIs.length === 0) {
+    if (clisToUse.length === 0) {
       throw new Error('No CLI agents available for analysis');
     }
-    
-    logger.info(`📊 Available CLIs: ${availableCLIs.join(', ')}`);
-    
-    // Execute all available CLIs in parallel with allSettled for better error handling
-    const promises = availableCLIs.map(async (cli) => {
+
+    const selectionMethod = options.clis ? 'user-specified' : 'all-available';
+    logger.info(`📊 Executing ${clisToUse.length} CLI(s): ${clisToUse.join(', ')} (${selectionMethod})`);
+
+    // Execute selected CLIs in parallel with allSettled for better error handling
+    const promises = clisToUse.map(async (cli) => {
       try {
         const response = await this.executeSingleCLI(cli, userPrompt, systemPromptSpec, options);
         return {
           ...response,
-          selectionMethod: 'multi-cli',
+          selectionMethod,
           analysisType
         } as CLIAgentResponse;
       } catch (error) {
@@ -1282,19 +1290,19 @@ export class CLIAgentOrchestrator {
           output: '',
           error: error instanceof Error ? error.message : String(error),
           executionTime: 0,
-          selectionMethod: 'multi-cli',
+          selectionMethod,
           analysisType
         } as CLIAgentResponse;
       }
     });
-    
+
     // Use allSettled to handle partial failures gracefully
     const results = await Promise.allSettled(promises);
     const responses: CLIAgentResponse[] = results
       .filter(result => result.status === 'fulfilled')
       .map(result => (result as PromiseFulfilledResult<CLIAgentResponse>).value);
-    
-    logger.info(`✅ Multi-CLI analysis complete: ${responses.filter(r => r.success).length}/${responses.length} successful`);
+
+    logger.info(`✅ CLI analysis complete: ${responses.filter(r => r.success).length}/${responses.length} successful`);
     
     return responses;
   }

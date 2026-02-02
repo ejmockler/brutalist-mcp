@@ -15,6 +15,7 @@ import {
 } from '../utils/pagination.js';
 import { ResponseCache } from '../utils/response-cache.js';
 import { ResponseFormatter } from '../formatting/response-formatter.js';
+import { getSystemPrompt } from '../system-prompts.js';
 
 /**
  * ToolHandler - Handles roast tool execution with caching and pagination
@@ -205,10 +206,9 @@ export class ToolHandler {
       // Build context with custom builder if available
       let context = config.contextBuilder ? config.contextBuilder(args) : args.context;
 
-      // Get the primary argument (targetPath, idea, architecture, etc.)
-      // For text-based tools, use content field; for filesystem tools, use primaryArgField
-      const textContent = args.content || args.idea || args.architecture || args.research || args.product || args.security || args.infrastructure;
-      let primaryArg = textContent || args[config.primaryArgField];
+      // Get the primary argument (targetPath or content)
+      // All abstract tools now use 'content', filesystem tools use 'targetPath'
+      let primaryArg = args[config.primaryArgField];
 
       // For resume mode with filesystem tools, use original targetPath from cached params
       // and inject the follow-up question into context instead
@@ -227,6 +227,14 @@ export class ToolHandler {
         }
       }
 
+      // Validate that primary argument is provided
+      if (!primaryArg) {
+        throw new Error(`Missing required argument: ${config.primaryArgField}`);
+      }
+
+      // Type narrowing: primaryArg is now guaranteed to be a string
+      const validatedPrimaryArg: string = primaryArg;
+
       // If we have conversation history, inject it into the context
       if (conversationHistory && conversationHistory.length > 0) {
         const conversationContext = conversationHistory.map(msg => {
@@ -241,16 +249,19 @@ export class ToolHandler {
         logger.info(`💬 Injected ${conversationHistory.length} previous messages into context`);
       }
 
-      logger.debug(`Primary arg: ${config.primaryArgField}="${primaryArg}", analysisType="${config.analysisType}"`);
+      logger.debug(`Primary arg: ${config.primaryArgField}="${validatedPrimaryArg}", analysisType="${config.analysisType}"`);
+
+      // Get system prompt (from deprecated field or system-prompts.ts)
+      const systemPrompt = config.systemPrompt || getSystemPrompt(config.analysisType);
 
       // Run the analysis
       const result = await this.executeBrutalistAnalysis(
         config.analysisType,
-        primaryArg,
-        config.systemPrompt,
+        validatedPrimaryArg,
+        systemPrompt,
         context,
         args.workingDirectory,
-        args.preferredCLI,
+        args.clis,
         args.verbose,
         args.models,
         progressToken,
@@ -321,7 +332,7 @@ export class ToolHandler {
     systemPromptSpec: string,
     context?: string,
     workingDirectory?: string,
-    preferredCLI?: 'claude' | 'codex' | 'gemini',
+    clis?: ('claude' | 'codex' | 'gemini')[],
     verbose?: boolean,
     models?: {
       claude?: string;
@@ -333,13 +344,13 @@ export class ToolHandler {
     requestId?: string
   ): Promise<BrutalistResponse> {
     logger.info(`🏢 Starting brutalist analysis: ${analysisType}`);
-    logger.info(`🔧 DEBUG: preferredCLI=${preferredCLI}, primaryContent=${primaryContent}`);
+    logger.info(`🔧 DEBUG: clis=${clis?.join(',') || 'all'}, primaryContent=${primaryContent}`);
     logger.debug("Executing brutalist analysis", {
       primaryContent,
       analysisType,
       systemPromptSpec,
       workingDirectory,
-      preferredCLI
+      clis
     });
 
     try {
@@ -359,7 +370,7 @@ export class ToolHandler {
         {
           workingDirectory: workingDirectory || this.config.workingDirectory,
           timeout: this.config.defaultTimeout,
-          preferredCLI,
+          clis,
           analysisType: analysisType as BrutalistPromptType,
           models,
           onStreamingEvent: this.handleStreamingEvent,

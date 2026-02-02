@@ -39,8 +39,8 @@ export const BASE_ARGUMENTS = z.object({
     gemini: z.string().optional()
   }).optional().describe("Specific models per agent"),
 
-  preferredCLI: z.enum(['claude', 'codex', 'gemini']).optional()
-    .describe("Preferred CLI agent"),
+  clis: z.array(z.enum(['claude', 'codex', 'gemini'])).min(1).max(3).optional()
+    .describe("CLI agents to use (default: all available)"),
 
   force_refresh: z.boolean().optional()
     .describe("Ignore cache"),
@@ -72,7 +72,7 @@ export const FILESYSTEM_ARGUMENT_SPACE: ArgumentSpace = {
   name: 'Filesystem Analysis',
   base: BASE_ARGUMENTS,
   domain: z.object({
-    targetPath: z.string().describe("Path to analyze")
+    targetPath: z.string().describe("Directory path to analyze (e.g., '/path/to/project' or '.')")
   }),
   computed: (args) => ({
     workingDirectory: args.targetPath
@@ -103,7 +103,7 @@ export const FILESYSTEM_WITH_DEPTH: ArgumentSpace = {
   name: 'Filesystem with Depth Control',
   base: BASE_ARGUMENTS,
   domain: z.object({
-    targetPath: z.string().describe("Path to analyze"),
+    targetPath: z.string().describe("Directory path to analyze (e.g., '/path/to/project')"),
     depth: z.number().optional().describe("Max depth (default: 3)")
   }),
   computed: (args) => ({
@@ -120,11 +120,11 @@ export const PACKAGE_MANIFEST_SPACE: ArgumentSpace = {
   name: 'Package Manifest',
   base: BASE_ARGUMENTS,
   domain: z.object({
-    targetPath: z.string().describe("Package file path (package.json, etc.)"),
+    targetPath: z.string().describe("Directory containing package.json (e.g., '/path/to/project')"),
     includeDevDeps: z.boolean().optional().describe("Include dev dependencies (default: true)")
   }),
   computed: (args) => ({
-    workingDirectory: require('path').dirname(args.targetPath),
+    workingDirectory: args.targetPath,
     analyzeDevDependencies: args.includeDevDeps !== false
   })
 };
@@ -137,7 +137,7 @@ export const GIT_REPOSITORY_SPACE: ArgumentSpace = {
   name: 'Git Repository',
   base: BASE_ARGUMENTS,
   domain: z.object({
-    targetPath: z.string().describe("Repo path"),
+    targetPath: z.string().describe("Git repository directory path (e.g., '/path/to/repo')"),
     commitRange: z.string().optional().describe("Commit range (default: last 20)")
   }),
   computed: (args) => ({
@@ -154,7 +154,7 @@ export const TEST_SUITE_SPACE: ArgumentSpace = {
   name: 'Test Suite',
   base: BASE_ARGUMENTS,
   domain: z.object({
-    targetPath: z.string().describe("Test dir or config"),
+    targetPath: z.string().describe("Project directory containing tests (e.g., '/path/to/project')"),
     runCoverage: z.boolean().optional().describe("Run coverage (default: true)")
   }),
   computed: (args) => ({
@@ -203,7 +203,7 @@ export function inferCacheKeys(space: ArgumentSpace): string[] {
   const keys: string[] = [];
 
   // Always include these base fields if present (excludes pagination/continuation params)
-  const baseKeys = ['context', 'models', 'preferredCLI'];
+  const baseKeys = ['context', 'models', 'clis'];
   keys.push(...baseKeys);
 
   // Add all domain-specific fields

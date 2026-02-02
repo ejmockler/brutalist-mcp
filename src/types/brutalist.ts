@@ -76,6 +76,7 @@ export interface BrutalistResponse {
   error?: string;
   analysisType?: string;
   targetPath?: string;
+  topic?: string;  // For debate tool (uses topic instead of targetPath)
   executionSummary?: {
     totalCLIs: number;
     successfulCLIs: number;

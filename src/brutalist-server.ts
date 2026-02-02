@@ -4,7 +4,7 @@ import { z } from "zod";
 import { CLIAgentOrchestrator, StreamingEvent } from './cli-agents.js';
 import { logger } from './logger.js';
 import { ToolConfig, BASE_ROAST_SCHEMA } from './types/tool-config.js';
-import { TOOL_CONFIGS } from './tool-definitions-generated.js';
+import { getToolConfigs } from './tool-definitions.js';
 import {
   BrutalistServerConfig,
   BrutalistResponse,
@@ -19,6 +19,8 @@ import { ResponseCache } from './utils/response-cache.js';
 import { ResponseFormatter } from './formatting/response-formatter.js';
 import { HttpTransport } from './transport/http-transport.js';
 import { ToolHandler } from './handlers/tool-handler.js';
+import { getDomain, generateToolConfig } from './registry/domains.js';
+import { filterToolsByIntent, getMatchingDomainIds } from './tool-router.js';
 
 // Use environment variable or fallback to manual version
 const PACKAGE_VERSION = process.env.npm_package_version || "0.6.12";
@@ -321,53 +323,103 @@ export class BrutalistServer {
 
   /**
    * Register all MCP tools
+   *
+   * TOOL REDUCTION STRATEGY: Only expose 4 gateway tools instead of 15.
+   * The unified `roast` tool with domain parameter replaces all 11 roast_* tools.
+   * This reduces cognitive load for AI agents while maintaining full functionality.
    */
   private registerTools() {
-    // Register all roast tools using unified handler - DRY principle
-    TOOL_CONFIGS.forEach(config => {
-      const schema = {
-        ...config.schemaExtensions,
-        ...BASE_ROAST_SCHEMA
-      };
+    // NOTE: Individual domain tools (roast_codebase, roast_security, etc.) are NOT registered.
+    // Use the unified `roast` tool with domain parameter instead.
+    // The getToolConfigs() function still exists for internal routing via handleUnifiedRoast().
 
-      this.server.tool(
-        config.name,
-        config.description,
-        schema,
-        async (args, extra) => this.toolHandler.handleRoastTool(config, args, extra)
-      );
-    });
-
-    // Register special tools that don't follow the pattern
+    // Register only the gateway tools
     this.registerSpecialTools();
   }
 
   /**
-   * Register special tools (debate, roster)
+   * Register special tools (debate, roster, unified roast)
    */
   private registerSpecialTools() {
+    // UNIFIED ROAST TOOL: Single entry point for all domain analysis
+    this.server.tool(
+      "roast",
+      "Unified brutal AI critique. Specify domain for targeted analysis. Consolidates all roast_* tools into one polymorphic API.",
+      {
+        domain: z.enum([
+          "codebase", "file_structure", "dependencies", "git_history", "test_coverage",
+          "idea", "architecture", "research", "security", "product", "infrastructure"
+        ]).describe("Analysis domain"),
+        target: z.string().describe("Directory path for filesystem domains (codebase, dependencies, git_history, etc.) OR text content for abstract domains (idea, architecture, security, etc.)"),
+        // Common optional fields
+        context: z.string().optional().describe("Additional context"),
+        workingDirectory: z.string().optional().describe("Working directory"),
+        clis: z.array(z.enum(["claude", "codex", "gemini"])).min(1).max(3).optional().describe("CLI agents to use (default: all available). Example: ['claude', 'gemini']"),
+        verbose: z.boolean().optional().describe("Detailed output"),
+        models: z.object({
+          claude: z.string().optional(),
+          codex: z.string().optional(),
+          gemini: z.string().optional()
+        }).optional().describe("CLI-specific models"),
+        // Pagination
+        offset: z.number().min(0).optional().describe("Pagination offset"),
+        limit: z.number().min(1000).max(100000).optional().describe("Max chars/chunk"),
+        cursor: z.string().optional().describe("Pagination cursor"),
+        context_id: z.string().optional().describe("Context ID for pagination/continuation"),
+        resume: z.boolean().optional().describe("Continue conversation"),
+        force_refresh: z.boolean().optional().describe("Ignore cache"),
+        // Domain-specific optional fields (passed through to handler)
+        depth: z.number().optional().describe("Max depth for file_structure"),
+        includeDevDeps: z.boolean().optional().describe("Include dev deps for dependencies"),
+        commitRange: z.string().optional().describe("Commit range for git_history"),
+        runCoverage: z.boolean().optional().describe("Run coverage for test_coverage"),
+        resources: z.string().optional().describe("Resources for idea"),
+        timeline: z.string().optional().describe("Timeline for idea"),
+        scale: z.string().optional().describe("Scale for architecture/infrastructure"),
+        constraints: z.string().optional().describe("Constraints for architecture"),
+        deployment: z.string().optional().describe("Deployment for architecture"),
+        field: z.string().optional().describe("Field for research"),
+        claims: z.string().optional().describe("Claims for research"),
+        data: z.string().optional().describe("Data for research"),
+        assets: z.string().optional().describe("Assets for security"),
+        threatModel: z.string().optional().describe("Threat model for security"),
+        compliance: z.string().optional().describe("Compliance for security"),
+        users: z.string().optional().describe("Users for product"),
+        competition: z.string().optional().describe("Competition for product"),
+        metrics: z.string().optional().describe("Metrics for product"),
+        sla: z.string().optional().describe("SLA for infrastructure"),
+        budget: z.string().optional().describe("Budget for infrastructure")
+      },
+      async (args, extra) => this.handleUnifiedRoast(args, extra)
+    );
+
     // ROAST_CLI_DEBATE: Adversarial analysis between different CLI agents
     this.server.tool(
       "roast_cli_debate",
-      "Deploy CLI agents in structured adversarial debate. Agents take opposing positions and systematically challenge each other's reasoning. Perfect for exploring complex topics from multiple perspectives and stress-testing ideas through rigorous intellectual discourse.",
+      "Deploy 2 CLI agents in structured adversarial debate with constitutional position anchoring. Calling agent should extract PRO/CON positions from topic before invoking.",
       {
-        targetPath: z.string().describe("Topic, question, or concept to debate (NOT a file path - use natural language)"),
-        debateRounds: z.number().optional().describe("Number of debate rounds (default: 2, max: 10)"),
+        topic: z.string().describe("The debate topic"),
+        proPosition: z.string().describe("The PRO thesis to defend (extracted by calling agent)"),
+        conPosition: z.string().describe("The CON thesis to defend (extracted by calling agent)"),
+        agents: z.array(z.enum(["claude", "codex", "gemini"])).length(2).optional()
+          .describe("Two agents to debate (random selection from available if not specified)"),
+        rounds: z.number().min(1).max(3).default(3).optional()
+          .describe("Number of debate rounds (default: 3)"),
         context: z.string().optional().describe("Additional context for the debate"),
         workingDirectory: z.string().optional().describe("Working directory for analysis"),
         models: z.object({
-          claude: z.string().optional().describe("Claude model: opus (recommended), sonnet, haiku, opusplan, or full name like claude-opus-4-5-20251101. Default: user's configured model"),
-          codex: z.string().optional().describe("Codex model: gpt-5.1-codex-max (recommended), gpt-5.2, gpt-5.1-codex, gpt-5.1-codex-mini, gpt-5-codex, o4-mini. Default: CLI's default"),
-          gemini: z.string().optional().describe("Gemini model: gemini-3-pro (recommended), gemini-3-flash, gemini-2.5-pro, gemini-2.5-flash. Default: Auto routing")
-        }).optional().describe("Specific models to use for each CLI agent - defaults let each CLI use its own latest model"),
-        // Pagination and continuation parameters
-        context_id: z.string().optional().describe("Context ID from previous response for pagination or conversation continuation"),
-        resume: z.boolean().optional().describe("Continue debate with history injection (requires context_id)"),
-        offset: z.number().min(0).optional().describe("Pagination offset"),
-        limit: z.number().min(1000).max(100000).optional().describe("Max chars/chunk (default: 90000)"),
-        cursor: z.string().optional().describe("Pagination cursor"),
-        force_refresh: z.boolean().optional().describe("Ignore cache"),
-        verbose: z.boolean().optional().describe("Detailed output")
+          claude: z.string().optional(),
+          codex: z.string().optional(),
+          gemini: z.string().optional()
+        }).optional().describe("Model overrides for specific agents"),
+        // Pagination and conversation continuation
+        context_id: z.string().optional().describe("Context ID for pagination/continuation"),
+        resume: z.boolean().optional().describe("Continue debate (requires context_id)"),
+        offset: z.number().min(0).optional(),
+        limit: z.number().min(1000).max(100000).optional(),
+        cursor: z.string().optional(),
+        force_refresh: z.boolean().optional(),
+        verbose: z.boolean().optional()
       },
       async (args) => {
         // CRITICAL: Prevent recursion
@@ -385,6 +437,41 @@ export class BrutalistServer {
       }
     );
 
+    // BRUTALIST_DISCOVER: Intent-based tool discovery
+    this.server.tool(
+      "brutalist_discover",
+      "Discover relevant brutalist tools based on your intent. Returns the top 3 most relevant analysis tools.",
+      {
+        intent: z.string().describe("What you want to analyze (e.g., 'review security of my auth system', 'check code quality')")
+      },
+      async (args) => {
+        const matchingDomains = getMatchingDomainIds(args.intent);
+        const configs = filterToolsByIntent(args.intent);
+
+        let response = "# Recommended Brutalist Domains\n\n";
+        response += `Based on your intent: "${args.intent}"\n\n`;
+
+        if (matchingDomains.length === 0) {
+          response += "No specific matches found. Use the unified `roast` tool with any domain:\n";
+          response += "- `roast(domain: 'codebase', target: '/path/to/code')` for code review\n";
+          response += "- `roast(domain: 'security', target: 'description of system')` for security analysis\n";
+        } else {
+          response += `**Top ${matchingDomains.length} matching domains:**\n\n`;
+          for (const config of configs) {
+            // Extract domain from tool name (roast_security -> security)
+            const domain = config.name.replace('roast_', '');
+            response += `### ${domain}\n`;
+            response += `${config.description}\n`;
+            response += `\`roast(domain: '${domain}', target: '...')\`\n\n`;
+          }
+        }
+
+        return {
+          content: [{ type: "text" as const, text: response }]
+        };
+      }
+    );
+
     // CLI_AGENT_ROSTER: Show available brutalist critics
     this.server.tool(
       "cli_agent_roster",
@@ -394,25 +481,32 @@ export class BrutalistServer {
         try {
           let roster = "# Brutalist CLI Agent Arsenal\n\n";
 
-          roster += "## Available AI Critics (13 Tools Total)\n\n";
-          roster += "**Abstract Analysis Tools (6):**\n";
-          roster += "- `roast_idea` - Destroy any business/technical/creative concept\n";
-          roster += "- `roast_architecture` - Demolish system designs\n";
-          roster += "- `roast_research` - Tear apart academic methodologies\n";
-          roster += "- `roast_security` - Annihilate security designs\n";
-          roster += "- `roast_product` - Eviscerate UX and market concepts\n";
-          roster += "- `roast_infrastructure` - Obliterate DevOps setups\n\n";
+          roster += "## Available Tools (4 Gateway Tools)\n\n";
 
-          roster += "**File-System Analysis Tools (5):**\n";
-          roster += "- `roast_codebase` - Analyze actual source code\n";
-          roster += "- `roast_file_structure` - Examine directory organization\n";
-          roster += "- `roast_dependencies` - Review package management\n";
-          roster += "- `roast_git_history` - Analyze version control workflow\n";
-          roster += "- `roast_test_coverage` - Evaluate testing strategy\n\n";
+          roster += "### `roast` - Unified Analysis Tool\n";
+          roster += "The primary entry point for all brutal analysis. Use the `domain` parameter to target:\n\n";
+          roster += "**Filesystem Domains:**\n";
+          roster += "- `codebase` - Analyze source code for security, performance, maintainability\n";
+          roster += "- `file_structure` - Examine directory organization\n";
+          roster += "- `dependencies` - Review package management and vulnerabilities\n";
+          roster += "- `git_history` - Analyze version control workflow\n";
+          roster += "- `test_coverage` - Evaluate testing strategy\n\n";
+          roster += "**Abstract Domains:**\n";
+          roster += "- `idea` - Destroy business/technical concepts\n";
+          roster += "- `architecture` - Demolish system designs\n";
+          roster += "- `research` - Tear apart methodologies\n";
+          roster += "- `security` - Annihilate security designs\n";
+          roster += "- `product` - Eviscerate UX concepts\n";
+          roster += "- `infrastructure` - Obliterate DevOps setups\n\n";
 
-          roster += "**Meta Tools (2):**\n";
-          roster += "- `roast_cli_debate` - CLI vs CLI adversarial analysis\n";
-          roster += "- `cli_agent_roster` - This tool (show capabilities)\n\n";
+          roster += "### `roast_cli_debate` - Adversarial Multi-Agent Debate\n";
+          roster += "Pit CLI agents against each other on any topic.\n\n";
+
+          roster += "### `brutalist_discover` - Intent-Based Discovery\n";
+          roster += "Describe what you want to analyze, get domain recommendations.\n\n";
+
+          roster += "### `cli_agent_roster` - This Tool\n";
+          roster += "Show available capabilities and usage.\n\n";
 
           roster += "## CLI Agent Capabilities\n";
           roster += "**Claude Code** - Advanced analysis with direct system prompt injection\n";
@@ -424,15 +518,20 @@ export class BrutalistServer {
           roster += "## Current CLI Context\n";
           roster += `**Available CLIs:** ${cliContext.availableCLIs.join(', ') || 'None detected'}\n\n`;
 
+          roster += "## Domain Discovery\n";
+          roster += "Use `brutalist_discover` to find the best domain for your analysis:\n";
+          roster += "- Example: `brutalist_discover(intent: 'review my authentication security')`\n";
+          roster += "- Returns the top 3 most relevant domains to use with the `roast` tool\n\n";
+
           roster += "## Pagination & Conversation Continuation\n";
           roster += "**Two distinct modes for using context_id:**\n\n";
           roster += "**1. Pagination** (cached result retrieval):\n";
           roster += "- `context_id` alone returns cached response at different offsets\n";
-          roster += "- Example: `roast_codebase(context_id: 'abc123', offset: 25000)`\n\n";
+          roster += "- Example: `roast(domain: 'codebase', target: '.', context_id: 'abc123', offset: 25000)`\n\n";
           roster += "**2. Conversation Continuation** (resume dialogue with history):\n";
           roster += "- `context_id` + `resume: true` + new content continues the conversation\n";
           roster += "- Prior conversation is injected into CLI agent context\n";
-          roster += "- Example: `roast_codebase(context_id: 'abc123', resume: true, content: 'Explain issue #3 in detail')`\n\n";
+          roster += "- Example: `roast(domain: 'codebase', target: '.', context_id: 'abc123', resume: true)`\n\n";
           roster += "**Cache TTL:** 2 hours\n\n";
 
           roster += "## Brutalist Philosophy\n";
@@ -449,12 +548,83 @@ export class BrutalistServer {
   }
 
   /**
-   * Handle debate tool execution with caching, pagination, and conversation continuation
-   * Delegated mostly to ToolHandler but kept here for CLI debate-specific logic
+   * Handle unified roast tool - routes to appropriate domain handler
+   */
+  private async handleUnifiedRoast(
+    args: {
+      domain: string;
+      target: string;
+      context?: string;
+      workingDirectory?: string;
+      clis?: ('claude' | 'codex' | 'gemini')[];
+      verbose?: boolean;
+      models?: { claude?: string; codex?: string; gemini?: string };
+      offset?: number;
+      limit?: number;
+      cursor?: string;
+      context_id?: string;
+      resume?: boolean;
+      force_refresh?: boolean;
+      // Domain-specific fields
+      [key: string]: unknown;
+    },
+    extra: any
+  ): Promise<any> {
+    // CRITICAL: Prevent recursion
+    if (process.env.BRUTALIST_SUBPROCESS === '1') {
+      logger.warn(`🚫 Rejecting unified roast from brutalist subprocess`);
+      return {
+        content: [{
+          type: "text" as const,
+          text: `ERROR: Brutalist MCP tools cannot be used from within a brutalist-spawned CLI subprocess (recursion prevented)`
+        }]
+      };
+    }
+
+    // Get domain config
+    const domain = getDomain(args.domain);
+    if (!domain) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: `ERROR: Unknown domain "${args.domain}". Valid domains: codebase, file_structure, dependencies, git_history, test_coverage, idea, architecture, research, security, product, infrastructure`
+        }]
+      };
+    }
+
+    // Generate tool config from domain
+    const toolConfig = generateToolConfig(domain);
+
+    // Map 'target' to the appropriate primary arg field
+    const mappedArgs: Record<string, unknown> = { ...args };
+    delete mappedArgs.domain;
+    delete mappedArgs.target;
+
+    // Set the primary argument based on domain's input type
+    if (domain.inputType === 'filesystem') {
+      mappedArgs.targetPath = args.target;
+    } else {
+      mappedArgs.content = args.target;
+      // For abstract tools, also set targetPath if workingDirectory not provided
+      if (!args.workingDirectory) {
+        mappedArgs.targetPath = '.';
+      }
+    }
+
+    // Delegate to the unified handler
+    return this.toolHandler.handleRoastTool(toolConfig, mappedArgs, extra);
+  }
+
+  /**
+   * Handle debate tool execution with constitutional position anchoring.
+   * Uses 2 randomly selected agents (or user-specified) with explicit PRO/CON positions.
    */
   private async handleDebateToolExecution(args: {
-    targetPath: string;
-    debateRounds?: number;
+    topic: string;
+    proPosition: string;
+    conPosition: string;
+    agents?: ('claude' | 'codex' | 'gemini')[];
+    rounds?: number;
     context?: string;
     workingDirectory?: string;
     models?: { claude?: string; codex?: string; gemini?: string };
@@ -501,14 +671,14 @@ export class BrutalistServer {
 
           if (args.resume === true) {
             // CONVERSATION CONTINUATION: Continue the debate
-            if (!args.targetPath || args.targetPath.trim() === '') {
+            if (!args.topic || args.topic.trim() === '') {
               throw new Error(
                 `Debate continuation (resume: true) requires a new prompt/question. ` +
-                `Provide your follow-up in the targetPath field.`
+                `Provide your follow-up in the topic field.`
               );
             }
 
-            logger.info(`💬 Debate continuation - new prompt: "${args.targetPath.substring(0, 50)}..."`);
+            logger.info(`💬 Debate continuation - new prompt: "${args.topic.substring(0, 50)}..."`);
             conversationHistory = cachedResponse.conversationHistory || [];
             // Fall through to execute new debate round with history
           } else {
@@ -538,10 +708,12 @@ export class BrutalistServer {
       // Generate cache key for this debate
       const cacheKey = this.responseCache.generateCacheKey({
         tool: 'roast_cli_debate',
-        targetPath: args.targetPath,
-        debateRounds: args.debateRounds,
-        context: args.context,
-        models: args.models
+        topic: args.topic,
+        proPosition: args.proPosition,
+        conPosition: args.conPosition,
+        agents: args.agents,
+        rounds: args.rounds,
+        context: args.context
       });
 
       // Check cache for identical request (if not resuming)
@@ -579,14 +751,17 @@ export class BrutalistServer {
       }
 
       // Execute the debate
-      const debateRounds = Math.min(args.debateRounds || 2, 10);
-      const result = await this.executeCLIDebate(
-        args.targetPath,
-        debateRounds,
-        debateContext,
-        args.workingDirectory,
-        args.models
-      );
+      const numRounds = Math.min(args.rounds || 3, 3);
+      const result = await this.executeCLIDebate({
+        topic: args.topic,
+        proPosition: args.proPosition,
+        conPosition: args.conPosition,
+        agents: args.agents,
+        rounds: numRounds,
+        context: debateContext,
+        workingDirectory: args.workingDirectory,
+        models: args.models
+      });
 
       // Cache the result
       let contextId: string | undefined;
@@ -596,7 +771,7 @@ export class BrutalistServer {
           const now = Date.now();
           const updatedConversation: import('./utils/response-cache.js').ConversationMessage[] = [
             ...(conversationHistory || []),
-            { role: 'user', content: args.targetPath, timestamp: now },
+            { role: 'user', content: args.topic, timestamp: now },
             { role: 'assistant', content: fullContent, timestamp: now }
           ];
 
@@ -612,7 +787,7 @@ export class BrutalistServer {
           } else {
             // New debate - create new context_id
             const { contextId: newId } = await this.responseCache.set(
-              { tool: 'roast_cli_debate', targetPath: args.targetPath },
+              { tool: 'roast_cli_debate', topic: args.topic },
               fullContent,
               cacheKey,
               undefined,
@@ -632,155 +807,218 @@ export class BrutalistServer {
   }
 
   /**
-   * Execute CLI debate (kept in server for debate-specific logic)
+   * Execute CLI debate with constitutional position anchoring.
+   * 2 agents, explicit PRO/CON positions, context compression between rounds.
    */
-  private async executeCLIDebate(
-    targetPath: string,
-    debateRounds: number,
-    context?: string,
-    workingDirectory?: string,
-    models?: {
-      claude?: string;
-      codex?: string;
-      gemini?: string;
-    }
-  ): Promise<BrutalistResponse> {
-    logger.debug("Executing CLI debate", {
-      targetPath,
-      debateRounds,
-      workingDirectory
-    });
+  private async executeCLIDebate(args: {
+    topic: string;
+    proPosition: string;
+    conPosition: string;
+    agents?: ('claude' | 'codex' | 'gemini')[];
+    rounds: number;
+    context?: string;
+    workingDirectory?: string;
+    models?: { claude?: string; codex?: string; gemini?: string };
+  }): Promise<BrutalistResponse> {
+    const { topic, proPosition, conPosition, rounds, context, workingDirectory, models } = args;
+
+    logger.debug("Executing CLI debate", { topic, proPosition, conPosition, rounds });
 
     try {
-      // Get CLI context
+      // Get available CLIs
       const cliContext = await this.cliOrchestrator.detectCLIContext();
-      const availableAgents = cliContext.availableCLIs;
+      const availableCLIs = cliContext.availableCLIs as ('claude' | 'codex' | 'gemini')[];
 
-      if (availableAgents.length < 2) {
-        throw new Error(`Need at least 2 CLI agents for debate. Available: ${availableAgents.join(', ')}`);
+      if (availableCLIs.length < 2) {
+        throw new Error(`Need at least 2 CLI agents for debate. Available: ${availableCLIs.join(', ')}`);
       }
 
-      const debateContext: import('./types/brutalist.js').CLIAgentResponse[] = [];
-      const fullDebateTranscript: Map<string, string[]> = new Map();
+      // Select 2 agents: use specified or random selection
+      let selectedAgents: ('claude' | 'codex' | 'gemini')[];
+      if (args.agents && args.agents.length === 2) {
+        // Validate specified agents are available
+        const unavailable = args.agents.filter(a => !availableCLIs.includes(a));
+        if (unavailable.length > 0) {
+          throw new Error(`Specified agents not available: ${unavailable.join(', ')}. Available: ${availableCLIs.join(', ')}`);
+        }
+        selectedAgents = args.agents;
+      } else {
+        // Random selection of 2 agents
+        const shuffled = [...availableCLIs].sort(() => Math.random() - 0.5);
+        selectedAgents = shuffled.slice(0, 2);
+      }
 
-      // Initialize transcript for each agent
-      availableAgents.forEach(agent => fullDebateTranscript.set(agent, []));
+      // Randomly assign PRO/CON positions
+      const shuffledAgents = [...selectedAgents].sort(() => Math.random() - 0.5);
+      const proAgent = shuffledAgents[0];
+      const conAgent = shuffledAgents[1];
 
-      // Assign opposing positions to each agent based on the debate topic
-      const agentPositions = new Map<string, string>();
-      const positions = [
-        "PRO-POSITION: Argue strongly FOR the proposed action/idea",
-        "CONTRA-POSITION: Argue strongly AGAINST the proposed action/idea"
-      ];
+      logger.info(`🎭 Debate: ${proAgent.toUpperCase()} (PRO) vs ${conAgent.toUpperCase()} (CON)`);
 
-      availableAgents.forEach((agent, index) => {
-        agentPositions.set(agent, positions[index % positions.length]);
-      });
+      const debateResponses: import('./types/brutalist.js').CLIAgentResponse[] = [];
+      const transcript: { agent: string; position: string; round: number; content: string }[] = [];
+      let compressedContext = '';
 
-      // Round 1: Initial positions with assigned stances
-      logger.debug(`Starting debate round 1: Initial positions`);
+      // Constitutional position anchor template
+      const constitutionalAnchor = (agent: string, position: string, thesis: string) => `
+You are ${agent.toUpperCase()}, arguing the ${position} position in this debate.
 
-      for (const [agent, position] of agentPositions.entries()) {
-        const assignedPrompt = `You are ${agent.toUpperCase()}, a PASSIONATE ADVOCATE who strongly believes in this position: ${position}
+YOUR THESIS: ${thesis}
 
-DEBATE TOPIC: ${targetPath}
-CONTEXT: ${context || ''}
+CONSTITUTIONAL RULES (UNBREAKABLE):
+1. You MUST maintain your position throughout ALL rounds
+2. You MAY acknowledge valid points but MUST explain why they don't invalidate your thesis
+3. You MUST NOT agree to compromise or "meet in the middle"
+4. You MUST directly attack your opponent's strongest arguments
+5. You MUST reinforce your core thesis in every response
 
-You are completely convinced your position is correct and critically important. You will argue forcefully and never concede ground to the opposing view.
+Your goal is PERSUASION, not consensus. Argue to WIN.
+`;
 
-YOUR MISSION:
-1. Present devastating critiques of the opposing position
-2. Show why alternative approaches lead to serious problems
-3. Use sharp, direct language - call out flawed reasoning and poor assumptions
-4. Never hedge or qualify your stance
-5. Be completely confident in your position
-6. Treat this as an intellectually crucial debate
+      // Execute rounds
+      for (let round = 1; round <= rounds; round++) {
+        logger.info(`📢 Round ${round}/${rounds}`);
 
-Remember: You are ${agent.toUpperCase()}, the passionate champion of ${position.split(':')[0]}. Argue with conviction.`;
+        // Both agents argue in each round
+        for (const [agent, position, thesis] of [
+          [proAgent, 'PRO', proPosition],
+          [conAgent, 'CON', conPosition]
+        ] as const) {
 
-        logger.info(`🎭 ${agent.toUpperCase()} preparing initial position: ${position.split(':')[0]}`);
+          let prompt: string;
 
-        const response = await this.cliOrchestrator.executeSingleCLI(
-          agent as 'claude' | 'codex' | 'gemini',
-          assignedPrompt,
-          assignedPrompt,
-          {
-            workingDirectory: workingDirectory || this.config.workingDirectory,
-            timeout: (this.config.defaultTimeout || 60000) * 2,
-            models: models ? { [agent]: models[agent as keyof typeof models] } : undefined
+          if (round === 1) {
+            // Opening statement
+            prompt = `${constitutionalAnchor(agent, position, thesis)}
+
+DEBATE TOPIC: ${topic}
+${context ? `CONTEXT: ${context}` : ''}
+
+This is Round 1: OPENING STATEMENT
+
+Present your opening argument for the ${position} position. Structure your response:
+
+<thesis_statement>
+State your core thesis clearly and forcefully
+</thesis_statement>
+
+<key_arguments>
+Present 3 devastating arguments supporting your position
+</key_arguments>
+
+<preemptive_rebuttal>
+Anticipate and destroy the strongest opposing argument
+</preemptive_rebuttal>
+
+<conclusion>
+Powerful closing that reinforces why your position is correct
+</conclusion>
+
+Remember: You are arguing that "${thesis}" - defend this with conviction.`;
+
+          } else {
+            // Rebuttal rounds - include compressed context from previous rounds
+            const opponentTranscript = transcript
+              .filter(t => t.agent !== agent && t.round === round - 1)
+              .map(t => t.content)
+              .join('\n\n');
+
+            prompt = `${constitutionalAnchor(agent, position, thesis)}
+
+DEBATE TOPIC: ${topic}
+
+This is Round ${round}: REBUTTAL
+
+YOUR OPPONENT'S PREVIOUS ARGUMENT:
+${opponentTranscript || 'No previous argument recorded'}
+
+${compressedContext ? `DEBATE CONTEXT SO FAR:\n${compressedContext}\n` : ''}
+
+Directly attack your opponent's arguments while reinforcing your position:
+
+<opponent_weaknesses>
+Quote their specific claims and expose the flaws
+</opponent_weaknesses>
+
+<counterarguments>
+Systematically dismantle their reasoning
+</counterarguments>
+
+<reinforcement>
+Show why your thesis "${thesis}" remains undefeated
+</reinforcement>
+
+<closing_attack>
+Deliver a devastating final blow to their position
+</closing_attack>
+
+Remember: NEVER concede. Your thesis is correct. Argue to WIN.`;
           }
-        );
 
-        if (response.success) {
-          debateContext.push(response);
-          if (response.output) {
-            fullDebateTranscript.get(agent)?.push(response.output);
+          logger.info(`  ⚔️ ${agent.toUpperCase()} (${position}) arguing...`);
+
+          try {
+            const response = await this.cliOrchestrator.executeSingleCLI(
+              agent,
+              prompt,
+              prompt,
+              {
+                workingDirectory: workingDirectory || this.config.workingDirectory,
+                timeout: (this.config.defaultTimeout || 60000) * 2,
+                models
+              }
+            );
+
+            // Always add response (success or failure) for visibility
+            debateResponses.push(response);
+
+            if (response.success && response.output) {
+              transcript.push({
+                agent,
+                position,
+                round,
+                content: response.output
+              });
+            } else {
+              logger.warn(`⚠️ ${agent.toUpperCase()} (${position}) failed: ${response.error || 'No output'}`);
+            }
+          } catch (error) {
+            logger.error(`❌ ${agent.toUpperCase()} (${position}) threw error:`, error);
+            debateResponses.push({
+              agent,
+              success: false,
+              output: '',
+              error: error instanceof Error ? error.message : String(error),
+              executionTime: 0
+            });
           }
         }
-      }
 
-      // Subsequent rounds: Turn-based responses attacking specific arguments
-      for (let round = 2; round <= debateRounds; round++) {
-        logger.debug(`Starting debate round ${round}: Adversarial engagement`);
-
-        // Execute turn-based responses with fixed positions
-        for (const [currentAgent, assignedPosition] of agentPositions.entries()) {
-          const opponents = Array.from(agentPositions.entries()).filter(([a, _]) => a !== currentAgent);
-          const opponentPositions = opponents
-            .map(([opponent, oppPosition]) => {
-              const transcript = fullDebateTranscript.get(opponent) || [];
-              const latestPosition = transcript[transcript.length - 1] || 'No position stated';
-              return `${opponent.toUpperCase()} (arguing ${oppPosition.split(':')[0]}):\n${latestPosition}`;
-            })
+        // Compress context for next round (if not final round)
+        if (round < rounds) {
+          const roundTranscript = transcript
+            .filter(t => t.round === round)
+            .map(t => `${t.agent.toUpperCase()} (${t.position}): ${t.content.substring(0, 1500)}...`)
             .join('\n\n---\n\n');
 
-          const confrontationalPrompt = `You are ${currentAgent.toUpperCase()}, PASSIONATE ADVOCATE for ${assignedPosition.split(':')[0]} (Round ${round})
-
-YOUR OPPONENTS HAVE ARGUED:
-${opponentPositions}
-
-You strongly disagree with their reasoning and conclusions.
-
-YOUR RESPONSE TASK:
-1. QUOTE their specific claims and systematically refute them
-2. Point out flawed logic, poor assumptions, and dangerous consequences
-3. Show why their approach leads to serious problems
-4. Use direct, forceful language to make your case
-5. Never concede any ground to their arguments
-6. Demonstrate why your position is the only sound choice
-
-Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assignedPosition.split(':')[0]}. Argue with conviction.`;
-
-          logger.info(`🔥 Round ${round}: ${currentAgent.toUpperCase()} responding to opponents (${assignedPosition.split(':')[0]})`);
-
-          const response = await this.cliOrchestrator.executeSingleCLI(
-            currentAgent as 'claude' | 'codex' | 'gemini',
-            confrontationalPrompt,
-            confrontationalPrompt,
-            {
-              workingDirectory: workingDirectory || this.config.workingDirectory,
-              timeout: (this.config.defaultTimeout || 60000) * 2,
-              models: models ? { [currentAgent]: models[currentAgent as keyof typeof models] } : undefined
-            }
-          );
-
-          if (response.success) {
-            debateContext.push(response);
-            if (response.output) {
-              fullDebateTranscript.get(currentAgent)?.push(response.output);
-            }
-          }
+          compressedContext = `Round ${round} Summary:\n${roundTranscript}`;
         }
       }
 
-      const synthesis = this.synthesizeDebate(debateContext, targetPath, debateRounds, agentPositions);
+      // Build synthesis
+      const synthesis = this.synthesizeDebate(
+        debateResponses,
+        topic,
+        rounds,
+        new Map([[proAgent, `PRO: ${proPosition}`], [conAgent, `CON: ${conPosition}`]])
+      );
 
       return {
-        success: debateContext.some(r => r.success),
-        responses: debateContext,
+        success: debateResponses.some(r => r.success),
+        responses: debateResponses,
         synthesis,
         analysisType: 'cli_debate',
-        targetPath
+        topic
       };
     } catch (error) {
       logger.error("CLI debate execution failed", error);
@@ -793,7 +1031,7 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
    */
   private synthesizeDebate(
     responses: import('./types/brutalist.js').CLIAgentResponse[],
-    targetPath: string,
+    topic: string,
     rounds: number,
     agentPositions?: Map<string, string>
   ): string {
@@ -804,7 +1042,7 @@ Remember: You are ${currentAgent.toUpperCase()}, passionate advocate for ${assig
     }
 
     let synthesis = `# Brutalist CLI Agent Debate Results\n\n`;
-    synthesis += `**Target:** ${targetPath}\n`;
+    synthesis += `**Topic:** ${topic}\n`;
     synthesis += `**Rounds:** ${rounds}\n`;
 
     if (agentPositions) {

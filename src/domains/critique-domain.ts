@@ -50,6 +50,25 @@ export interface CritiqueDomain {
 
   /** Optional: Domain-specific configuration */
   config?: Record<string, any>;
+
+  // NEW FIELDS for tool generation
+  /** Input type: 'filesystem' for path-based tools, 'content' for text-based tools */
+  inputType: 'filesystem' | 'content';
+
+  /** Required schema fields beyond the base (e.g., 'targetPath' or 'content') */
+  requiredFields: string[];
+
+  /** Optional domain-specific schema fields (e.g., 'depth', 'scale', 'timeline') */
+  optionalFields: string[];
+
+  /** Argument space ID from ARGUMENT_SPACES registry */
+  argumentSpaceId: string;
+
+  /** Maps to BrutalistPromptType for backwards compatibility */
+  promptType: string;
+
+  /** Keywords for intent-based filtering */
+  keywords: string[];
 }
 
 /**
@@ -72,11 +91,16 @@ export function composeDomains(
 ): CritiqueDomain {
   const allCapabilities = new Set<DomainCapability>();
   const allArtifactTypes = new Set<ArtifactType>();
+  const allKeywords = new Set<string>();
 
   for (const domain of domains) {
     domain.capabilities.forEach(cap => allCapabilities.add(cap));
     domain.artifactTypes.forEach(type => allArtifactTypes.add(type));
+    domain.keywords.forEach(kw => allKeywords.add(kw));
   }
+
+  // Composite domains inherit characteristics from first domain as default
+  const firstDomain = domains[0];
 
   return {
     id: compositeId,
@@ -88,6 +112,13 @@ export function composeDomains(
     config: {
       composite: true,
       componentDomains: domains.map(d => d.id)
-    }
+    },
+    // Tool generation fields - inherit from first domain
+    inputType: firstDomain.inputType,
+    requiredFields: firstDomain.requiredFields,
+    optionalFields: firstDomain.optionalFields,
+    argumentSpaceId: firstDomain.argumentSpaceId,
+    promptType: compositeId,
+    keywords: Array.from(allKeywords)
   };
 }

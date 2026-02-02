@@ -22,9 +22,10 @@ export class BrutalistToolGenerator {
     argSpace: ArgumentSpace,
     strategy: ExecutionStrategy
   ): ToolConfig {
-    // Bind persona to domain (renders prompt template)
-    const boundPersona = bindPersonaToDomain(persona, domain);
-    const systemPrompt = boundPersona.promptTemplate.render(domain);
+    // System prompts are now retrieved at execution time from system-prompts.ts
+    // This reduces MCP initialization context and separates schema from execution concerns
+    // Note: Still generate systemPrompt for backwards compatibility with old tool-definitions.ts,
+    // but it's optional in ToolConfig. New code should use getSystemPrompt(analysisType).
 
     // Merge argument schemas
     const schemaExtensions = this.buildSchemaExtensions(argSpace);
@@ -43,7 +44,7 @@ export class BrutalistToolGenerator {
       name: `roast_${domain.id}`,
       description: this.renderDescription(domain, persona, strategy),
       analysisType,
-      systemPrompt,
+      // systemPrompt omitted - retrieved at execution time via getSystemPrompt()
       schemaExtensions,
       cacheKeyFields,
       primaryArgField,

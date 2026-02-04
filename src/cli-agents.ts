@@ -652,7 +652,7 @@ export class CLIAgentOrchestrator {
     for (const event of events) {
       if (typeof event !== 'object' || event === null) continue;
 
-      const typedEvent = event as { type?: string; message?: any; delta?: any };
+      const typedEvent = event as { type?: string; message?: any; delta?: any; result?: string; subtype?: string };
 
       // Handle different event types from Claude's stream-json format
       if (typedEvent.type === 'message' && typedEvent.message?.content) {
@@ -677,6 +677,11 @@ export class CLIAgentOrchestrator {
               textParts.push(item.text);
             }
           }
+        }
+      } else if (typedEvent.type === 'result' && typedEvent.subtype === 'success' && typedEvent.result) {
+        // Final result event — use as fallback if no text was captured from assistant messages
+        if (textParts.length === 0) {
+          textParts.push(typedEvent.result);
         }
       }
     }

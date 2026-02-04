@@ -487,7 +487,8 @@ const CLI_BUILDER_CONFIGS: Record<CLIName, CLIBuilderConfig> = {
     defaultArgs: ['--print'],
     modelArgName: '--model',
     mpcEnvCleanup: ['CLAUDE_MCP_CONFIG', 'MCP_ENABLED', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
-    streamingArgs: (opts) => opts.progressToken ? ['--output-format', 'stream-json', '--verbose'] : []
+    streamingArgs: (opts) => opts.progressToken ? ['--output-format', 'stream-json', '--verbose'] : [],
+    promptWrapper: (sys, user) => `${sys}\n\n${user}\n\nCRITICAL OUTPUT REQUIREMENT: Your text response is the ONLY output that will be captured. Tool call contents and internal reasoning are NOT included in the final output. You MUST write your COMPLETE, DETAILED analysis directly in your text response. Do NOT produce a brief summary at the end — instead, write out every finding with full detail, specific file paths, line numbers, code snippets, and explanations. Aim for a thorough, multi-section report. Use your tools to read files and explore the codebase, but always write your full findings as text output.`
   },
   codex: {
     command: 'codex',

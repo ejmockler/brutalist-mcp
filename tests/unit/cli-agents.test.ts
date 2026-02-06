@@ -481,6 +481,127 @@ describe('CLIAgentOrchestrator', () => {
     });
   });
 
+  describe('NDJSON Parsing (parseNDJSON)', () => {
+    it('should parse single JSON object', () => {
+      const input = '{"type":"result","subtype":"success","result":"Hello"}';
+      const events = (orchestrator as any).parseNDJSON(input);
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ type: 'result', subtype: 'success', result: 'Hello' });
+    });
+
+    it('should parse multiple JSON objects (NDJSON format)', () => {
+      const input = `{"type":"system","subtype":"init"}
+{"type":"assistant","message":"test"}
+{"type":"result","subtype":"success","result":"Done"}`;
+      const events = (orchestrator as any).parseNDJSON(input);
+
+      expect(events).toHaveLength(3);
+      expect(events[0].type).toBe('system');
+      expect(events[1].type).toBe('assistant');
+      expect(events[2].type).toBe('result');
+    });
+
+    it('should handle empty input', () => {
+      expect((orchestrator as any).parseNDJSON('')).toEqual([]);
+      expect((orchestrator as any).parseNDJSON('   ')).toEqual([]);
+      expect((orchestrator as any).parseNDJSON(null)).toEqual([]);
+      expect((orchestrator as any).parseNDJSON(undefined)).toEqual([]);
+    });
+
+    it('should handle JSON with embedded newlines in strings', () => {
+      const input = '{"text":"line1\\nline2\\nline3"}';
+      const events = (orchestrator as any).parseNDJSON(input);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].text).toBe('line1\nline2\nline3');
+    });
+
+    it('should handle JSON with escaped quotes', () => {
+      const input = '{"text":"He said \\"hello\\""}';
+      const events = (orchestrator as any).parseNDJSON(input);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].text).toBe('He said "hello"');
+    });
+
+    it('should handle malformed JSON gracefully', () => {
+      const input = '{"valid":"json"}\n{broken json\n{"also":"valid"}';
+      const events = (orchestrator as any).parseNDJSON(input);
+
+      // Should extract valid objects and skip malformed
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0]).toEqual({ valid: 'json' });
+    });
+  });
+
+  describe('Claude Stream JSON Decoding (decodeClaudeStreamJson)', () => {
+    it('should extract result from success event', () => {
+      const input = `{"type":"system","subtype":"init","tools":[]}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Analyzing..."}]}}
+{"type":"result","subtype":"success","result":"The final analysis output"}`;
+
+      const result = (orchestrator as any).decodeClaudeStreamJson(input);
+      expect(result).toBe('The final analysis output');
+    });
+
+    it('should return empty string for empty input', () => {
+      expect((orchestrator as any).decodeClaudeStreamJson('')).toBe('');
+      expect((orchestrator as any).decodeClaudeStreamJson('  ')).toBe('');
+      expect((orchestrator as any).decodeClaudeStreamJson(null)).toBe('');
+    });
+
+    it('should handle error result events', () => {
+      const input = '{"type":"result","subtype":"error","error":"API rate limited","is_error":true}';
+
+      const result = (orchestrator as any).decodeClaudeStreamJson(input);
+      expect(result).toContain('[Claude Error]');
+      expect(result).toContain('API rate limited');
+    });
+
+    it('should handle result with is_error flag', () => {
+      const input = '{"type":"result","subtype":"error","result":"Something went wrong","is_error":true}';
+
+      const result = (orchestrator as any).decodeClaudeStreamJson(input);
+      expect(result).toContain('[Claude Error]');
+    });
+
+    it('should return empty string when no result event found', () => {
+      const input = `{"type":"system","subtype":"init"}
+{"type":"assistant","message":"test"}`;
+
+      const result = (orchestrator as any).decodeClaudeStreamJson(input);
+      expect(result).toBe('');
+    });
+
+    it('should handle result event without result field', () => {
+      const input = '{"type":"result","subtype":"success"}';
+
+      const result = (orchestrator as any).decodeClaudeStreamJson(input);
+      expect(result).toBe('');
+    });
+
+    it('should handle unexpected subtypes gracefully', () => {
+      const input = '{"type":"result","subtype":"partial","result":"Partial output"}';
+
+      const result = (orchestrator as any).decodeClaudeStreamJson(input);
+      // Should still extract result for unknown subtypes
+      expect(result).toBe('Partial output');
+    });
+
+    it('should handle real Claude CLI output format', () => {
+      // Simulated real output from Claude CLI with stream-json
+      const input = `{"type":"system","subtype":"init","cwd":"/test","session_id":"abc123","tools":["Read","Write"],"model":"claude-sonnet"}
+{"type":"assistant","message":{"model":"claude-sonnet","content":[{"type":"text","text":"I'll analyze this."}]}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":5000,"num_turns":1,"result":"## Analysis\\n\\nThis code has issues:\\n1. No error handling\\n2. Missing types","session_id":"abc123"}`;
+
+      const result = (orchestrator as any).decodeClaudeStreamJson(input);
+      expect(result).toContain('## Analysis');
+      expect(result).toContain('No error handling');
+      expect(result).toContain('Missing types');
+    });
+  });
+
   describe('Real CLI Execution (Integration)', () => {
     const shouldRunIntegrationTests = process.env.RUN_INTEGRATION_TESTS === 'true';
 

@@ -544,9 +544,16 @@ private emitThrottledStreamingEvent(
   agent: string,
   type: 'agent_progress' | 'agent_error',
   content: string,
-  onStreamingEvent?: (event: StreamingEvent) => void
+  onStreamingEvent?: (event: StreamingEvent) => void,
+  options?: CLIAgentOptions
 ) {
-  // Buffer events per agent+type
+  // For Claude with stream-json, skip intermediate events entirely
+  // The useful output comes from the final 'result' event decoded post-execution
+  if (agent === 'claude' && options?.progressToken) {
+    return;
+  }
+
+  // Buffer events per agent+type (for Codex/Gemini)
   const key = `${agent}-${type}`;
   const buffer = this.streamingBuffers.get(key);
 
@@ -569,19 +576,19 @@ private emitThrottledStreamingEvent(
 
 Different CLIs require different output handling:
 
-**Claude** (with `--output-format stream-json`):
+**Claude** (with `--output-format stream-json --verbose`):
 ```typescript
-// Parse NDJSON stream
+// Extract from final 'result' event only - ignores intermediate events
 private decodeClaudeStreamJson(ndjsonOutput: string): string {
   const events = this.parseNDJSON(ndjsonOutput);
 
   for (const event of events) {
-    if (event.type === 'content_block_delta' && event.delta?.text) {
-      textParts.push(event.delta.text);  // Extract incremental text
+    if (event.type === 'result' && event.subtype === 'success' && event.result) {
+      return event.result;  // The final clean text output
     }
   }
 
-  return textParts.join('');
+  return '';
 }
 ```
 

@@ -487,7 +487,7 @@ const CLI_BUILDER_CONFIGS: Record<CLIName, CLIBuilderConfig> = {
     defaultArgs: ['--print'],
     modelArgName: '--model',
     mpcEnvCleanup: ['CLAUDE_MCP_CONFIG', 'MCP_ENABLED', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
-    streamingArgs: (opts) => opts.progressToken ? ['--output-format', 'stream-json', '--verbose'] : [],
+    streamingArgs: () => ['--output-format', 'stream-json', '--verbose'],
   },
   codex: {
     command: 'codex',
@@ -614,8 +614,11 @@ export class CLIAgentOrchestrator {
     return results;
   }
 
-  // Decode Claude's stream-json NDJSON output into plain text
-  // Only extracts from the final 'result' event - ignores intermediate events
+  // Decode Claude's stream-json NDJSON output into plain text.
+  // Extracts text content blocks from all 'assistant' events across all turns.
+  // Skips system events, user events (tool results with raw file contents), and
+  // tool_use content blocks within assistant events.
+  // Falls back to 'result' event if no assistant text was captured.
   private decodeClaudeStreamJson(ndjsonOutput: string): string {
     if (!ndjsonOutput || !ndjsonOutput.trim()) {
       logger.warn('decodeClaudeStreamJson: empty input');
@@ -629,48 +632,51 @@ export class CLIAgentOrchestrator {
       return '';
     }
 
-    // Find the result event (should be the last event)
+    const textParts: string[] = [];
+    let resultText = '';
+    let resultError = '';
+
     for (const event of events) {
       if (typeof event !== 'object' || event === null) continue;
 
-      const typedEvent = event as {
-        type?: string;
-        subtype?: string;
-        result?: string;
-        error?: string;
-        is_error?: boolean;
-      };
+      const typedEvent = event as Record<string, any>;
 
-      if (typedEvent.type === 'result') {
-        // Handle success case
-        if (typedEvent.subtype === 'success' && typedEvent.result) {
-          return typedEvent.result;
-        }
-
-        // Handle error case - extract error message if available
-        if (typedEvent.subtype === 'error' || typedEvent.is_error) {
-          const errorMsg = typedEvent.error || typedEvent.result || 'Unknown error';
-          logger.error('decodeClaudeStreamJson: Claude returned error result', { error: errorMsg });
-          return `[Claude Error] ${errorMsg}`;
-        }
-
-        // Handle unexpected subtype
-        if (typedEvent.subtype && typedEvent.subtype !== 'success') {
-          logger.warn(`decodeClaudeStreamJson: unexpected result subtype: ${typedEvent.subtype}`);
-          // Still try to extract result if present
-          if (typedEvent.result) {
-            return typedEvent.result;
+      if (typedEvent.type === 'assistant' && typedEvent.message?.content) {
+        // Extract only text blocks from assistant messages (skip tool_use blocks)
+        const content = typedEvent.message.content;
+        if (Array.isArray(content)) {
+          for (const item of content) {
+            if (item.type === 'text' && item.text) {
+              textParts.push(item.text);
+            }
           }
         }
-
-        // Result event found but no result field
-        logger.warn('decodeClaudeStreamJson: result event found but no result field');
-        return '';
+      } else if (typedEvent.type === 'result') {
+        if (typedEvent.subtype === 'error' || typedEvent.is_error) {
+          resultError = typedEvent.error || typedEvent.result || 'Unknown error';
+        } else if (typedEvent.result) {
+          resultText = typedEvent.result;
+        }
       }
+      // Skip: system, user (tool_result with raw file contents), hooks
     }
 
-    // No result event found at all
-    logger.warn('decodeClaudeStreamJson: no result event found in stream-json output', {
+    // Handle error
+    if (resultError) {
+      logger.error('decodeClaudeStreamJson: Claude returned error result', { error: resultError });
+      return `[Claude Error] ${resultError}`;
+    }
+
+    // Use accumulated assistant text if available, fall back to result event
+    if (textParts.length > 0) {
+      return textParts.join('\n\n');
+    }
+
+    if (resultText) {
+      return resultText;
+    }
+
+    logger.warn('decodeClaudeStreamJson: no text content found in stream-json output', {
       eventCount: events.length,
       eventTypes: events.map(e => (e as any).type).filter(Boolean)
     });
@@ -725,9 +731,10 @@ export class CLIAgentOrchestrator {
   ) {
     if (!onStreamingEvent) return;
 
-    // For Claude with stream-json (progressToken), skip intermediate events
-    // The useful output comes from the final 'result' event decoded post-execution
-    if (agent === 'claude' && options?.progressToken) {
+    // Claude uses stream-json: intermediate stdout chunks are raw NDJSON events
+    // (including huge tool_result payloads). Skip emitting them as streaming events;
+    // the decoder extracts only assistant text post-completion.
+    if (agent === 'claude') {
       return;
     }
 

@@ -536,13 +536,14 @@ describe('CLIAgentOrchestrator', () => {
   });
 
   describe('Claude Stream JSON Decoding (decodeClaudeStreamJson)', () => {
-    it('should extract result from success event', () => {
+    it('should extract text from assistant events, not just result', () => {
       const input = `{"type":"system","subtype":"init","tools":[]}
 {"type":"assistant","message":{"content":[{"type":"text","text":"Analyzing..."}]}}
 {"type":"result","subtype":"success","result":"The final analysis output"}`;
 
       const result = (orchestrator as any).decodeClaudeStreamJson(input);
-      expect(result).toBe('The final analysis output');
+      // Should extract from assistant event, not result event
+      expect(result).toBe('Analyzing...');
     });
 
     it('should return empty string for empty input', () => {
@@ -566,15 +567,21 @@ describe('CLIAgentOrchestrator', () => {
       expect(result).toContain('[Claude Error]');
     });
 
-    it('should return empty string when no result event found', () => {
-      const input = `{"type":"system","subtype":"init"}
-{"type":"assistant","message":"test"}`;
+    it('should return empty string when no text content found', () => {
+      const input = `{"type":"system","subtype":"init"}`;
 
       const result = (orchestrator as any).decodeClaudeStreamJson(input);
       expect(result).toBe('');
     });
 
-    it('should handle result event without result field', () => {
+    it('should fall back to result event when no assistant text', () => {
+      const input = '{"type":"result","subtype":"success","result":"Fallback output"}';
+
+      const result = (orchestrator as any).decodeClaudeStreamJson(input);
+      expect(result).toBe('Fallback output');
+    });
+
+    it('should return empty when result event has no result field', () => {
       const input = '{"type":"result","subtype":"success"}';
 
       const result = (orchestrator as any).decodeClaudeStreamJson(input);
@@ -585,20 +592,59 @@ describe('CLIAgentOrchestrator', () => {
       const input = '{"type":"result","subtype":"partial","result":"Partial output"}';
 
       const result = (orchestrator as any).decodeClaudeStreamJson(input);
-      // Should still extract result for unknown subtypes
+      // Falls back to result event text
       expect(result).toBe('Partial output');
     });
 
-    it('should handle real Claude CLI output format', () => {
-      // Simulated real output from Claude CLI with stream-json
-      const input = `{"type":"system","subtype":"init","cwd":"/test","session_id":"abc123","tools":["Read","Write"],"model":"claude-sonnet"}
-{"type":"assistant","message":{"model":"claude-sonnet","content":[{"type":"text","text":"I'll analyze this."}]}}
-{"type":"result","subtype":"success","is_error":false,"duration_ms":5000,"num_turns":1,"result":"## Analysis\\n\\nThis code has issues:\\n1. No error handling\\n2. Missing types","session_id":"abc123"}`;
+    it('should concatenate text from multiple assistant turns', () => {
+      // Multi-turn: tool_use turn (no text), then analysis turn, then summary turn
+      const input = `{"type":"system","subtype":"init","tools":["Read"]}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/app.ts"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"123","content":"const x = 1;"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"## Critical: No error handling\\nFile app.ts has no try/catch blocks."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/db.ts"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"456","content":"db.query(userInput)"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"## Critical: SQL Injection\\nFile db.ts passes unsanitized input to query."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Audit complete. Found 2 critical issues."}]}}
+{"type":"result","subtype":"success","result":"Audit complete. Found 2 critical issues."}`;
 
       const result = (orchestrator as any).decodeClaudeStreamJson(input);
-      expect(result).toContain('## Analysis');
+      // Should have ALL assistant text, not just the result event
       expect(result).toContain('No error handling');
-      expect(result).toContain('Missing types');
+      expect(result).toContain('SQL Injection');
+      expect(result).toContain('Audit complete');
+      // Should NOT contain tool results (raw file contents)
+      expect(result).not.toContain('const x = 1');
+      expect(result).not.toContain('db.query');
+    });
+
+    it('should skip tool_use blocks within assistant events', () => {
+      // Assistant turn with mixed text and tool_use content
+      const input = `{"type":"assistant","message":{"content":[{"type":"text","text":"Found issues."},{"type":"tool_use","name":"Read","input":{}}]}}
+{"type":"result","subtype":"success","result":"Found issues."}`;
+
+      const result = (orchestrator as any).decodeClaudeStreamJson(input);
+      expect(result).toBe('Found issues.');
+    });
+
+    it('should skip user events containing tool results', () => {
+      // user events carry raw file contents - must not be included
+      const input = `{"type":"user","message":{"content":[{"type":"tool_result","content":"huge file contents here..."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Analysis complete."}]}}
+{"type":"result","subtype":"success","result":"Analysis complete."}`;
+
+      const result = (orchestrator as any).decodeClaudeStreamJson(input);
+      expect(result).toBe('Analysis complete.');
+      expect(result).not.toContain('huge file contents');
+    });
+
+    it('should handle real Claude CLI output format', () => {
+      const input = `{"type":"system","subtype":"init","cwd":"/test","session_id":"abc123","tools":["Read","Write"],"model":"claude-sonnet"}
+{"type":"assistant","message":{"model":"claude-sonnet","content":[{"type":"text","text":"I'll analyze this."}]}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":5000,"num_turns":1,"result":"I'll analyze this.","session_id":"abc123"}`;
+
+      const result = (orchestrator as any).decodeClaudeStreamJson(input);
+      expect(result).toBe("I'll analyze this.");
     });
   });
 

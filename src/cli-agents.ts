@@ -4,6 +4,7 @@ import { promisify } from 'util';
 import path from 'path';
 import { logger } from './logger.js';
 import { CLIAgentResponse } from './types/brutalist.js';
+import { ModelResolver } from './model-resolver.js';
 
 interface ChildProcessError extends Error {
   code?: number;
@@ -41,42 +42,8 @@ const MEMORY_CHECK_INTERVAL = 5000; // Check memory usage every 5 seconds
 // Process tracking for resource management
 const activeProcesses = new Map<number, { startTime: number; memoryChecks: number }>();
 
-// Available models for each CLI - prioritizing frontier models with high capacity
-export const AVAILABLE_MODELS = {
-  claude: {
-    default: undefined, // Uses user's configured model (respects preferences)
-    aliases: ['opus', 'sonnet', 'haiku', 'opus-4.5', 'sonnet-4.5'],
-    full: [
-      'claude-opus-4-5-20251101', 
-      'claude-sonnet-4-5-20250929', 
-      'claude-haiku-4-5-20251001',
-      'claude-opus-4-1-20250805'
-    ],
-    recommended: 'claude-opus-4-5-20251101' // Highest capacity Claude model
-  },
-  codex: {
-    default: undefined, // Uses Codex CLI's default model (stays current automatically)
-    models: [
-      'gpt-5.4',
-      'gpt-5.3-codex',
-      'gpt-5.2-codex',
-      'gpt-5.1',
-      'gpt-5',
-      'o4-mini'
-    ],
-    recommended: 'gpt-5.4' // Current frontier model
-  },
-  gemini: {
-    default: undefined, // Uses Gemini CLI's default model (stays current automatically)
-    models: [
-      'gemini-3-pro',
-      'gemini-2.5-pro', 
-      'gemini-2.5-flash', 
-      'gemini-2.5-flash-lite'
-    ],
-    recommended: 'gemini-3-pro' // Current #1 on LMArena
-  }
-} as const;
+// Claude CLI accepts aliases natively — no need to maintain full model IDs.
+export const CLAUDE_ALIASES = ['opus', 'sonnet', 'haiku'] as const;
 
 // Security utilities for CLI execution
 const MAX_PATH_DEPTH = 10; // Maximum directory depth for paths
@@ -515,12 +482,16 @@ export class CLIAgentOrchestrator {
   private runningCLIs = 0; // Track concurrent CLI executions
   private readonly MAX_CONCURRENT_CLIS = MAX_CONCURRENT_CLIS; // Configurable concurrency limit
 
+  // Runtime model discovery
+  public readonly modelResolver: ModelResolver;
+
   // Streaming throttle properties
   private streamingBuffers = new Map<string, { chunks: string[], lastFlush: number }>();
   private readonly STREAMING_FLUSH_INTERVAL = 200; // 200ms
   private readonly MAX_CHUNK_SIZE = 2048; // 2KB per event
 
-  constructor() {
+  constructor(modelResolver?: ModelResolver) {
+    this.modelResolver = modelResolver || new ModelResolver();
     // Log configuration at startup
     logger.info(`🔧 Brutalist MCP Configuration:`);
     logger.info(`  - Default timeout: ${DEFAULT_TIMEOUT}ms`);
@@ -528,9 +499,12 @@ export class CLIAgentOrchestrator {
     logger.info(`  - Max buffer size: ${MAX_BUFFER_SIZE} bytes`);
     logger.info(`  - Max concurrent CLIs: ${MAX_CONCURRENT_CLIS}`);
 
-    // Detect CLI context at startup and cache it
-    this.detectCLIContext().catch(error => {
-      logger.error("Failed to detect CLI context at startup:", error);
+    // Detect CLI context and discover models at startup
+    Promise.all([
+      this.detectCLIContext(),
+      this.modelResolver.initialize(),
+    ]).catch(error => {
+      logger.error("Failed startup detection:", error);
     });
   }
 
@@ -792,9 +766,9 @@ export class CLIAgentOrchestrator {
 
     // Build args
     const args = [...config.defaultArgs];
-    const model = options.models?.[cli] || AVAILABLE_MODELS[cli].default;
-    if (model) {
-      args.push(config.modelArgName, model);
+    const resolvedModel = this.modelResolver.resolveModel(cli, options.models?.[cli]);
+    if (resolvedModel) {
+      args.push(config.modelArgName, resolvedModel);
     }
     if (config.jsonFlag && process.env.CODEX_USE_JSON !== 'false') {
       args.push(config.jsonFlag);

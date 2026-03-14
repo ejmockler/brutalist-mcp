@@ -360,7 +360,7 @@ export class BrutalistServer {
           claude: z.string().optional(),
           codex: z.string().optional(),
           gemini: z.string().optional()
-        }).optional().describe("CLI-specific models"),
+        }).optional().describe("Per-CLI model override. Pass any model the CLI supports. Deprecated codex names auto-resolve. Omit to use each CLI's configured default."),
         // Pagination
         offset: z.number().min(0).optional().describe("Pagination offset"),
         limit: z.number().min(1000).max(100000).optional().describe("Max chars/chunk"),
@@ -515,8 +515,13 @@ export class BrutalistServer {
 
           // Add CLI context information
           const cliContext = await this.cliOrchestrator.detectCLIContext();
+          await this.cliOrchestrator.modelResolver.refreshIfStale();
           roster += "## Current CLI Context\n";
           roster += `**Available CLIs:** ${cliContext.availableCLIs.join(', ') || 'None detected'}\n\n`;
+
+          // Add auto-discovered model info
+          roster += this.cliOrchestrator.modelResolver.getRosterModelInfo();
+          roster += '\n';
 
           roster += "## Domain Discovery\n";
           roster += "Use `brutalist_discover` to find the best domain for your analysis:\n";

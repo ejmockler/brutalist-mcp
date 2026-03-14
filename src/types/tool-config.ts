@@ -40,12 +40,13 @@ export const BASE_ROAST_SCHEMA = {
   clis: z.array(z.enum(["claude", "codex", "gemini"])).min(1).max(3).optional().describe("CLI agents to use (default: all available). Example: ['claude', 'gemini']"),
   verbose: z.boolean().optional().describe("Include detailed execution information in output (default: false)"),
 
-  // Model selection - defaults prioritize frontier models with high capacity
+  // Model selection — pass any model the CLI supports; omit to use CLI's configured default.
+  // Deprecated codex model names are auto-resolved through the migration chain.
   models: z.object({
-    claude: z.string().optional().describe("Claude model: opus (recommended), sonnet, haiku, or full name like claude-opus-4-1-20250805. Default: user's configured model"),
-    codex: z.string().optional().describe("Codex model: gpt-5.4 (recommended), gpt-5.3-codex, gpt-5.2-codex, gpt-5.1, gpt-5, o4-mini. Default: codex CLI default"),
-    gemini: z.string().optional().describe("Gemini model: gemini-3-pro-preview (recommended), gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite. Default: gemini-3-pro-preview")
-  }).optional().describe("Specific models to use for each CLI agent - defaults use frontier models with highest capacity"),
+    claude: z.string().optional().describe("Any Claude model (e.g. opus, sonnet, haiku, or full ID). Omit for CLI default."),
+    codex: z.string().optional().describe("Any Codex model. Deprecated names auto-resolve via migration chain. Omit for CLI default."),
+    gemini: z.string().optional().describe("Any Gemini model. Omit for CLI default.")
+  }).optional().describe("Per-CLI model override. Omit to use each CLI's configured default."),
 
   // Pagination and conversation continuation
   offset: z.number().min(0).optional().describe("Pagination offset (default: 0)"),

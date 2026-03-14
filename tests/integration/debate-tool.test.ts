@@ -610,7 +610,7 @@ describe('Debate Tool Tests', () => {
     it('should pass model configurations to CLI execution', async () => {
       const models = {
         claude: 'opus',
-        codex: 'gpt-5.1-codex-max'
+        codex: 'gpt-5.4'
       };
 
       mockOrchestrator.executeSingleCLI.mockImplementation(async (agent: any, prompt: any, systemPrompt?: any, options?: any) => {
@@ -645,7 +645,7 @@ describe('Debate Tool Tests', () => {
         expect.any(String),
         expect.any(String),
         expect.objectContaining({
-          models: expect.objectContaining({ codex: 'gpt-5.1-codex-max' })
+          models: expect.objectContaining({ codex: 'gpt-5.4' })
         })
       );
     });

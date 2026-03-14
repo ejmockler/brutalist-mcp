@@ -195,7 +195,7 @@ describe('CLI Integration Tests', () => {
           'Brief analysis',
           {
             timeout: 20000,
-            models: { codex: 'gpt-5.1-codex-max' },
+            models: { codex: 'gpt-5.4' },
             workingDirectory: await testIsolation.createWorkspace()
           }
         );

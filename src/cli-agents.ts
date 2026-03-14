@@ -57,15 +57,14 @@ export const AVAILABLE_MODELS = {
   codex: {
     default: undefined, // Uses Codex CLI's default model (stays current automatically)
     models: [
-      'gpt-5.1-codex-max', 
-      'gpt-5.1-codex', 
-      'gpt-5.1', 
-      'gpt-5-thinking-pro',
-      'gpt-5', 
-      'gpt-5-mini',
+      'gpt-5.4',
+      'gpt-5.3-codex',
+      'gpt-5.2-codex',
+      'gpt-5.1',
+      'gpt-5',
       'o4-mini'
     ],
-    recommended: 'gpt-5.1-codex-max' // Current frontier model with compaction
+    recommended: 'gpt-5.4' // Current frontier model
   },
   gemini: {
     default: undefined, // Uses Gemini CLI's default model (stays current automatically)

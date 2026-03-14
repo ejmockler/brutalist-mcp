@@ -43,7 +43,7 @@ export const BASE_ROAST_SCHEMA = {
   // Model selection - defaults prioritize frontier models with high capacity
   models: z.object({
     claude: z.string().optional().describe("Claude model: opus (recommended), sonnet, haiku, or full name like claude-opus-4-1-20250805. Default: user's configured model"),
-    codex: z.string().optional().describe("Codex model: gpt-5.1-codex-max (recommended), gpt-5.1-codex, gpt-5.1-codex-mini, gpt-5-codex, gpt-5, o4-mini. Default: gpt-5.1-codex-max"),
+    codex: z.string().optional().describe("Codex model: gpt-5.4 (recommended), gpt-5.3-codex, gpt-5.2-codex, gpt-5.1, gpt-5, o4-mini. Default: codex CLI default"),
     gemini: z.string().optional().describe("Gemini model: gemini-3-pro-preview (recommended), gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite. Default: gemini-3-pro-preview")
   }).optional().describe("Specific models to use for each CLI agent - defaults use frontier models with highest capacity"),
 

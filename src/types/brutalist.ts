@@ -68,6 +68,40 @@ export interface ResponseChunk {
   };
 }
 
+// Debate behavioral metadata — tracks position-dependent alignment asymmetries
+export interface DebateTurnMetadata {
+  agent: 'claude' | 'codex' | 'gemini';
+  position: 'PRO' | 'CON';
+  round: number;
+  engaged: boolean;
+  refused: boolean;
+  escalated: boolean;
+  engagedAfterEscalation: boolean;
+  responseLength: number;
+  executionTime: number;
+  tier: 'standard' | 'escalated' | 'decomposed';
+  transcriptPatternsStripped?: string[];
+}
+
+export interface DebateBehaviorSummary {
+  topic: string;
+  proPosition: string;
+  conPosition: string;
+  turns: DebateTurnMetadata[];
+  asymmetry: {
+    detected: boolean;
+    description: string;
+    proRefusalRate: number;
+    conRefusalRate: number;
+    agentAsymmetries: {
+      agent: string;
+      proEngaged: boolean;
+      conEngaged: boolean;
+      asymmetric: boolean;
+    }[];
+  };
+}
+
 // Enhanced BrutalistResponse with pagination support
 export interface BrutalistResponse {
   success: boolean;
@@ -77,6 +111,7 @@ export interface BrutalistResponse {
   analysisType?: string;
   targetPath?: string;
   topic?: string;  // For debate tool (uses topic instead of targetPath)
+  debateBehavior?: DebateBehaviorSummary;
   executionSummary?: {
     totalCLIs: number;
     successfulCLIs: number;

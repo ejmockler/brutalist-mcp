@@ -418,6 +418,7 @@ export interface CLIAgentOptions {
   onProgress?: (progress: number, total: number, message: string) => void;
   sessionId?: string; // Session context for security
   requestId?: string; // Unique request identifier
+  debateMode?: boolean; // Suppress filesystem exploration for pure argumentation
 }
 
 export interface StreamingEvent {
@@ -777,8 +778,9 @@ export class CLIAgentOrchestrator {
       args.push(...config.streamingArgs(options));
     }
 
-    // Build prompt
-    const combinedPrompt = config.promptWrapper
+    // Build prompt — skip CLI-specific wrapper in debate mode (prevents Codex
+    // from exploring the brutalist repo and reading its own control prompts)
+    const combinedPrompt = (config.promptWrapper && !options.debateMode)
       ? config.promptWrapper(systemPrompt, userPrompt)
       : `${systemPrompt}\n\n${userPrompt}`;
 

@@ -58,7 +58,11 @@ export class ModelResolver {
   /** Re-read configs if cache has expired. */
   async refreshIfStale(): Promise<void> {
     if (this.initialized && Date.now() - this.initTime < this.CACHE_TTL) return;
-    await this.initialize();
+    try {
+      await this.initialize();
+    } catch (err) {
+      logger.warn('ModelResolver: refresh failed, using stale data', err);
+    }
   }
 
   /**
@@ -112,16 +116,32 @@ export class ModelResolver {
 
   private async loadCodexConfig(): Promise<void> {
     const configPath = path.join(os.homedir(), '.codex', 'config.toml');
-    const raw = await fs.readFile(configPath, 'utf-8');
-    this.cliModels.codex = this.parseCodexToml(raw);
+    try {
+      const raw = await fs.readFile(configPath, 'utf-8');
+      this.cliModels.codex = this.parseCodexToml(raw);
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        logger.debug(`ModelResolver: codex config not found at ${configPath}`);
+      } else {
+        logger.warn(`ModelResolver: failed to read codex config: ${err?.message}`);
+      }
+    }
   }
 
   private async loadClaudeConfig(): Promise<void> {
     const configPath = path.join(os.homedir(), '.claude', 'settings.json');
-    const raw = await fs.readFile(configPath, 'utf-8');
-    const settings = JSON.parse(raw);
-    if (typeof settings.model === 'string') {
-      this.cliModels.claude.defaultModel = settings.model;
+    try {
+      const raw = await fs.readFile(configPath, 'utf-8');
+      const settings = JSON.parse(raw);
+      if (typeof settings.model === 'string') {
+        this.cliModels.claude.defaultModel = settings.model;
+      }
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        logger.debug(`ModelResolver: claude config not found at ${configPath}`);
+      } else {
+        logger.warn(`ModelResolver: failed to read claude config: ${err?.message}`);
+      }
     }
   }
 

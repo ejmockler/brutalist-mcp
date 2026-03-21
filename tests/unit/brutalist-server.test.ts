@@ -131,7 +131,6 @@ describe('BrutalistServer', () => {
     // Mock CLI Orchestrator with proper types
     mockCLIOrchestrator = {
       detectCLIContext: jest.fn(() => Promise.resolve({
-        currentCLI: 'claude' as const,
         availableCLIs: ['claude', 'codex', 'gemini'] as const
       })),
       executeBrutalistAnalysis: jest.fn(() => Promise.resolve(mockAllSuccessfulResponses)),
@@ -144,7 +143,7 @@ describe('BrutalistServer', () => {
       // Add missing properties to satisfy the interface
       defaultTimeout: 300000,
       defaultWorkingDir: '/tmp/test',
-      cliContext: { currentCLI: 'claude', availableCLIs: ['claude', 'codex', 'gemini'] },
+      cliContext: { availableCLIs: ['claude', 'codex', 'gemini'] },
       cliContextCached: true,
       constructSystemPrompt: jest.fn(),
       extractCLIResponseFromOutput: jest.fn(),

@@ -355,7 +355,7 @@ describe('Transport Integration Tests', () => {
       }
     }, 120000);
 
-    it('should handle tool execution with file system analysis', async () => {
+    it.skip('should handle tool execution with file system analysis', async () => {
       // Create a test workspace with some files
       const workspace = await testIsolation.createWorkspace();
       

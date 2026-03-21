@@ -7,6 +7,25 @@ import { BrutalistServer } from '../../src/brutalist-server.js';
 import { CLIAgentOrchestrator } from '../../src/cli-agents.js';
 import { CLIAgentResponse } from '../../src/types/brutalist.js';
 
+// Mock MCP SDK to prevent "Not connected" errors during test teardown
+jest.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
+  const mockTool = jest.fn().mockReturnValue({
+    title: undefined, description: undefined, inputSchema: undefined,
+    outputSchema: undefined, annotations: undefined, _meta: undefined,
+    callback: jest.fn(), enabled: true,
+    enable: jest.fn(), disable: jest.fn(), update: jest.fn(), remove: jest.fn()
+  });
+  return {
+    McpServer: jest.fn().mockImplementation(() => ({
+      tool: mockTool,
+      connect: jest.fn(),
+      close: jest.fn(),
+      server: { notification: jest.fn() },
+      sendLoggingMessage: jest.fn()
+    }))
+  };
+});
+
 // Mock CLI responses for testing
 const mockCLIResponses = {
   claude: {
@@ -134,8 +153,11 @@ describe('Debate Tool Tests', () => {
     (brutalistServer as any).cliOrchestrator = mockOrchestrator;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     jest.clearAllMocks();
+    if (brutalistServer) {
+      await brutalistServer.cleanup();
+    }
   });
 
   describe('Debate Initialization', () => {
@@ -181,15 +203,15 @@ describe('Debate Tool Tests', () => {
       expect(capturedPrompts).toHaveLength(2);
 
       // Check that prompts contain constitutional anchoring with explicit positions
-      const proPrompt = capturedPrompts.find(p => p.includes('PRO position'));
-      const conPrompt = capturedPrompts.find(p => p.includes('CON position'));
+      const proPrompt = capturedPrompts.find(p => p.includes('PRO analyst'));
+      const conPrompt = capturedPrompts.find(p => p.includes('CON analyst'));
 
       expect(proPrompt).toBeDefined();
       expect(conPrompt).toBeDefined();
 
-      // Verify constitutional rules are present
-      expect(proPrompt).toContain('CONSTITUTIONAL RULES');
-      expect(conPrompt).toContain('CONSTITUTIONAL RULES');
+      // Verify analytical constraints are present
+      expect(proPrompt).toContain('ANALYTICAL CONSTRAINTS');
+      expect(conPrompt).toContain('ANALYTICAL CONSTRAINTS');
     });
 
     it('should handle debate topic and context properly', async () => {
@@ -335,8 +357,8 @@ describe('Debate Tool Tests', () => {
       expect(round2Prompts.length).toBeGreaterThan(0);
 
       round2Prompts.forEach(prompt => {
-        // Should contain previous round context
-        expect(prompt).toContain('OPPONENT');
+        // Should contain previous round context (uses "counterpart" terminology)
+        expect(prompt).toContain('counterpart');
       });
     });
 
@@ -345,9 +367,9 @@ describe('Debate Tool Tests', () => {
 
       mockOrchestrator.executeSingleCLI.mockImplementation(async (agent, prompt) => {
         // Track positions from initial assignment
-        if (prompt.includes('PRO position')) {
+        if (prompt.includes('PRO analyst')) {
           agentPositions.set(agent, 'PRO');
-        } else if (prompt.includes('CON position')) {
+        } else if (prompt.includes('CON analyst')) {
           agentPositions.set(agent, 'CON');
         }
 
@@ -948,11 +970,11 @@ describe('Debate Tool Tests', () => {
         rounds: 1
       });
 
-      // All prompts should contain constitutional rules
+      // All prompts should contain analytical constraints
       capturedPrompts.forEach(prompt => {
-        expect(prompt).toContain('CONSTITUTIONAL RULES');
-        expect(prompt).toContain('MUST maintain your position');
-        expect(prompt).toContain('MUST NOT agree to compromise');
+        expect(prompt).toContain('ANALYTICAL CONSTRAINTS');
+        expect(prompt).toContain('Maintain your assigned position');
+        expect(prompt).toContain('Do not propose compromise');
       });
     });
 
@@ -981,12 +1003,12 @@ describe('Debate Tool Tests', () => {
       // One prompt should contain the PRO thesis
       const proPrompt = capturedPrompts.find(p => p.includes(proThesis));
       expect(proPrompt).toBeDefined();
-      expect(proPrompt).toContain('YOUR THESIS');
+      expect(proPrompt).toContain('YOUR POSITION');
 
       // One prompt should contain the CON thesis
       const conPrompt = capturedPrompts.find(p => p.includes(conThesis));
       expect(conPrompt).toBeDefined();
-      expect(conPrompt).toContain('YOUR THESIS');
+      expect(conPrompt).toContain('YOUR POSITION');
     });
   });
 });

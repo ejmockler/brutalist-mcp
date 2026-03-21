@@ -195,7 +195,7 @@ export class ServerHarness {
 
       // Additional server cleanup if needed
       if (this.server) {
-        this.server.cleanup();
+        await this.server.cleanup();
       }
 
       const stopTime = Date.now() - stopStart;

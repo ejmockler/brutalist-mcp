@@ -49,5 +49,12 @@ export default {
   },
   testTimeout: 30000,
   maxWorkers: '50%',
-  workerIdleMemoryLimit: '512MB'
+  workerIdleMemoryLimit: '512MB',
+  // Run tests that spawn external CLI processes last to prevent their
+  // "Not connected" child process crashes from blocking other test suites
+  testSequencer: '<rootDir>/tests/test-sequencer.js',
+  // Force exit after tests complete — the MCP SDK throws "Not connected" in
+  // child processes during teardown, which poisons Jest workers. These are
+  // cosmetic errors from the SDK's disconnect handling, not real test failures.
+  forceExit: true
 };

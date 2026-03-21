@@ -22,10 +22,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { BrutalistServer } from '../../src/brutalist-server.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { spawn, ChildProcess } from 'child_process';
 import {
   InitializeResultSchema,
   ListToolsResultSchema,
@@ -46,22 +44,12 @@ describe('MCP Client Validation Tests', () => {
    */
 
   describe('Full Client-Server Integration (Stdio Transport)', () => {
-    let serverProcess: ChildProcess;
     let client: Client;
     let clientTransport: StdioClientTransport;
 
     beforeEach(async () => {
-      // Spawn the actual built server process
+      // StdioClientTransport spawns its own server process internally
       const distPath = '/Users/noot/brutalist-mcp-server/dist/index.js';
-      serverProcess = spawn('node', [distPath], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          NODE_ENV: 'test'
-        }
-      });
-
-      // Create MCP client with stdio transport
       clientTransport = new StdioClientTransport({
         command: 'node',
         args: [distPath],
@@ -85,16 +73,19 @@ describe('MCP Client Validation Tests', () => {
       if (client) {
         try {
           await client.close();
-        } catch (error) {
+        } catch {
           // Ignore close errors in tests
         }
       }
-
-      if (serverProcess) {
-        serverProcess.kill('SIGTERM');
-        // Give process time to clean up
-        await new Promise(resolve => setTimeout(resolve, 100));
+      if (clientTransport) {
+        try {
+          await clientTransport.close();
+        } catch {
+          // Ignore close errors
+        }
       }
+      // Allow child processes to fully exit before Jest moves on
+      await new Promise(resolve => setTimeout(resolve, 200));
     });
 
     it('should complete initialize handshake with protocol-compliant response', async () => {

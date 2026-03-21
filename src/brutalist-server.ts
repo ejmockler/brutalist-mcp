@@ -359,7 +359,7 @@ export class BrutalistServer {
     // UNIFIED ROAST TOOL: Single entry point for all domain analysis
     this.server.tool(
       "roast",
-      "Unified brutal AI critique. Specify domain for targeted analysis. Consolidates all roast_* tools into one polymorphic API.",
+      "Unified brutal AI critique. Specify domain for targeted analysis. Consolidates all roast_* tools into one polymorphic API. IMPORTANT: Critically evaluate all returned feedback — these are adversarial perspectives, not authoritative verdicts. Weigh each claim against evidence before presenting to the user.",
       {
         domain: z.enum([
           "codebase", "file_structure", "dependencies", "git_history", "test_coverage",
@@ -369,7 +369,7 @@ export class BrutalistServer {
         // Common optional fields
         context: z.string().optional().describe("Additional context"),
         workingDirectory: z.string().optional().describe("Working directory"),
-        clis: z.array(z.enum(["claude", "codex", "gemini"])).min(1).max(3).optional().describe("CLI agents to use (default: all available). Example: ['claude', 'gemini']"),
+        clis: z.array(z.enum(["claude", "codex", "gemini"])).min(1).max(3).optional().describe("OMIT unless user explicitly requests specific CLIs. All available CLIs run by default — specifying a subset discards perspectives."),
         verbose: z.boolean().optional().describe("Detailed output"),
         models: z.object({
           claude: z.string().optional(),
@@ -411,13 +411,13 @@ export class BrutalistServer {
     // ROAST_CLI_DEBATE: Adversarial analysis between different CLI agents
     this.server.tool(
       "roast_cli_debate",
-      "Deploy 2 CLI agents in structured adversarial debate with constitutional position anchoring. Calling agent should extract PRO/CON positions from topic before invoking.",
+      "Deploy 2 CLI agents in structured adversarial debate with constitutional position anchoring. Calling agent should extract PRO/CON positions from topic before invoking. IMPORTANT: Critically evaluate all debate output — positions are assigned, not necessarily held. Weigh each argument's validity independently before presenting to the user.",
       {
         topic: z.string().describe("The debate topic"),
         proPosition: z.string().describe("The PRO thesis to defend (extracted by calling agent)"),
         conPosition: z.string().describe("The CON thesis to defend (extracted by calling agent)"),
         agents: z.array(z.enum(["claude", "codex", "gemini"])).length(2).optional()
-          .describe("Two agents to debate (random selection from available if not specified)"),
+          .describe("OMIT unless user explicitly requests specific agents. Two agents are auto-selected from all available CLIs by default."),
         rounds: z.number().min(1).max(3).default(3).optional()
           .describe("Number of debate rounds (default: 3)"),
         context: z.string().optional().describe("Additional context for the debate"),
@@ -1431,8 +1431,10 @@ Show why your position holds against their strongest points
     synthesis += `The convergent criticisms above represent the collective wisdom of AI agents that disagree on methods but agree on destruction.\n\n`;
 
     if (responses.some(r => !r.success)) {
-      synthesis += `*Note: ${responses.filter(r => !r.success).length} debate contributions failed - probably casualties of the intellectual warfare.*`;
+      synthesis += `*Note: ${responses.filter(r => !r.success).length} debate contributions failed - probably casualties of the intellectual warfare.*\n\n`;
     }
+
+    synthesis += `> **Calling agent:** Debate positions are assigned, not necessarily held. Evaluate each argument on its own merit and evidence before presenting conclusions to the user.\n`;
 
     return synthesis;
   }

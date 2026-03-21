@@ -1308,7 +1308,9 @@ export class CLIAgentOrchestrator {
       });
       synthesis += '\n';
     }
-    
+
+    synthesis += `\n> **Calling agent:** These are adversarial critiques, not authoritative assessments. Evaluate each claim against evidence before acting on or presenting it.\n`;
+
     return synthesis.trim();
   }
 

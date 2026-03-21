@@ -28,7 +28,7 @@ import { getDomain, generateToolConfig } from './registry/domains.js';
 import { filterToolsByIntent, getMatchingDomainIds } from './tool-router.js';
 
 // Use environment variable or fallback to manual version
-const PACKAGE_VERSION = process.env.npm_package_version || "0.6.12";
+const PACKAGE_VERSION = process.env.npm_package_version || "1.3.0";
 
 /**
  * BrutalistServer - Composition root for the Brutalist MCP Server
@@ -203,8 +203,8 @@ export class BrutalistServer {
     }
   }
 
-  // Cleanup method for tests - remove event listeners
-  public cleanup(): void {
+  // Cleanup method for tests - remove event listeners and close MCP server
+  public async cleanup(): Promise<void> {
     if (this.httpTransport) {
       this.httpTransport.cleanup();
     }
@@ -212,6 +212,14 @@ export class BrutalistServer {
       clearInterval(this.sessionCleanupTimer);
       this.sessionCleanupTimer = undefined;
     }
+    if (this.server) {
+      try {
+        await this.server.close();
+      } catch {
+        // Ignore close errors during cleanup
+      }
+    }
+    logger.shutdown();
   }
 
   /**
@@ -289,7 +297,7 @@ export class BrutalistServer {
   private handleProgressUpdate = (
     progressToken: string | number,
     progress: number,
-    total: number,
+    total: number | undefined,
     message: string,
     sessionId?: string
   ) => {
@@ -299,21 +307,23 @@ export class BrutalistServer {
         return;
       }
 
-      logger.debug(`📊 Session progress: ${progress}/${total} for session ${sessionId.substring(0, 8)}...`);
+      const progressLabel = total !== undefined ? `${progress}/${total}` : `heartbeat #${progress}`;
+      logger.debug(`📊 Session progress: ${progressLabel} for session ${sessionId.substring(0, 8)}...`);
 
       // Send progress notification with session context if client supports it
+      // When total is undefined, the client should treat this as indeterminate progress
       try {
         this.server.server.notification({
           method: "notifications/progress",
           params: {
             progressToken,
             progress,
-            total,
-            message: `[${sessionId.substring(0, 8)}] ${message}`, // Include session prefix
-            sessionId // Include in notification data
+            ...(total !== undefined ? { total } : {}),
+            message: `[${sessionId.substring(0, 8)}] ${message}`,
+            sessionId
           }
         });
-        logger.debug(`✅ Sent session-scoped progress notification: ${progress}/${total}`);
+        logger.debug(`✅ Sent session-scoped progress notification: ${progressLabel}`);
       } catch (notificationError) {
         // Client doesn't support progress notifications - silently skip
         logger.debug("Client doesn't support progress notifications, skipping");
@@ -664,6 +674,12 @@ export class BrutalistServer {
         args.cursor !== undefined ||
         args.context_id !== undefined;
 
+      // Extract session ID early — needed for cache session isolation
+      const sessionId = extra?.sessionId ||
+                        extra?._meta?.sessionId ||
+                        extra?.headers?.['mcp-session-id'] ||
+                        'anonymous';
+
       // Validate resume flag requires context_id
       if (args.resume && !args.context_id) {
         throw new Error(
@@ -675,7 +691,7 @@ export class BrutalistServer {
       // Check cache if context_id provided
       let conversationHistory: import('./utils/response-cache.js').ConversationMessage[] | undefined;
       if (args.context_id && !args.force_refresh) {
-        const cachedResponse = await this.responseCache.getByContextId(args.context_id);
+        const cachedResponse = await this.responseCache.getByContextId(args.context_id, sessionId);
         if (cachedResponse) {
           logger.info(`🎯 Debate cache HIT for context_id: ${args.context_id}`);
 
@@ -760,12 +776,8 @@ export class BrutalistServer {
         logger.info(`💬 Injected ${conversationHistory.length} previous messages into debate context`);
       }
 
-      // Extract streaming context from extra (same as tool-handler.ts)
+      // Extract streaming context from extra
       const progressToken = extra?._meta?.progressToken;
-      const sessionId = extra?.sessionId ||
-                        extra?._meta?.sessionId ||
-                        extra?.headers?.['mcp-session-id'] ||
-                        'anonymous';
 
       // Execute the debate
       const numRounds = Math.min(args.rounds || 3, 3);
@@ -781,7 +793,7 @@ export class BrutalistServer {
         onStreamingEvent: this.handleStreamingEvent,
         progressToken,
         onProgress: progressToken && sessionId ?
-          (progress: number, total: number, message: string) =>
+          (progress: number, total: number | undefined, message: string) =>
             this.handleProgressUpdate(progressToken, progress, total, message, sessionId) : undefined,
         sessionId,
       });
@@ -804,7 +816,8 @@ export class BrutalistServer {
             await this.responseCache.updateByContextId(
               contextId,
               fullContent,
-              updatedConversation
+              updatedConversation,
+              sessionId
             );
             logger.info(`✅ Updated debate conversation ${contextId} (now ${updatedConversation.length} messages)`);
           } else {
@@ -813,7 +826,7 @@ export class BrutalistServer {
               { tool: 'roast_cli_debate', topic: args.topic },
               fullContent,
               cacheKey,
-              undefined,
+              sessionId,
               undefined,
               updatedConversation
             );
@@ -844,7 +857,7 @@ export class BrutalistServer {
     models?: { claude?: string; codex?: string; gemini?: string };
     onStreamingEvent?: (event: import('./cli-agents.js').StreamingEvent) => void;
     progressToken?: string | number;
-    onProgress?: (progress: number, total: number, message: string) => void;
+    onProgress?: (progress: number, total: number | undefined, message: string) => void;
     sessionId?: string;
   }): Promise<BrutalistResponse> {
     const { topic, proPosition, conPosition, rounds, context, workingDirectory, models,

@@ -415,7 +415,7 @@ export interface CLIAgentOptions {
   };
   onStreamingEvent?: (event: StreamingEvent) => void;
   progressToken?: string | number;
-  onProgress?: (progress: number, total: number, message: string) => void;
+  onProgress?: (progress: number, total: number | undefined, message: string) => void;
   sessionId?: string; // Session context for security
   requestId?: string; // Unique request identifier
   debateMode?: boolean; // Suppress filesystem exploration for pure argumentation
@@ -490,6 +490,8 @@ export class CLIAgentOrchestrator {
   private streamingBuffers = new Map<string, { chunks: string[], lastFlush: number }>();
   private readonly STREAMING_FLUSH_INTERVAL = 200; // 200ms
   private readonly MAX_CHUNK_SIZE = 2048; // 2KB per event
+  private readonly HEARTBEAT_INTERVAL = 5000; // 5s between progress heartbeats
+  private lastHeartbeat = 0;
 
   constructor(modelResolver?: ModelResolver) {
     this.modelResolver = modelResolver || new ModelResolver();
@@ -730,13 +732,12 @@ export class CLIAgentOrchestrator {
     const buffer = this.streamingBuffers.get(key)!;
     buffer.chunks.push(truncatedContent);
 
-    // For progress notifications, emit immediately and also call onProgress
-    if (options?.progressToken && options?.onProgress && type === 'agent_progress') {
-      // Estimate progress based on content length (rough approximation)
-      const currentProgress = buffer.chunks.length * 10; // rough estimate
-      const totalProgress = 100;
-      
-      options.onProgress(currentProgress, totalProgress, `${agent.toUpperCase()}: ${truncatedContent.substring(0, 50)}...`);
+    // Indeterminate heartbeat: signal "still working" without faking a percentage
+    // Throttled to avoid spamming the client — streaming events still flow at full speed
+    if (options?.progressToken && options?.onProgress && type === 'agent_progress' &&
+        now - this.lastHeartbeat >= this.HEARTBEAT_INTERVAL) {
+      this.lastHeartbeat = now;
+      options.onProgress(buffer.chunks.length, undefined, `${agent.toUpperCase()}: ${truncatedContent.substring(0, 80)}`);
     }
 
     // Flush if enough time has passed or buffer is getting large

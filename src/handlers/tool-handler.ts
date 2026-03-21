@@ -36,7 +36,7 @@ export class ToolHandler {
     private handleProgressUpdate: (
       progressToken: string | number,
       progress: number,
-      total: number,
+      total: number | undefined,
       message: string,
       sessionId?: string
     ) => void,
@@ -376,7 +376,7 @@ export class ToolHandler {
           onStreamingEvent: this.handleStreamingEvent,
           progressToken,
           onProgress: progressToken && sessionId ?
-            (progress: number, total: number, message: string) =>
+            (progress: number, total: number | undefined, message: string) =>
               this.handleProgressUpdate(progressToken, progress, total, message, sessionId) : undefined,
           sessionId,
           requestId

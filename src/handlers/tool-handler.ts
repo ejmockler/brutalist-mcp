@@ -252,7 +252,7 @@ export class ToolHandler {
       logger.debug(`Primary arg: ${config.primaryArgField}="${validatedPrimaryArg}", analysisType="${config.analysisType}"`);
 
       // Get system prompt (from deprecated field or system-prompts.ts)
-      const systemPrompt = config.systemPrompt || getSystemPrompt(config.analysisType);
+      const systemPrompt = config.systemPrompt || getSystemPrompt(config.analysisType, args.mcp_servers);
 
       // Run the analysis
       const result = await this.executeBrutalistAnalysis(
@@ -266,7 +266,8 @@ export class ToolHandler {
         args.models,
         progressToken,
         sessionId,
-        requestId
+        requestId,
+        args.mcp_servers
       );
 
       // Cache the result if successful
@@ -341,7 +342,8 @@ export class ToolHandler {
     },
     progressToken?: string | number,
     sessionId?: string,
-    requestId?: string
+    requestId?: string,
+    mcpServers?: string[]
   ): Promise<BrutalistResponse> {
     logger.info(`🏢 Starting brutalist analysis: ${analysisType}`);
     logger.info(`🔧 DEBUG: clis=${clis?.join(',') || 'all'}, primaryContent=${primaryContent}`);
@@ -379,7 +381,8 @@ export class ToolHandler {
             (progress: number, total: number | undefined, message: string) =>
               this.handleProgressUpdate(progressToken, progress, total, message, sessionId) : undefined,
           sessionId,
-          requestId
+          requestId,
+          mcpServers
         }
       );
       logger.info(`🔧 DEBUG: cliOrchestrator.executeBrutalistAnalysis returned ${responses.length} responses`);

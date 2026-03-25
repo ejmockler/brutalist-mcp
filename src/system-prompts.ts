@@ -596,11 +596,29 @@ ANALYTICAL PROTOCOL:
 };
 
 /**
+ * When MCP servers are enabled, append tool-usage instructions to the base prompt.
+ * Keeps the read-only codebase constraint but tells the agent about available MCP tools.
+ */
+function appendMCPInstructions(basePrompt: string, mcpServers: string[]): string {
+  return basePrompt + `
+
+<external_tool_access>
+EXTERNAL TOOL ACCESS:
+You have access to MCP tools for gathering evidence. Available servers: ${mcpServers.join(', ')}.
+- USE these tools to verify claims and gather concrete evidence for your analysis
+- You MUST NOT modify the codebase — your role is analysis only
+- Back your critique with evidence from tool use where possible
+- MCP tools allow observation and interaction (e.g., browser testing, API queries) — not code modification
+</external_tool_access>`;
+}
+
+/**
  * Get the system prompt for a given analysis type.
  * Falls back to a generic brutal prompt if type is not found.
+ * When mcpServers is provided, appends MCP tool-usage instructions.
  */
-export function getSystemPrompt(analysisType: BrutalistPromptType): string {
-  return SYSTEM_PROMPTS[analysisType] || buildPrompt({
+export function getSystemPrompt(analysisType: BrutalistPromptType, mcpServers?: string[]): string {
+  const basePrompt = SYSTEM_PROMPTS[analysisType] || buildPrompt({
     domain: 'generic_critique',
     role: 'Brutal Critic',
     persona: 'A ruthless critic who has seen every failure mode. You find what\'s broken before it breaks.',
@@ -627,4 +645,9 @@ export function getSystemPrompt(analysisType: BrutalistPromptType): string {
       'Always find what\'s broken'
     ]
   });
+
+  if (mcpServers && mcpServers.length > 0) {
+    return appendMCPInstructions(basePrompt, mcpServers);
+  }
+  return basePrompt;
 }

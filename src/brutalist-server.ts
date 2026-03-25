@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { CLIAgentOrchestrator, StreamingEvent } from './cli-agents.js';
+import { listRegisteredServers } from './mcp-registry.js';
 import { logger } from './logger.js';
 import { ToolConfig, BASE_ROAST_SCHEMA } from './types/tool-config.js';
 import { getToolConfigs } from './tool-definitions.js';
@@ -403,7 +404,8 @@ export class BrutalistServer {
         competition: z.string().optional().describe("Competition for product"),
         metrics: z.string().optional().describe("Metrics for product"),
         sla: z.string().optional().describe("SLA for infrastructure"),
-        budget: z.string().optional().describe("Budget for infrastructure")
+        budget: z.string().optional().describe("Budget for infrastructure"),
+        mcp_servers: z.array(z.string()).optional().describe(`MCP servers to enable for CLI agents (e.g., ["playwright"]). Enables evidence-backed analysis via external tools. Available: ${listRegisteredServers().join(', ')}`)
       },
       async (args, extra) => this.handleUnifiedRoast(args, extra)
     );
@@ -434,7 +436,8 @@ export class BrutalistServer {
         limit: z.number().min(1000).max(100000).optional(),
         cursor: z.string().optional(),
         force_refresh: z.boolean().optional(),
-        verbose: z.boolean().optional()
+        verbose: z.boolean().optional(),
+        mcp_servers: z.array(z.string()).optional().describe(`MCP servers to enable for debate agents (e.g., ["playwright"]). Available: ${listRegisteredServers().join(', ')}`)
       },
       async (args, extra) => {
         // CRITICAL: Prevent recursion
@@ -554,6 +557,16 @@ export class BrutalistServer {
           roster += "- Example: `roast(domain: 'codebase', target: '.', context_id: 'abc123', resume: true)`\n\n";
           roster += "**Cache TTL:** 2 hours\n\n";
 
+          // Add MCP server info
+          const mcpServerNames = listRegisteredServers();
+          if (mcpServerNames.length > 0) {
+            roster += "## MCP Server Integration\n";
+            roster += "CLI agents can use external MCP tools for evidence-backed analysis.\n";
+            roster += `**Available servers:** ${mcpServerNames.join(', ')}\n`;
+            roster += "- Example: `roast(domain: 'security', target: '.', mcp_servers: ['playwright'])`\n";
+            roster += "- Agents remain read-only — MCP enables observation and interaction, not code modification\n\n";
+          }
+
           roster += "## Brutalist Philosophy\n";
           roster += "*All tools use CLI agents with brutal system prompts for maximum reality-based criticism.*\n";
 
@@ -655,6 +668,7 @@ export class BrutalistServer {
     cursor?: string;
     force_refresh?: boolean;
     verbose?: boolean;
+    mcp_servers?: string[];
   }, extra?: any): Promise<any> {
     try {
       // Build pagination params
@@ -796,6 +810,7 @@ export class BrutalistServer {
           (progress: number, total: number | undefined, message: string) =>
             this.handleProgressUpdate(progressToken, progress, total, message, sessionId) : undefined,
         sessionId,
+        mcp_servers: args.mcp_servers,
       });
 
       // Cache the result
@@ -859,6 +874,7 @@ export class BrutalistServer {
     progressToken?: string | number;
     onProgress?: (progress: number, total: number | undefined, message: string) => void;
     sessionId?: string;
+    mcp_servers?: string[];
   }): Promise<BrutalistResponse> {
     const { topic, proPosition, conPosition, rounds, context, workingDirectory, models,
             onStreamingEvent, progressToken, onProgress, sessionId } = args;
@@ -1014,10 +1030,14 @@ Your depth of expertise is demonstrated by the strength of the case you construc
           logger.info(`  ⚔️ ${agent.toUpperCase()} (${position}) arguing...`);
 
           // Build prompt-generation function so we can rebuild on escalation
+          const mcpBlock = args.mcp_servers?.length
+            ? `\nEXTERNAL TOOL ACCESS: You have MCP tools available (${args.mcp_servers.join(', ')}). Use them to gather evidence supporting your position. You MUST NOT modify the codebase.\n`
+            : '';
+
           const buildPrompt = (tier: DebateTier) => {
             if (round === 1) {
               return `${constitutionalAnchor(agent, position, thesis, tier)}
-
+${mcpBlock}
 TOPIC: ${topic}
 ${context ? `CONTEXT: ${context}` : ''}
 
@@ -1052,7 +1072,7 @@ Reinforce why your analysis holds
               }
 
               return `${constitutionalAnchor(agent, position, thesis, tier)}
-
+${mcpBlock}
 TOPIC: ${topic}
 
 Round ${round}: Engage with your counterpart's analysis.
@@ -1104,6 +1124,7 @@ Show why your position holds against their strongest points
               sessionId,
               requestId: turnRequestId,
               debateMode: true, // Frontier 1: suppress Codex shell exploration
+              mcpServers: args.mcp_servers, // MCP servers for evidence-backed debate
             };
 
             // Three-tier escalation: standard → escalated → decomposed
@@ -1433,8 +1454,6 @@ Show why your position holds against their strongest points
     if (responses.some(r => !r.success)) {
       synthesis += `*Note: ${responses.filter(r => !r.success).length} debate contributions failed - probably casualties of the intellectual warfare.*\n\n`;
     }
-
-    synthesis += `> **Calling agent:** Debate positions are assigned, not necessarily held. Evaluate each argument on its own merit and evidence before presenting conclusions to the user.\n`;
 
     return synthesis;
   }

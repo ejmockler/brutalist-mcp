@@ -19,10 +19,10 @@ interface ChildProcessError extends Error {
   stderr?: string;
 }
 
-export type BrutalistPromptType = 
+export type BrutalistPromptType =
   | 'code'
   | 'codebase'
-  | 'architecture' 
+  | 'architecture'
   | 'idea'
   | 'research'
   | 'data'
@@ -33,7 +33,8 @@ export type BrutalistPromptType =
   | 'dependencies'
   | 'fileStructure'
   | 'gitHistory'
-  | 'testCoverage';
+  | 'testCoverage'
+  | 'design';
 
 // Configurable timeouts and limits
 const DEFAULT_TIMEOUT = parseInt(process.env.BRUTALIST_TIMEOUT || '1800000', 10); // 30 minutes default

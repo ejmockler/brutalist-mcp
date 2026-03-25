@@ -165,6 +165,20 @@ export const DOMAINS: Record<string, CritiqueDomain> = {
     keywords: ['product', 'ux', 'user', 'market']
   },
 
+  DESIGN: {
+    id: 'design',
+    name: 'Design Critique',
+    description: 'Perceptual engineering critique of interface design, visual systems, and interaction quality',
+    capabilities: ['usability_review', 'static_analysis'],
+    artifactTypes: ['text_description', 'code', 'documentation'],
+    inputType: 'content',
+    requiredFields: ['content', 'targetPath'],
+    optionalFields: ['medium', 'audience', 'brand'],
+    argumentSpaceId: 'DESIGN_SPECIFIC',
+    promptType: 'design',
+    keywords: ['design', 'ui', 'visual', 'interface', 'aesthetic', 'typography', 'layout', 'color', 'affordance', 'perception']
+  },
+
   INFRASTRUCTURE: {
     id: 'infrastructure',
     name: 'Infrastructure Review',

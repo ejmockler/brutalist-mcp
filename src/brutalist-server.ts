@@ -364,7 +364,7 @@ export class BrutalistServer {
       {
         domain: z.enum([
           "codebase", "file_structure", "dependencies", "git_history", "test_coverage",
-          "idea", "architecture", "research", "security", "product", "infrastructure"
+          "idea", "architecture", "research", "security", "product", "infrastructure", "design"
         ]).describe("Analysis domain"),
         target: z.string().describe("Directory path for filesystem domains (codebase, dependencies, git_history, etc.) OR text content for abstract domains (idea, architecture, security, etc.)"),
         // Common optional fields
@@ -405,6 +405,9 @@ export class BrutalistServer {
         metrics: z.string().optional().describe("Metrics for product"),
         sla: z.string().optional().describe("SLA for infrastructure"),
         budget: z.string().optional().describe("Budget for infrastructure"),
+        medium: z.string().optional().describe("Design medium for design domain (web, mobile, spatial, print)"),
+        audience: z.string().optional().describe("Target audience for design domain"),
+        brand: z.string().optional().describe("Brand identity or design system constraints for design domain"),
         mcp_servers: z.array(z.string()).optional().describe(`MCP servers to enable for CLI agents (e.g., ["playwright"]). Enables evidence-backed analysis via external tools. Available: ${listRegisteredServers().join(', ')}`)
       },
       async (args, extra) => this.handleUnifiedRoast(args, extra)
@@ -515,7 +518,8 @@ export class BrutalistServer {
           roster += "- `research` - Tear apart methodologies\n";
           roster += "- `security` - Annihilate security designs\n";
           roster += "- `product` - Eviscerate UX concepts\n";
-          roster += "- `infrastructure` - Obliterate DevOps setups\n\n";
+          roster += "- `infrastructure` - Obliterate DevOps setups\n";
+          roster += "- `design` - Perceptual engineering critique of interface design and visual systems\n\n";
 
           roster += "### `roast_cli_debate` - Adversarial Multi-Agent Debate\n";
           roster += "Pit CLI agents against each other on any topic.\n\n";
@@ -620,7 +624,7 @@ export class BrutalistServer {
       return {
         content: [{
           type: "text" as const,
-          text: `ERROR: Unknown domain "${args.domain}". Valid domains: codebase, file_structure, dependencies, git_history, test_coverage, idea, architecture, research, security, product, infrastructure`
+          text: `ERROR: Unknown domain "${args.domain}". Valid domains: codebase, file_structure, dependencies, git_history, test_coverage, idea, architecture, research, security, product, infrastructure, design`
         }]
       };
     }

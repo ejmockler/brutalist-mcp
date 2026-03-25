@@ -120,6 +120,24 @@ export const ARGUMENT_SPACES: Record<string, ArgumentSpace> = {
     })
   },
 
+  // Design-specific arguments
+  DESIGN_SPECIFIC: {
+    id: 'design_specific',
+    name: 'Design Specific',
+    base: FILESYSTEM_ARGUMENT_SPACE.base,
+    domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
+      medium: z.string().optional().describe("Design medium (web, mobile, spatial, print)"),
+      audience: z.string().optional().describe("Who inhabits this interface"),
+      brand: z.string().optional().describe("Brand identity or design system constraints")
+    }),
+    computed: (args) => ({
+      workingDirectory: args.targetPath || '.',
+      designMedium: args.medium,
+      targetAudience: args.audience,
+      brandContext: args.brand
+    })
+  },
+
   // Infrastructure-specific arguments
   INFRASTRUCTURE_SPECIFIC: {
     id: 'infrastructure_specific',

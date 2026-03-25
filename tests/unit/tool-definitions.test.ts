@@ -41,7 +41,8 @@ describe('Tool Definitions', () => {
       expect(domains).toContain('codebase');
       expect(domains).toContain('security');
       expect(domains).toContain('architecture');
-      expect(domains.length).toBe(11);
+      expect(domains).toContain('design');
+      expect(domains.length).toBe(12);
     });
   });
 

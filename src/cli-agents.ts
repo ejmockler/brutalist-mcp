@@ -5,6 +5,13 @@ import path from 'path';
 import { logger } from './logger.js';
 import { CLIAgentResponse } from './types/brutalist.js';
 import { ModelResolver } from './model-resolver.js';
+import {
+  resolveServers,
+  writeClaudeMCPConfig,
+  cleanupTempConfig,
+  buildCodexMCPOverride,
+  ensureGeminiMCPServers,
+} from './mcp-registry.js';
 
 interface ChildProcessError extends Error {
   code?: number;
@@ -419,6 +426,7 @@ export interface CLIAgentOptions {
   sessionId?: string; // Session context for security
   requestId?: string; // Unique request identifier
   debateMode?: boolean; // Suppress filesystem exploration for pure argumentation
+  mcpServers?: string[]; // MCP server names to enable (e.g., ['playwright'])
 }
 
 export interface StreamingEvent {
@@ -437,6 +445,28 @@ export interface CLIContext {
 // CLI Builder Configuration Registry
 type CLIName = 'claude' | 'codex' | 'gemini';
 
+interface MCPSupportConfig {
+  /** How this CLI receives MCP server configuration */
+  configMethod: 'flag-file' | 'config-override' | 'server-whitelist';
+
+  // Claude: --mcp-config <path> --strict-mcp-config
+  configFlag?: string;
+  strictFlag?: string;
+
+  // Codex: -c 'mcp_servers={...}'
+  configOverrideKey?: string;
+
+  // Gemini: --allowed-mcp-server-names <names>
+  whitelistFlag?: string;
+
+  /** Hard write-prevention mechanism native to this CLI */
+  writeProtection: {
+    method: 'disallowed-tools' | 'sandbox' | 'approval-mode';
+    flag: string;
+    value: string;
+  };
+}
+
 interface CLIBuilderConfig {
   command: string;
   defaultArgs: string[];
@@ -446,6 +476,7 @@ interface CLIBuilderConfig {
   jsonFlag?: string;
   streamingArgs?: (options: CLIAgentOptions) => string[];
   mpcEnvCleanup?: string[];
+  mcpSupport?: MCPSupportConfig;
 }
 
 const CLI_BUILDER_CONFIGS: Record<CLIName, CLIBuilderConfig> = {
@@ -455,6 +486,16 @@ const CLI_BUILDER_CONFIGS: Record<CLIName, CLIBuilderConfig> = {
     modelArgName: '--model',
     mpcEnvCleanup: ['CLAUDE_MCP_CONFIG', 'MCP_ENABLED', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
     streamingArgs: () => ['--output-format', 'stream-json', '--verbose'],
+    mcpSupport: {
+      configMethod: 'flag-file',
+      configFlag: '--mcp-config',
+      strictFlag: '--strict-mcp-config',
+      writeProtection: {
+        method: 'disallowed-tools',
+        flag: '--disallowedTools',
+        value: 'Edit,Write,NotebookEdit',
+      },
+    },
   },
   codex: {
     command: 'codex',
@@ -462,15 +503,33 @@ const CLI_BUILDER_CONFIGS: Record<CLIName, CLIBuilderConfig> = {
     modelArgName: '--model',
     jsonFlag: '--json',
     mpcEnvCleanup: ['CODEX_MCP_CONFIG', 'MCP_ENABLED'],
-    promptWrapper: (sys, user) => `${sys}\n\n${user}\n\nUse your shell tools to read files (cat, ls, find, grep, head, etc.) and analyze the codebase. You ARE allowed to run read-only commands. Explore the directory structure, read relevant source files, and provide a comprehensive brutal analysis based on what you find.`
+    promptWrapper: (sys, user) => `${sys}\n\n${user}\n\nUse your shell tools to read files (cat, ls, find, grep, head, etc.) and analyze the codebase. You ARE allowed to run read-only commands. Explore the directory structure, read relevant source files, and provide a comprehensive brutal analysis based on what you find.`,
+    mcpSupport: {
+      configMethod: 'config-override',
+      configOverrideKey: 'mcp_servers',
+      writeProtection: {
+        method: 'sandbox',
+        flag: '--sandbox',
+        value: 'read-only', // already in defaultArgs
+      },
+    },
   },
   gemini: {
     command: 'gemini',
     defaultArgs: [],
     modelArgName: '--model',
     envExtras: { TERM: 'dumb', NO_COLOR: '1', CI: 'true' },
-    mpcEnvCleanup: ['GEMINI_MCP_CONFIG', 'MCP_ENABLED']
-  }
+    mpcEnvCleanup: ['GEMINI_MCP_CONFIG', 'MCP_ENABLED'],
+    mcpSupport: {
+      configMethod: 'server-whitelist',
+      whitelistFlag: '--allowed-mcp-server-names',
+      writeProtection: {
+        method: 'approval-mode',
+        flag: '--approval-mode',
+        value: 'plan',
+      },
+    },
+  },
 };
 
 export class CLIAgentOrchestrator {
@@ -758,13 +817,14 @@ export class CLIAgentOrchestrator {
     }
   }
 
-  private buildCLICommand(
+  private async buildCLICommand(
     cli: CLIName,
     userPrompt: string,
     systemPrompt: string,
     options: CLIAgentOptions
-  ): { command: string; args: string[]; input: string; env: Record<string, string> } {
+  ): Promise<{ command: string; args: string[]; input: string; env: Record<string, string>; tempMcpConfigPath?: string }> {
     const config = CLI_BUILDER_CONFIGS[cli];
+    const mcpEnabled = options.mcpServers && options.mcpServers.length > 0;
 
     // Build args
     const args = [...config.defaultArgs];
@@ -777,6 +837,51 @@ export class CLIAgentOrchestrator {
     }
     if (config.streamingArgs) {
       args.push(...config.streamingArgs(options));
+    }
+
+    // ── MCP configuration ────────────────────────────────────────────────
+    let tempMcpConfigPath: string | undefined;
+
+    if (mcpEnabled && config.mcpSupport) {
+      const servers = resolveServers(options.mcpServers!);
+      const serverNames = Object.keys(servers);
+
+      if (serverNames.length > 0) {
+        const mcp = config.mcpSupport;
+
+        switch (mcp.configMethod) {
+          case 'flag-file': {
+            // Claude: write temp JSON config, pass --mcp-config <path> --strict-mcp-config
+            const sessionId = options.sessionId || 'default';
+            tempMcpConfigPath = await writeClaudeMCPConfig(servers, sessionId);
+            args.push(mcp.configFlag!, tempMcpConfigPath);
+            args.push(mcp.strictFlag!);
+            // Hard deny on write tools
+            args.push(mcp.writeProtection.flag, mcp.writeProtection.value);
+            // Non-interactive MCP tool use requires permission bypass
+            args.push('--permission-mode', 'bypassPermissions');
+            break;
+          }
+
+          case 'config-override': {
+            // Codex: -c 'mcp_servers={...}' — replaces all configured servers (excludes brutalist)
+            const tomlOverride = buildCodexMCPOverride(servers);
+            args.push('-c', `${mcp.configOverrideKey!}=${tomlOverride}`);
+            // Write protection already in defaultArgs (--sandbox read-only)
+            break;
+          }
+
+          case 'server-whitelist': {
+            // Gemini: --allowed-mcp-server-names <names> --approval-mode plan
+            await ensureGeminiMCPServers(servers);
+            args.push(mcp.whitelistFlag!, ...serverNames);
+            args.push(mcp.writeProtection.flag, mcp.writeProtection.value);
+            break;
+          }
+        }
+
+        logger.info(`🔌 MCP enabled for ${cli}: [${serverNames.join(', ')}]`);
+      }
     }
 
     // Build prompt — skip CLI-specific wrapper in debate mode (prevents Codex
@@ -803,8 +908,9 @@ export class CLIAgentOrchestrator {
       if (process.env[key]) secureEnv[key] = process.env[key]!;
     }
 
-    // Clean up MPC env vars that could cause deadlock
-    if (config.mpcEnvCleanup) {
+    // Clean up MPC env vars that could cause deadlock — SKIP when MCP is enabled
+    // (the per-CLI config above already isolates to only the requested servers)
+    if (!mcpEnabled && config.mpcEnvCleanup) {
       for (const envVar of config.mpcEnvCleanup) {
         delete secureEnv[envVar];
       }
@@ -812,7 +918,7 @@ export class CLIAgentOrchestrator {
 
     secureEnv.BRUTALIST_SUBPROCESS = '1';
 
-    return { command: config.command, args, input: combinedPrompt, env: secureEnv };
+    return { command: config.command, args, input: combinedPrompt, env: secureEnv, tempMcpConfigPath };
   }
 
   async detectCLIContext(): Promise<CLIContext> {
@@ -902,11 +1008,12 @@ export class CLIAgentOrchestrator {
     userPrompt: string,
     systemPromptSpec: string,
     options: CLIAgentOptions = {},
-    commandBuilder: (userPrompt: string, systemPromptSpec: string, options: CLIAgentOptions) => { command: string; args: string[]; env?: Record<string, string>; input?: string }
+    commandBuilder: (userPrompt: string, systemPromptSpec: string, options: CLIAgentOptions) => Promise<{ command: string; args: string[]; env?: Record<string, string>; input?: string; tempMcpConfigPath?: string }>
   ): Promise<CLIAgentResponse> {
     const startTime = Date.now();
     const workingDir = options.workingDirectory || this.defaultWorkingDir;
     const timeout = options.timeout || this.defaultTimeout;
+    let tempMcpConfigPath: string | undefined;
 
     try {
       logger.info(`🤖 Executing ${cliName.toUpperCase()} CLI`);
@@ -924,7 +1031,9 @@ export class CLIAgentOrchestrator {
       }
 
 
-      const { command, args, env, input } = commandBuilder(userPrompt, systemPromptSpec, options);
+      const built = await commandBuilder(userPrompt, systemPromptSpec, options);
+      const { command, args, env, input } = built;
+      tempMcpConfigPath = built.tempMcpConfigPath;
 
       logger.info(`📋 Command: ${command} ${args.join(' ')}`);
       logger.info(`📁 Working directory: ${workingDir}`);
@@ -993,7 +1102,46 @@ export class CLIAgentOrchestrator {
         logger.info(`📝 Using stderr as output for ${cliName} (stdout was empty)`);
         finalOutput = stderr;
       }
-      
+
+      // Detect CLI errors that exit 0 but contain fatal error output
+      // (e.g., Gemini CLI returns exit code 0 on quota exhaustion)
+      const combinedOutput = `${finalOutput}\n${stderr}`;
+      const quotaPatterns = [
+        /TerminalQuotaError/i,
+        /exhausted your capacity/i,
+        /quota will reset/i,
+        /rateLimitExceeded/i,
+      ];
+      const quotaMatch = quotaPatterns.find(p => p.test(combinedOutput));
+      if (quotaMatch) {
+        // Extract reset time if present
+        const resetMatch = combinedOutput.match(/reset(?:s)? (?:in|after) (\d+h\s*\d+m(?:\s*\d+s)?)/i);
+        const resetInfo = resetMatch ? ` (resets in ${resetMatch[1]})` : '';
+        const errorMsg = `${cliName.toUpperCase()} quota exhausted${resetInfo}. The CLI exited 0 but returned a quota error instead of analysis output.`;
+        logger.warn(`⏱️ ${errorMsg}`);
+
+        if (options.onStreamingEvent) {
+          options.onStreamingEvent({
+            type: 'agent_error',
+            agent: cliName,
+            content: errorMsg,
+            timestamp: Date.now(),
+            sessionId: options.sessionId
+          });
+        }
+
+        return {
+          agent: cliName,
+          success: false,
+          output: '',
+          error: errorMsg,
+          executionTime: Date.now() - startTime,
+          command: `${command} ${args.join(' ')}`,
+          workingDirectory: workingDir,
+          exitCode: 0
+        };
+      }
+
       return {
         agent: cliName,
         success: true,
@@ -1046,6 +1194,11 @@ export class CLIAgentOrchestrator {
         workingDirectory: workingDir,
         exitCode
       };
+    } finally {
+      // Clean up temp MCP config file (Claude flag-file method)
+      if (tempMcpConfigPath) {
+        await cleanupTempConfig(tempMcpConfigPath);
+      }
     }
   }
 
@@ -1308,8 +1461,6 @@ export class CLIAgentOrchestrator {
       });
       synthesis += '\n';
     }
-
-    synthesis += `\n> **Calling agent:** These are adversarial critiques, not authoritative assessments. Evaluate each claim against evidence before acting on or presenting it.\n`;
 
     return synthesis.trim();
   }

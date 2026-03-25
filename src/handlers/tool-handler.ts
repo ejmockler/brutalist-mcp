@@ -252,7 +252,7 @@ export class ToolHandler {
       logger.debug(`Primary arg: ${config.primaryArgField}="${validatedPrimaryArg}", analysisType="${config.analysisType}"`);
 
       // Get system prompt (from deprecated field or system-prompts.ts)
-      const systemPrompt = config.systemPrompt || getSystemPrompt(config.analysisType, args.mcp_servers);
+      const systemPrompt = config.systemPrompt || getSystemPrompt(config.analysisType, args.mcp_servers, args.url);
 
       // Run the analysis
       const result = await this.executeBrutalistAnalysis(

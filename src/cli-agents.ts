@@ -11,6 +11,7 @@ import {
   cleanupTempConfig,
   buildCodexMCPOverride,
   ensureGeminiMCPServers,
+  ensurePlaywrightBrowsers,
 } from './mcp-registry.js';
 
 interface ChildProcessError extends Error {
@@ -846,6 +847,11 @@ export class CLIAgentOrchestrator {
     if (mcpEnabled && config.mcpSupport) {
       const servers = resolveServers(options.mcpServers!);
       const serverNames = Object.keys(servers);
+
+      // Auto-install Playwright browsers if playwright is requested
+      if (servers.playwright) {
+        await ensurePlaywrightBrowsers();
+      }
 
       if (serverNames.length > 0) {
         const mcp = config.mcpSupport;

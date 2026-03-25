@@ -408,7 +408,8 @@ export class BrutalistServer {
         medium: z.string().optional().describe("Design medium for design domain (web, mobile, spatial, print)"),
         audience: z.string().optional().describe("Target audience for design domain"),
         brand: z.string().optional().describe("Brand identity or design system constraints for design domain"),
-        mcp_servers: z.array(z.string()).optional().describe(`MCP servers to enable for CLI agents (e.g., ["playwright"]). Enables evidence-backed analysis via external tools. Available: ${listRegisteredServers().join(', ')}`)
+        url: z.string().optional().describe("Live URL for visual evaluation (e.g., 'http://localhost:5173'). When provided with design domain, critics use Playwright to navigate and visually evaluate the running interface. Strongly recommended for design critiques."),
+        mcp_servers: z.array(z.string()).optional().describe(`MCP servers to enable for CLI agents (e.g., ["playwright"]). Enables evidence-backed analysis via external tools. Available: ${listRegisteredServers().join(', ')}. Auto-enabled for design domain.`)
       },
       async (args, extra) => this.handleUnifiedRoast(args, extra)
     );
@@ -627,6 +628,16 @@ export class BrutalistServer {
           text: `ERROR: Unknown domain "${args.domain}". Valid domains: codebase, file_structure, dependencies, git_history, test_coverage, idea, architecture, research, security, product, infrastructure, design`
         }]
       };
+    }
+
+    // Auto-enable Playwright for design domain — visual evaluation should be
+    // the default, not an opt-in afterthought critics never discover
+    if (args.domain === 'design') {
+      const mcpServers = Array.isArray(args.mcp_servers) ? [...args.mcp_servers] as string[] : [] as string[];
+      if (!mcpServers.includes('playwright')) {
+        mcpServers.push('playwright');
+      }
+      args.mcp_servers = mcpServers;
     }
 
     // Generate tool config from domain

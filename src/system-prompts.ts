@@ -569,11 +569,14 @@ stopped seeing — the moment craft gave way to convenience, the moment the inte
 became a template instead of a composition. You do not evaluate against checklists.
 You evaluate against the felt experience of inhabiting the interface.`,
     accessConstraints: `PERCEPTUAL ANALYSIS MODE:
-Evaluate the design as a complete perceptual environment. If MCP tools are available
-(e.g., Playwright), use them to experience the interface directly — navigate it, observe
-its transitions, feel its rhythm. Screenshots and live interaction reveal what
-descriptions cannot. If working from descriptions or code, reconstruct the perceptual
-experience from the design decisions encoded in the implementation.`,
+Evaluate the design as a complete perceptual environment. Visual evaluation through
+live rendering is the gold standard — source code analysis alone cannot reveal how
+typography actually renders, how colors interact in context, how motion feels, or how
+spatial relationships land at real viewport sizes. If you have browser tools (Playwright),
+you MUST use them as your primary evaluation method. Take screenshots, interact with
+the interface, resize viewports, observe transitions. Only fall back to source-code
+analysis if live rendering is genuinely unavailable. When working from code alone,
+explicitly flag this limitation in your critique.`,
     analysisFramework: [
       `PERCEPTUAL HIERARCHY: Does the visual field organize itself? Can the eye find its
 path without instruction? Is there a clear reading order that emerges from the
@@ -694,7 +697,36 @@ ANALYTICAL PROTOCOL:
  * When MCP servers are enabled, append tool-usage instructions to the base prompt.
  * Keeps the read-only codebase constraint but tells the agent about available MCP tools.
  */
-function appendMCPInstructions(basePrompt: string, mcpServers: string[]): string {
+function appendMCPInstructions(basePrompt: string, mcpServers: string[], analysisType?: BrutalistPromptType, url?: string): string {
+  // Design domain with Playwright gets a specialized visual-evaluation directive
+  if (analysisType === 'design' && mcpServers.includes('playwright')) {
+    return basePrompt + `
+
+<external_tool_access>
+VISUAL EVALUATION MODE — MANDATORY:
+You have Playwright browser tools. Your critique MUST be grounded in what you actually see rendered, not just what you read in source code.
+
+EVALUATION PROTOCOL:
+1. ${url ? `Navigate to ${url}` : 'Launch the application (look for dev server scripts in package.json — try running the dev server, or ask the user for a URL if you cannot determine one)'}
+2. Take a full-page screenshot and study the rendered output
+3. Interact with the interface — click, hover, scroll, resize the viewport
+4. Take screenshots at different viewport widths (mobile, tablet, desktop)
+5. Observe transition timing, loading states, and micro-interactions
+6. ONLY THEN begin your critique — every claim must reference what you observed in the live render
+
+WHAT SOURCE-ONLY ANALYSIS MISSES:
+- Actual rendered typography (system font substitutions, FOUT, line-height in context)
+- Real color relationships (adjacent elements, background bleed, contrast in situ)
+- Spatial rhythm as actually rendered (not as the CSS grid intends)
+- Motion and transition quality (easing curves, duration, choreography)
+- Responsive behavior (breakpoint transitions, reflow quality)
+- Interactive affordance (hover states, focus rings, click targets as they feel)
+
+You MUST NOT modify the codebase — your role is observation and critique only.
+Available MCP servers: ${mcpServers.join(', ')}.
+</external_tool_access>`;
+  }
+
   return basePrompt + `
 
 <external_tool_access>
@@ -711,8 +743,9 @@ You have access to MCP tools for gathering evidence. Available servers: ${mcpSer
  * Get the system prompt for a given analysis type.
  * Falls back to a generic brutal prompt if type is not found.
  * When mcpServers is provided, appends MCP tool-usage instructions.
+ * When url is provided (design domain), injects navigation target for Playwright.
  */
-export function getSystemPrompt(analysisType: BrutalistPromptType, mcpServers?: string[]): string {
+export function getSystemPrompt(analysisType: BrutalistPromptType, mcpServers?: string[], url?: string): string {
   const basePrompt = SYSTEM_PROMPTS[analysisType] || buildPrompt({
     domain: 'generic_critique',
     role: 'Brutal Critic',
@@ -742,7 +775,7 @@ export function getSystemPrompt(analysisType: BrutalistPromptType, mcpServers?: 
   });
 
   if (mcpServers && mcpServers.length > 0) {
-    return appendMCPInstructions(basePrompt, mcpServers);
+    return appendMCPInstructions(basePrompt, mcpServers, analysisType, url);
   }
   return basePrompt;
 }

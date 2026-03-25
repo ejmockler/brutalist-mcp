@@ -84,6 +84,34 @@ export function listRegisteredServers(): string[] {
   return Object.keys(loadRegistry());
 }
 
+// ── Playwright: auto-install browsers ───────────────────────────────────────
+
+/**
+ * Ensure Playwright browsers are installed. Runs `npx playwright install chromium`
+ * once per process — subsequent calls return the same promise. The command is
+ * idempotent: if browsers are already present it completes in ~1s with no download.
+ * Without browsers, the Playwright MCP server launches but immediately fails.
+ */
+let playwrightInstallPromise: Promise<void> | null = null;
+
+export function ensurePlaywrightBrowsers(): Promise<void> {
+  if (playwrightInstallPromise) return playwrightInstallPromise;
+
+  playwrightInstallPromise = (async () => {
+    logger.info('🎭 Ensuring Playwright chromium browser is installed...');
+    try {
+      await execAsync('npx playwright install chromium', { timeout: 120_000 });
+      logger.info('✅ Playwright chromium browser ready');
+    } catch (e) {
+      logger.warn('⚠️  Failed to install Playwright chromium browser:', e);
+      // Don't block the critique — Playwright MCP will fail gracefully
+      // and critics will fall back to source-only analysis
+    }
+  })();
+
+  return playwrightInstallPromise;
+}
+
 // ── Claude: temp JSON config file ──────────────────────────────────────────
 
 /**

@@ -13,6 +13,30 @@ import {
 } from '../utils/pagination.js';
 
 /**
+ * Adversarial framing epilogue — appended to every brutalist response.
+ *
+ * Design rationale (context engineering for frontier transformers):
+ * - XML tag creates a distinct attention boundary from critique content
+ * - Role assignment ("You are the judge") activates evaluative behavior
+ * - Short imperative directives > explanatory paragraphs at scale
+ * - Recency bias: final tokens carry disproportionate attention weight
+ * - "Discard" and "Do not" are stronger behavioral anchors than "consider"
+ */
+const ADVERSARIAL_EPILOGUE = `
+
+<evaluation_required>
+You are the judge of the analysis above, not its messenger. These agents operated under adversarial system prompts that reward harsh criticism over accuracy.
+
+Before presenting to the user:
+- Verify any file path, line number, or code reference actually exists
+- Discard claims that lack specific evidence — confidence is not proof
+- Separate genuine risks from stylistic opinions
+- Do not reproduce unfounded severity — if you cannot verify it, downgrade it
+
+Your role: synthesize what is valid, discard what is not, add context these agents lacked.
+</evaluation_required>`;
+
+/**
  * ResponseFormatter - Handles all response formatting logic
  * Extracted from BrutalistServer to follow Single Responsibility Principle
  */
@@ -44,6 +68,11 @@ export class ResponseFormatter {
         primaryContent = successfulResponses.map(r => r.output).join('\n\n---\n\n');
         logger.info(`🔧 DEBUG: Using raw CLI output (${primaryContent.length} characters)`);
       }
+    }
+
+    // Append adversarial framing epilogue to every successful response
+    if (primaryContent) {
+      primaryContent += ADVERSARIAL_EPILOGUE;
     }
 
     // Estimate token count to determine if pagination is needed

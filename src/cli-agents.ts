@@ -240,10 +240,16 @@ async function spawnAsync(
     // Use secure environment
     const secureEnv = options.env || createSecureEnvironment();
 
+    // On Windows, npm-installed CLIs (gemini, codex) are .cmd shims that
+    // require shell: true for spawn() to execute them. Native .exe CLIs
+    // (claude) work either way. Without this, detectCLIContext() silently
+    // fails to find .cmd-based CLIs on Windows.
+    const useShell = process.platform === 'win32';
+
     const child = spawn(command, args, {
       cwd: cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: false, // CRITICAL: disable shell to prevent injection
+      shell: useShell, // Required on Windows for .cmd shims; false on Unix to prevent injection
       detached: false, // Run all CLIs non-detached for consistent behavior
       env: secureEnv,
       // Additional security options

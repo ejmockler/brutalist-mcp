@@ -518,7 +518,7 @@ const CLI_BUILDER_CONFIGS: Record<CLIName, CLIBuilderConfig> = {
   },
   gemini: {
     command: 'gemini',
-    defaultArgs: [],
+    defaultArgs: ['--output-format', 'json'],
     modelArgName: '--model',
     envExtras: { TERM: 'dumb', NO_COLOR: '1', CI: 'true' },
     mpcEnvCleanup: ['GEMINI_MCP_CONFIG', 'MCP_ENABLED'],
@@ -757,6 +757,32 @@ export class CLIAgentOrchestrator {
     const result = agentMessages.join('\n\n').trim();
     logger.info(`extractCodexAgentMessage: extracted ${agentMessages.length} messages, total ${result.length} chars`);
     return result;
+  }
+
+  // Extract response text from Gemini --output-format json output
+  private extractGeminiResponse(jsonOutput: string): string {
+    if (!jsonOutput || !jsonOutput.trim()) {
+      logger.debug('extractGeminiResponse: empty input');
+      return '';
+    }
+
+    try {
+      const parsed = JSON.parse(jsonOutput);
+      if (parsed.response && typeof parsed.response === 'string') {
+        logger.info(`✅ extractGeminiResponse: extracted response with ${parsed.response.length} chars`);
+        return parsed.response;
+      }
+      logger.warn('extractGeminiResponse: no response field in JSON output', {
+        keys: Object.keys(parsed)
+      });
+      return '';
+    } catch (e) {
+      logger.warn('extractGeminiResponse: failed to parse JSON, returning raw output', {
+        error: e instanceof Error ? e.message : String(e),
+        preview: jsonOutput.substring(0, 200)
+      });
+      return '';
+    }
   }
 
   private emitThrottledStreamingEvent(
@@ -1098,6 +1124,14 @@ export class CLIAgentOrchestrator {
       // If Codex was run with --json flag, extract only the agent messages
       if (cliName === 'codex' && args.includes('--json')) {
         const decodedText = this.extractCodexAgentMessage(stdout);
+        if (decodedText) {
+          finalOutput = decodedText;
+        }
+      }
+
+      // If Gemini was run with --output-format json, extract the response field
+      if (cliName === 'gemini' && args.includes('--output-format') && args.includes('json')) {
+        const decodedText = this.extractGeminiResponse(stdout);
         if (decodedText) {
           finalOutput = decodedText;
         }

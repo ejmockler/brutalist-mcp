@@ -501,7 +501,7 @@ const CLI_BUILDER_CONFIGS: Record<CLIName, CLIBuilderConfig> = {
   },
   codex: {
     command: 'codex',
-    defaultArgs: ['exec', '--sandbox', 'read-only'],
+    defaultArgs: ['exec', '--sandbox', 'read-only', '--skip-git-repo-check'],
     modelArgName: '--model',
     jsonFlag: '--json',
     mpcEnvCleanup: ['CODEX_MCP_CONFIG', 'MCP_ENABLED'],

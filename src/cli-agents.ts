@@ -1145,13 +1145,22 @@ export class CLIAgentOrchestrator {
       }
 
       // Detect CLI errors that exit 0 but contain fatal error output
-      // (e.g., Gemini CLI returns exit code 0 on quota exhaustion)
+      // (e.g., Gemini CLI returns exit code 0 on quota exhaustion,
+      //  Codex CLI may return usage limit errors in output)
       const combinedOutput = `${finalOutput}\n${stderr}`;
       const quotaPatterns = [
         /TerminalQuotaError/i,
         /exhausted your capacity/i,
         /quota will reset/i,
         /rateLimitExceeded/i,
+        /rate limit/i,
+        /usage limit/i,
+        /Too Many Requests/i,
+        /\b429\b/,
+        /token limit exceeded/i,
+        /billing.*limit/i,
+        /spending.*limit/i,
+        /plan.*limit/i,
       ];
       const quotaMatch = quotaPatterns.find(p => p.test(combinedOutput));
       if (quotaMatch) {
@@ -1197,15 +1206,18 @@ export class CLIAgentOrchestrator {
       const execError: ChildProcessError = error as ChildProcessError;
       const exitCode = execError.code || -1;
 
-      // Detect rate limiting errors for Gemini
-      const isRateLimit = cliName === 'gemini' && (
-        execError.stderr?.includes('429') ||
-        execError.message?.includes('rateLimitExceeded') ||
-        execError.stderr?.includes('rate limit')
-      );
+      // Detect rate limiting / usage limit errors across all CLIs
+      const rateLimitPatterns = [
+        '429', 'rate limit', 'rate_limit', 'rateLimitExceeded',
+        'Too Many Requests', 'usage limit', 'usage_limit',
+        'quota', 'exhausted', 'billing', 'spending limit',
+        'token limit', 'plan limit',
+      ];
+      const errorText = `${execError.message || ''} ${execError.stderr || ''}`.toLowerCase();
+      const isRateLimit = rateLimitPatterns.some(p => errorText.includes(p.toLowerCase()));
 
       if (isRateLimit) {
-        logger.warn(`⏱️ ${cliName.toUpperCase()} CLI hit rate limit (${Date.now() - startTime}ms)`);
+        logger.warn(`⏱️ ${cliName.toUpperCase()} CLI hit rate/usage limit (${Date.now() - startTime}ms)`);
       } else {
         logger.error(`❌ ${cliName.toUpperCase()} execution failed (${Date.now() - startTime}ms)`, {
           error: "Redacted: See internal logs for full error details.",
@@ -1214,12 +1226,16 @@ export class CLIAgentOrchestrator {
         });
       }
 
+      const errorMsg = isRateLimit
+        ? `${cliName.toUpperCase()} hit rate/usage limit. Try again later or use a different agent.`
+        : (error instanceof Error ? error.message : String(error));
+
       // Emit error event
       if (options.onStreamingEvent) {
         options.onStreamingEvent({
           type: 'agent_error',
           agent: cliName,
-          content: `${cliName.toUpperCase()} failed: ${error instanceof Error ? error.message : String(error)}`,
+          content: `${cliName.toUpperCase()} failed: ${errorMsg}`,
           timestamp: Date.now(),
           sessionId: options.sessionId
         });
@@ -1229,7 +1245,7 @@ export class CLIAgentOrchestrator {
         agent: cliName,
         success: false,
         output: '',
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMsg,
         executionTime: Date.now() - startTime,
         command: `(redacted command for ${cliName})`,
         workingDirectory: workingDir,

@@ -7,10 +7,20 @@ import { logger } from './logger.js';
 // when the parent process closes the pipe. This is normal during shutdown.
 process.on('uncaughtException', (error) => {
   if (error.message === 'Not connected') {
+    logger.info('MCP client disconnected (Not connected) — shutting down');
     logger.shutdown();
     process.exit(0);
   }
+  logger.error("Uncaught exception — process will exit", error);
   console.error("Uncaught exception:", error instanceof Error ? error.message : String(error));
+  logger.shutdown();
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  logger.error("Unhandled promise rejection — process will exit", error);
+  console.error("Unhandled rejection:", error.message);
   logger.shutdown();
   process.exit(1);
 });

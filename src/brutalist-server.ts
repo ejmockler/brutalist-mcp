@@ -366,10 +366,9 @@ export class BrutalistServer {
           "codebase", "file_structure", "dependencies", "git_history", "test_coverage",
           "idea", "architecture", "research", "security", "product", "infrastructure", "design"
         ]).describe("Analysis domain"),
-        target: z.string().describe("Directory path for filesystem domains (codebase, dependencies, git_history, etc.) OR text content for abstract domains (idea, architecture, security, etc.)"),
+        target: z.string().describe("Filesystem path to analyze (e.g., '/path/to/project' or '.'). Directs agents to the relevant part of the codebase."),
         // Common optional fields
-        context: z.string().optional().describe("Additional context"),
-        workingDirectory: z.string().optional().describe("Working directory"),
+        context: z.string().optional().describe("Essential context for the critique. For abstract domains (idea, architecture, security, etc.), this is the primary input describing what to evaluate. For filesystem domains, provides supplementary background (e.g., goals, constraints, team context)."),
         clis: z.array(z.enum(["claude", "codex", "gemini"])).min(1).max(3).optional().describe("OMIT unless user explicitly requests specific CLIs. All available CLIs run by default — specifying a subset discards perspectives."),
         verbose: z.boolean().optional().describe("Detailed output"),
         models: z.object({
@@ -422,12 +421,12 @@ export class BrutalistServer {
         topic: z.string().describe("The debate topic"),
         proPosition: z.string().describe("The PRO thesis to defend (extracted by calling agent)"),
         conPosition: z.string().describe("The CON thesis to defend (extracted by calling agent)"),
+        target: z.string().optional().describe("Filesystem path to analyze (e.g., '/path/to/project' or '.'). Directs agents to the relevant part of the codebase."),
         agents: z.array(z.enum(["claude", "codex", "gemini"])).length(2).optional()
           .describe("OMIT unless user explicitly requests specific agents. Two agents are auto-selected from all available CLIs by default."),
         rounds: z.number().min(1).max(3).default(3).optional()
           .describe("Number of debate rounds (default: 3)"),
-        context: z.string().optional().describe("Additional context for the debate"),
-        workingDirectory: z.string().optional().describe("Working directory for analysis"),
+        context: z.string().optional().describe("Essential context for the debate — the substantive background, constraints, and details that shape the argument."),
         models: z.object({
           claude: z.string().optional(),
           codex: z.string().optional(),
@@ -649,14 +648,10 @@ export class BrutalistServer {
     delete mappedArgs.target;
 
     // Set the primary argument based on domain's input type
-    if (domain.inputType === 'filesystem') {
-      mappedArgs.targetPath = args.target;
-    } else {
-      mappedArgs.content = args.target;
-      // For abstract tools, also set targetPath if workingDirectory not provided
-      if (!args.workingDirectory) {
-        mappedArgs.targetPath = '.';
-      }
+    mappedArgs.targetPath = args.target;
+    if (domain.inputType !== 'filesystem') {
+      // For abstract domains, context is the primary content input
+      mappedArgs.content = args.context || '';
     }
 
     // Delegate to the unified handler
@@ -671,6 +666,7 @@ export class BrutalistServer {
     topic: string;
     proPosition: string;
     conPosition: string;
+    target?: string;
     agents?: ('claude' | 'codex' | 'gemini')[];
     rounds?: number;
     context?: string;
@@ -880,6 +876,7 @@ export class BrutalistServer {
     topic: string;
     proPosition: string;
     conPosition: string;
+    target?: string;
     agents?: ('claude' | 'codex' | 'gemini')[];
     rounds: number;
     context?: string;
@@ -935,7 +932,7 @@ export class BrutalistServer {
       let completedTurns = 0;
 
       // Frontier 1: Detect self-referential working directory (Codex reading its own control prompts)
-      const resolvedWorkDir = workingDirectory || this.config.workingDirectory || process.cwd();
+      const resolvedWorkDir = args.target || workingDirectory || this.config.workingDirectory || process.cwd();
       const absWorkDir = pathResolve(resolvedWorkDir);
       const isSelfReferential = existsSync(pathJoin(absWorkDir, 'src', 'brutalist-server.ts'))
         || existsSync(pathJoin(absWorkDir, 'dist', 'brutalist-server.js'));

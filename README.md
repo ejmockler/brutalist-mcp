@@ -229,14 +229,11 @@ See [docs/pagination.md](docs/pagination.md) for detailed pagination documentati
 ### Choose Specific CLI Agents
 
 ```bash
-# Use specific agents (subset selection)
-roast(domain="codebase", target="/src", clis=["claude", "gemini"])
+# Default: run all available critics in parallel (recommended)
+roast(domain="codebase", target="/src")
 
-# Use a single agent
-roast(domain="codebase", target="/src", clis=["claude"])
-
-# Multi-agent analysis (default - all available)
-roast(domain="idea", target="...")  # All available agents provide perspectives
+# Restrict to a subset only when the user explicitly names which critics
+roast(domain="codebase", target="/src", clis=["codex", "gemini"])
 ```
 
 ### Agent Strengths

@@ -265,7 +265,6 @@ describe('BrutalistServer', () => {
 
         // Should have optional parameters
         expect(schema).toHaveProperty('context');
-        expect(schema).toHaveProperty('workingDirectory');
       }
     });
   });

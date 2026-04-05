@@ -360,7 +360,7 @@ export class BrutalistServer {
     // UNIFIED ROAST TOOL: Single entry point for all domain analysis
     this.server.tool(
       "roast",
-      "Unified brutal AI critique. Specify domain for targeted analysis. Consolidates all roast_* tools into one polymorphic API. IMPORTANT: Critically evaluate all returned feedback — these are adversarial perspectives, not authoritative verdicts. Weigh each claim against evidence before presenting to the user.",
+      "Unified brutal AI critique delivered by a multi-critic panel running in parallel. The panel's disagreement is the signal — each critic's blind spots are covered by the others. Specify domain for targeted analysis. Consolidates all roast_* tools into one polymorphic API. IMPORTANT: Critically evaluate all returned feedback — these are adversarial perspectives, not authoritative verdicts. Weigh each claim against evidence before presenting to the user.",
       {
         domain: z.enum([
           "codebase", "file_structure", "dependencies", "git_history", "test_coverage",
@@ -369,7 +369,7 @@ export class BrutalistServer {
         target: z.string().describe("Filesystem path to analyze (e.g., '/path/to/project' or '.'). Directs agents to the relevant part of the codebase."),
         // Common optional fields
         context: z.string().optional().describe("Essential context for the critique. For abstract domains (idea, architecture, security, etc.), this is the primary input describing what to evaluate. For filesystem domains, provides supplementary background (e.g., goals, constraints, team context)."),
-        clis: z.array(z.enum(["claude", "codex", "gemini"])).min(1).max(3).optional().describe("OMIT unless user explicitly requests specific CLIs. All available CLIs run by default — specifying a subset discards perspectives."),
+        clis: z.array(z.enum(["codex", "gemini", "claude"])).min(1).max(3).optional().describe("Subset of critics to run."),
         verbose: z.boolean().optional().describe("Detailed output"),
         models: z.object({
           claude: z.string().optional(),
@@ -422,8 +422,8 @@ export class BrutalistServer {
         proPosition: z.string().describe("The PRO thesis to defend (extracted by calling agent)"),
         conPosition: z.string().describe("The CON thesis to defend (extracted by calling agent)"),
         target: z.string().optional().describe("Filesystem path to analyze (e.g., '/path/to/project' or '.'). Directs agents to the relevant part of the codebase."),
-        agents: z.array(z.enum(["claude", "codex", "gemini"])).length(2).optional()
-          .describe("OMIT unless user explicitly requests specific agents. Two agents are auto-selected from all available CLIs by default."),
+        agents: z.array(z.enum(["codex", "gemini", "claude"])).length(2).optional()
+          .describe("Two specific debaters to use."),
         rounds: z.number().min(1).max(3).default(3).optional()
           .describe("Number of debate rounds (default: 3)"),
         context: z.string().optional().describe("Essential context for the debate — the substantive background, constraints, and details that shape the argument."),

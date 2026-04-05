@@ -37,7 +37,7 @@ export const BASE_ROAST_SCHEMA = {
   // Context and execution parameters
   context: z.string().optional().describe("Additional context about the analysis"),
   workingDirectory: z.string().optional().describe("Working directory to execute from"),
-  clis: z.array(z.enum(["claude", "codex", "gemini"])).min(1).max(3).optional().describe("OMIT unless user explicitly requests specific CLIs. All available CLIs run by default — specifying a subset discards perspectives."),
+  clis: z.array(z.enum(["codex", "gemini", "claude"])).min(1).max(3).optional().describe("Subset of critics to run."),
   verbose: z.boolean().optional().describe("Include detailed execution information in output (default: false)"),
 
   // Model selection — pass any model the CLI supports; omit to use CLI's configured default.

@@ -39,8 +39,8 @@ export const BASE_ARGUMENTS = z.object({
     gemini: z.string().optional()
   }).optional().describe("Specific models per agent"),
 
-  clis: z.array(z.enum(['claude', 'codex', 'gemini'])).min(1).max(3).optional()
-    .describe("CLI agents to use (default: all available)"),
+  clis: z.array(z.enum(['codex', 'gemini', 'claude'])).min(1).max(3).optional()
+    .describe("Subset of critics to run."),
 
   force_refresh: z.boolean().optional()
     .describe("Ignore cache"),

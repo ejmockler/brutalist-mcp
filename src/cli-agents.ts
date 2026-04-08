@@ -58,8 +58,9 @@ export const CLAUDE_ALIASES = ['opus', 'sonnet', 'haiku'] as const;
 const MAX_PATH_DEPTH = 10; // Maximum directory depth for paths
 
 // Validate and sanitize CLI arguments
-// Note: We use spawn() with shell:false and array args, so we don't need to block
-// punctuation characters. Only block truly dangerous patterns (null bytes).
+// On Unix we use spawn() with shell:false and array args, so shell metacharacters
+// are harmless. On Windows we must use shell:true for .cmd shims, so args are
+// escaped via escapeWindowsArg() before being joined into the command string.
 // We use stdin for large content, so no arg length limit needed (OS limit is ~1MB anyway).
 function validateArguments(args: string[]): void {
   for (const arg of args) {
@@ -68,6 +69,61 @@ function validateArguments(args: string[]): void {
       throw new Error('Argument contains null byte');
     }
   }
+}
+
+// Escape a single argument for safe embedding in a Windows cmd.exe command string.
+// Required when shell:true is used for .cmd shim execution. On Unix this is never called.
+//
+// On Windows with shell:true, Node.js runs: cmd.exe /d /s /c "command args..."
+// The string passes through TWO parsers sequentially:
+//   1. cmd.exe — interprets metacharacters (&|<>()^"%!) and toggles quoting on "
+//   2. MSVCRT/CRT — the child process's C runtime parses the command line into argv
+//
+// These parsers have INCOMPATIBLE quote-escaping rules:
+//   - MSVCRT recognizes \" as an escaped quote
+//   - cmd.exe does NOT — it sees \" as backslash + quote-toggle
+//
+// Solution (from cross-spawn / https://qntm.org/cmd):
+//   Phase 1: MSVCRT escaping (\" for quotes, double trailing backslashes)
+//   Phase 2: Wrap in "...", then ^-prefix EVERY cmd.exe metacharacter
+// After cmd.exe consumes the ^ prefixes, the child process receives a clean
+// MSVCRT-quoted string.
+function escapeWindowsArg(arg: string): string {
+  if (arg.includes('\0')) {
+    throw new Error('Argument contains null byte');
+  }
+
+  // CR/LF act as command separators in cmd.exe — reject outright
+  if (/[\r\n]/.test(arg)) {
+    throw new Error('Argument contains newline');
+  }
+
+  // Empty string → escaped empty quoted arg
+  if (arg.length === 0) {
+    return '^"^"';
+  }
+
+  // Fast path: simple tokens with no cmd.exe metacharacters or whitespace
+  if (/^[A-Za-z0-9._\-\/\\:=@+]+$/.test(arg)) {
+    return arg;
+  }
+
+  // Phase 1: MSVCRT/CRT escaping
+  //  - Double backslashes before any " (MSVCRT convention: 2N+1 \ before " = N \ + literal ")
+  //  - Escape " with backslash
+  //  - Double trailing backslashes (they'll precede the closing quote we add)
+  let escaped = arg
+    .replace(/(\\*)"/g, '$1$1\\"')
+    .replace(/(\\*)$/, '$1$1');
+
+  // Phase 2: Wrap in quotes, then ^-escape every cmd.exe metacharacter.
+  // This prevents cmd.exe from interpreting & | < > ( ) ^ " % ! as operators.
+  // The ^ prefix makes each metachar literal in cmd.exe; cmd.exe strips the ^
+  // before the child process sees the string, leaving valid MSVCRT quoting.
+  let quoted = `"${escaped}"`;
+  quoted = quoted.replace(/[()%!^"<>&|]/g, '^$&');
+
+  return quoted;
 }
 
 // Validate and canonicalize paths to prevent traversal attacks
@@ -240,15 +296,36 @@ async function spawnAsync(
     // Use secure environment
     const secureEnv = options.env || createSecureEnvironment();
 
-    const child = spawn(command, args, {
+    // On Windows, npm-installed CLIs (gemini, codex) are .cmd batch shims that
+    // require shell:true for spawn() to execute them. Native .exe CLIs (claude)
+    // work either way. On Unix, shell remains false to prevent injection.
+    //
+    // When shell:true, we join command+args into a single escaped string to:
+    //  1. Avoid Node.js DEP0190 (args array with shell:true is deprecated)
+    //  2. Ensure cmd.exe metacharacters in args are properly escaped
+    const useShell = process.platform === 'win32';
+
+    let spawnCommand: string;
+    let spawnArgs: string[];
+    if (useShell) {
+      spawnCommand = [command, ...args.map(escapeWindowsArg)].join(' ');
+      spawnArgs = [];
+    } else {
+      spawnCommand = command;
+      spawnArgs = args;
+    }
+
+    const child = spawn(spawnCommand, spawnArgs, {
       cwd: cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: false, // CRITICAL: disable shell to prevent injection
+      shell: useShell,
       detached: false, // Run all CLIs non-detached for consistent behavior
       env: secureEnv,
-      // Additional security options
-      uid: process.getuid ? process.getuid() : undefined, // Maintain current user ID
-      gid: process.getgid ? process.getgid() : undefined  // Maintain current group ID
+      // Additional security options (Unix only; not available on Windows)
+      ...(useShell ? {} : {
+        uid: process.getuid ? process.getuid() : undefined,
+        gid: process.getgid ? process.getgid() : undefined
+      })
     });
 
     let stdout = '';

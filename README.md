@@ -210,6 +210,8 @@ Features:
 | `roast_security` | Attack vectors, authentication, authorization |
 | `roast_product` | UX, adoption barriers, user needs |
 | `roast_infrastructure` | Reliability, scaling, operational overhead |
+| `roast_design` | Perceptual craft, typography, affordances (Playwright for live UIs) |
+| `roast_legal` | Authority, application, adversary, procedure, interpretation, risk |
 
 ### Utilities
 
@@ -243,6 +245,30 @@ Different agents have different strengths:
 - **Architecture**: Gemini, Claude, Codex
 - **Security**: Codex, Claude, Gemini
 - **Research**: Claude, Gemini, Codex
+
+### Verification-Heavy Domains
+
+`legal`, `research`, and `security` ship with a mandatory verification protocol. Before citing any external authority (case, statute, study, CVE, advisory), agents must invoke their native web tools, lift a verbatim quote from the source, and tag the citation with one of:
+
+- `[VERIFIED: <url> | "<verbatim quote supporting the attribution>"]`
+- `[SUPPLIED: <location> | "<verbatim quote from supplied materials>"]`
+- `[UNVERIFIED: <reason>]` — verification failed; no quote
+
+Untagged citations are a protocol violation. The "state doctrine without a cite" fallback is conditional on a failed web lookup, not a parallel option. Consumers of the critique can spot-check citations by fetching the URL and grepping for the quoted string.
+
+### Gemini Frontier Model Rotation
+
+For Gemini, the server pins `gemini-3.1-pro-preview` as the default to prevent the CLI's Auto router from downselecting to `gemini-2.5-flash-lite` under verification load. When the preview tier is saturated (429 / "No capacity available"), the orchestrator automatically rotates through the frontier chain:
+
+1. `gemini-3.1-pro-preview` (newest frontier)
+2. `gemini-3-pro-preview` (previous frontier)
+3. `gemini-2.5-pro` (stable last-gen frontier)
+
+Overrides:
+- Per-call: `roast(..., models={gemini: "gemini-2.5-flash"})` — caller chooses, no rotation.
+- Per-environment: `BRUTALIST_GEMINI_MODEL=gemini-2.5-pro` — operator chooses, no rotation.
+
+Rotation only fires on saturation signals (rate/usage/quota). Non-saturation failures (auth, subprocess, prompt errors) abort rotation immediately.
 
 ## Why Multiple Perspectives
 

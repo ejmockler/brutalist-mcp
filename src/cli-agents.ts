@@ -16,20 +16,29 @@ import type { MetricsRegistry } from './metrics/index.js';
 import { CLI_SPAWN_LABELS, safeMetric } from './metrics/index.js';
 
 /**
- * Detect Gemini-specific saturation errors — "No capacity available",
- * status 429, overloaded, quota exhaustion. Used by the frontier-chain
- * rotation logic in `executeSingleCLI` to decide whether to rotate to the
- * next model tier or fail immediately (non-saturation errors don't
- * benefit from a different model).
+ * Detect errors where rotating to the next Gemini frontier tier is likely
+ * to succeed. Covers two failure families:
  *
- * Model-not-found (/ModelNotFoundError/) is NOT saturation — it means
- * the model alias is wrong. Treat as non-saturation so rotation aborts
- * and the caller sees the error rather than silently rotating past it.
+ *   1. Capacity saturation on the current tier
+ *      (429 / "No capacity available" / quota / rate-limit).
+ *
+ *   2. Access denial on the current tier — the model exists but the
+ *      user's account lacks preview-tier access. Appears as
+ *      ModelNotFoundError / "Requested entity was not found" / 403 /
+ *      "permission denied". In production the frontier chain is
+ *      probe-tested (not user-typos), so these errors mean "this tier
+ *      is unavailable to THIS caller" — which is exactly when rotation
+ *      to the next tier should fire. Dropping down from preview tiers
+ *      to the universally-available `gemini-2.5-pro` is the entire
+ *      point of the chain.
+ *
+ * Does NOT match: auth failures (missing/invalid API key), prompt-safety
+ * rejections, or subprocess crashes — these will not differ between
+ * frontier tiers.
  */
-function isGeminiSaturationError(error?: string): boolean {
+function isGeminiRotatableError(error?: string): boolean {
   if (!error) return false;
-  if (/ModelNotFoundError/i.test(error)) return false;
-  return /no capacity available|\b429\b|overloaded|rateLimitExceeded|rate limit|quota|too many requests/i.test(error);
+  return /no capacity available|\b429\b|overloaded|rateLimitExceeded|rate limit|quota|too many requests|ModelNotFoundError|Requested entity was not found|\b403\b|permission denied|access denied/i.test(error);
 }
 
 interface ChildProcessError extends Error {
@@ -1252,7 +1261,11 @@ export class CLIAgentOrchestrator {
     try {
       // Gemini frontier rotation: when using the default frontier chain (no
       // caller-specified model, no env-var override), rotate through the
-      // chain on saturation failures. Rotation is disabled when the caller
+      // chain on saturation OR access-denied failures. Access-denied
+      // rotation is the path most users take — the preview tier
+      // (gemini-3.1-pro-preview / gemini-3-pro-preview) isn't granted to
+      // every account, so the chain falls through to the universally-
+      // available gemini-2.5-pro. Rotation is disabled when the caller
       // or operator has explicitly chosen a model.
       const geminiRotationActive = cli === 'gemini'
         && !options.models?.gemini
@@ -1278,16 +1291,21 @@ export class CLIAgentOrchestrator {
 
   /**
    * Gemini frontier rotation - iterate through GEMINI_FRONTIER_CHAIN on
-   * saturation failures.
+   * rotatable failures (capacity saturation OR tier access denial).
    *
    * Only active when neither caller nor operator has chosen a model. Each
    * attempt injects the model via options.models.gemini. Per-attempt
-   * saturation is detected via the existing quota-pattern detection in
-   * _executeCLI - saturation produces success=false with an error matching
-   * /\b429\b/ or quota-family patterns. On non-saturation failure,
-   * rotation stops immediately (a different model will not fix prompt
-   * errors, subprocess crashes, or auth failures). On chain exhaustion,
-   * the last failing response is returned.
+   * failures are classified by isGeminiRotatableError(): capacity errors
+   * (quota/429) AND access errors (ModelNotFoundError / permission denied)
+   * both trigger rotation. On unrelated failures (auth, prompt rejection,
+   * subprocess crashes) rotation stops immediately — a different model
+   * will not fix those. On chain exhaustion, the last failing response
+   * is returned.
+   *
+   * In practice the typical non-preview user trajectory is:
+   *   gemini-3.1-pro-preview  -> access denied (rotate)
+   *   gemini-3-pro-preview    -> access denied (rotate)
+   *   gemini-2.5-pro          -> success (universally available)
    */
   private async _executeGeminiWithRotation(
     userPrompt: string,
@@ -1325,18 +1343,18 @@ export class CLIAgentOrchestrator {
         return response;
       }
 
-      if (!isGeminiSaturationError(response.error)) {
-        this.emitLog().debug(`Gemini ${model} failed non-saturation; rotation aborted`, {
+      if (!isGeminiRotatableError(response.error)) {
+        this.emitLog().debug(`Gemini ${model} failed with non-rotatable error; aborting rotation`, {
           errorPreview: response.error?.slice(0, 120),
         });
         return response;
       }
 
-      this.emitLog().warn(`Gemini ${model} saturated; rotating to next frontier tier`);
+      this.emitLog().warn(`Gemini ${model} unavailable (capacity or access); rotating to next frontier tier`);
       lastResponse = response;
     }
 
-    this.emitLog().error(`Gemini frontier chain exhausted (${chain.length} tiers); all saturated`);
+    this.emitLog().error(`Gemini frontier chain exhausted (${chain.length} tiers); no tier available to this account`);
     return lastResponse!;
   }
 

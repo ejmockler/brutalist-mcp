@@ -258,17 +258,23 @@ Untagged citations are a protocol violation. The "state doctrine without a cite"
 
 ### Gemini Frontier Model Rotation
 
-For Gemini, the server pins `gemini-3.1-pro-preview` as the default to prevent the CLI's Auto router from downselecting to `gemini-2.5-flash-lite` under verification load. When the preview tier is saturated (429 / "No capacity available"), the orchestrator automatically rotates through the frontier chain:
+For Gemini, the server pins `gemini-3.1-pro-preview` as the default to prevent the CLI's Auto router from downselecting to `gemini-2.5-flash-lite` under verification load. The orchestrator automatically rotates through the frontier chain when the current tier is unavailable:
 
-1. `gemini-3.1-pro-preview` (newest frontier)
-2. `gemini-3-pro-preview` (previous frontier)
-3. `gemini-2.5-pro` (stable last-gen frontier)
+1. `gemini-3.1-pro-preview` (newest frontier, preview-tier access)
+2. `gemini-3-pro-preview` (previous frontier, preview-tier access)
+3. `gemini-2.5-pro` (stable last-gen frontier, universally available)
+
+**Rotation fires on both capacity and access failures.** Users without preview-tier access (most accounts) will see the chain naturally fall through to `gemini-2.5-pro` on the first call — which is still a frontier-class model, far better than the Auto router's `gemini-2.5-flash-lite` downselect. Users *with* preview access get the newest model when capacity is available, with graceful fallback when it isn't.
+
+Rotatable failure patterns:
+- Capacity: `429`, `"No capacity available"`, `quota`, `rate limit`, `too many requests`
+- Access: `ModelNotFoundError`, `"Requested entity was not found"`, `403`, `permission denied`
+
+Rotation aborts immediately on unrelated failures (auth, subprocess crash, prompt rejection) — a different model won't fix those.
 
 Overrides:
 - Per-call: `roast(..., models={gemini: "gemini-2.5-flash"})` — caller chooses, no rotation.
-- Per-environment: `BRUTALIST_GEMINI_MODEL=gemini-2.5-pro` — operator chooses, no rotation.
-
-Rotation only fires on saturation signals (rate/usage/quota). Non-saturation failures (auth, subprocess, prompt errors) abort rotation immediately.
+- Per-environment: `BRUTALIST_GEMINI_MODEL=gemini-2.5-pro` — operator chooses, no rotation. Set this to `gemini-2.5-pro` to skip the preview-tier probe cost if you know your account lacks access.
 
 ## Why Multiple Perspectives
 

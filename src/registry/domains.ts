@@ -179,6 +179,20 @@ export const DOMAINS: Record<string, CritiqueDomain> = {
     keywords: ['design', 'ui', 'visual', 'interface', 'aesthetic', 'typography', 'layout', 'color', 'affordance', 'perception']
   },
 
+  LEGAL: {
+    id: 'legal',
+    name: 'Legal Analysis',
+    description: 'Adversarial critique of legal writing — briefs, motions, contracts, memos, opinions, filings, and legal questions — finding where the work breaks against adversaries, time, and authority. Legal specificity (doctrine, jurisdiction, facts) is supplied by the calling context.',
+    capabilities: ['static_analysis', 'threat_modeling', 'compliance_audit'],
+    artifactTypes: ['text_description', 'documentation'],
+    inputType: 'content',
+    requiredFields: ['content', 'targetPath'],
+    optionalFields: ['practice', 'jurisdiction', 'posture'],
+    argumentSpaceId: 'LEGAL_SPECIFIC',
+    promptType: 'legal',
+    keywords: ['legal', 'law', 'lawyer', 'attorney', 'brief', 'motion', 'memo', 'contract', 'clause', 'statute', 'regulation', 'authority', 'precedent', 'jurisdiction', 'litigation', 'transactional', 'compliance', 'doctrine', 'holding', 'dicta', 'appellate', 'regulatory', 'counsel']
+  },
+
   INFRASTRUCTURE: {
     id: 'infrastructure',
     name: 'Infrastructure Review',
@@ -259,7 +273,10 @@ function createContextBuilder(domain: CritiqueDomain, argSpace: any): ((args: an
   const labelOverrides: Record<string, string> = {
     threatModel: 'Threats',
     includeDevDeps: 'Include Dev Dependencies',
-    runCoverage: 'Run Coverage'
+    runCoverage: 'Run Coverage',
+    practice: 'Practice register',
+    jurisdiction: 'Jurisdiction',
+    posture: 'Procedural posture'
   };
 
   // For domains with optional fields, build context from those fields

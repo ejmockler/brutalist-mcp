@@ -111,6 +111,14 @@ export const TOOL_CONFIGS: ToolConfig[] = [
     brutalCritic,
     ARGUMENT_SPACES.INFRASTRUCTURE_SPECIFIC,
     parallelStrategy
+  ),
+
+  // 12. Legal analysis - legal specific
+  generator.generateTool(
+    DOMAINS.LEGAL,
+    brutalCritic,
+    ARGUMENT_SPACES.LEGAL_SPECIFIC,
+    parallelStrategy
   )
 ];
 

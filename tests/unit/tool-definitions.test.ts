@@ -42,7 +42,8 @@ describe('Tool Definitions', () => {
       expect(domains).toContain('security');
       expect(domains).toContain('architecture');
       expect(domains).toContain('design');
-      expect(domains.length).toBe(12);
+      expect(domains).toContain('legal');
+      expect(domains.length).toBe(13);
     });
   });
 

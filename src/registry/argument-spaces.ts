@@ -138,6 +138,27 @@ export const ARGUMENT_SPACES: Record<string, ArgumentSpace> = {
     })
   },
 
+  // Legal-specific arguments — all optional; legal specificity emerges from
+  // the calling agent's context, not from rigid schema. These fields exist
+  // to let the caller modulate register (practice area) and surface
+  // jurisdictional/procedural context when useful, not to enumerate law.
+  LEGAL_SPECIFIC: {
+    id: 'legal_specific',
+    name: 'Legal Specific',
+    base: FILESYSTEM_ARGUMENT_SPACE.base,
+    domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
+      practice: z.string().optional().describe("Practice register — freeform (e.g., 'litigation', 'transactional', 'regulatory', 'doctrinal', 'advisory', 'criminal defense', 'appellate'). Modulates the critic's adversary geometry."),
+      jurisdiction: z.string().optional().describe("Governing jurisdiction or forum (e.g., 'US federal', 'NY state', '9th Cir.', 'EU', 'Delaware Chancery'). Surfaces circuit splits and out-of-forum authority."),
+      posture: z.string().optional().describe("Procedural posture or use context (e.g., 'motion to dismiss', 'pre-signing redline', 'enforcement response', 'appellate opening brief', 'pre-litigation advice').")
+    }),
+    computed: (args) => ({
+      workingDirectory: args.targetPath || '.',
+      practiceRegister: args.practice,
+      jurisdictionContext: args.jurisdiction,
+      proceduralPosture: args.posture
+    })
+  },
+
   // Infrastructure-specific arguments
   INFRASTRUCTURE_SPECIFIC: {
     id: 'infrastructure_specific',

@@ -557,7 +557,15 @@ describe('CLIAgentOrchestrator', () => {
 
       const result = (orchestrator as any).decodeClaudeStreamJson(input);
       expect(result).toContain('[Claude Error]');
-      expect(result).toContain('API rate limited');
+      // Cycle 4 T17 (F8 — security): raw error strings like
+      // "API rate limited" are no longer returned by the decoder.
+      // The decoder returns a content-free "[Claude Error] <redacted>"
+      // marker so that provider-side stdout/stderr fragments, prompt
+      // echoes, or MCP override content from the raw error field
+      // cannot leak via CLIAgentResponse.output. Callers that need to
+      // classify the error use internal log metadata
+      // (errorPresent/errorClass).
+      expect(result).toContain('<redacted>');
     });
 
     it('should handle result with is_error flag', () => {

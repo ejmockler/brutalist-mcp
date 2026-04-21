@@ -1,3 +1,12 @@
+/**
+ * @module intelligent-buffer
+ * @deprecated NOT INTEGRATED -- This module provides priority-based event
+ * buffering for the unintegrated StreamingCLIOrchestrator. The canonical
+ * streaming path uses direct callbacks with simple throttling in
+ * cli-agents.ts#emitThrottledStreamingEvent. Retained for possible future
+ * integration. See src/streaming/STREAMING_ARCHITECTURE.md for details.
+ */
+
 import { logger } from '../logger.js';
 import { StreamingEvent } from '../cli-agents.js';
 
@@ -166,8 +175,8 @@ export interface EventBatch {
 }
 
 /**
- * Intelligent buffering system with adaptive throttling and content-aware batching
- * 
+ * Intelligent buffering system with adaptive throttling and content-aware batching.
+ *
  * Features:
  * - Priority-based queuing with immediate delivery for critical events
  * - Adaptive throttling based on content type and system load
@@ -175,6 +184,10 @@ export interface EventBatch {
  * - Memory-bounded circular buffers
  * - Backpressure handling
  * - Real-time metrics and monitoring
+ *
+ * @deprecated NOT INTEGRATED -- The canonical streaming path uses simple
+ * throttling in cli-agents.ts#emitThrottledStreamingEvent. This buffer is
+ * used only by the unintegrated SessionChannelManager.
  */
 export class IntelligentBuffer {
   private buffers = new Map<string, PriorityQueue<StreamingEvent>>();

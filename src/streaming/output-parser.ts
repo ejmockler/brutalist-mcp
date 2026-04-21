@@ -1,3 +1,12 @@
+/**
+ * @module output-parser
+ * @deprecated NOT INTEGRATED -- This module provides semantic CLI output
+ * parsing for the unintegrated StreamingCLIOrchestrator. The canonical
+ * streaming path decodes CLI output via per-provider adapters in
+ * src/cli-adapters/ (e.g., ClaudeAdapter.decodeOutput). Retained for possible
+ * future integration. See src/streaming/STREAMING_ARCHITECTURE.md for details.
+ */
+
 import { logger } from '../logger.js';
 import { StreamingEvent } from '../cli-agents.js';
 
@@ -41,14 +50,18 @@ export interface StreamingParser {
 }
 
 /**
- * Advanced semantic output parser with boundary detection and content classification
- * 
+ * Advanced semantic output parser with boundary detection and content classification.
+ *
  * Key features:
  * - State machine tracking for CLI phases
  * - Sentence/paragraph boundary detection
  * - Content classification (findings vs debug info)
  * - Streaming tokenization with incomplete sentence handling
  * - Memory-efficient circular buffering
+ *
+ * @deprecated NOT INTEGRATED -- The canonical streaming path decodes CLI
+ * output via per-provider adapters in src/cli-adapters/. This parser is not
+ * used by any production code path.
  */
 export class SemanticOutputParser implements StreamingParser {
   private buffer = '';
@@ -330,7 +343,9 @@ export class SemanticOutputParser implements StreamingParser {
 }
 
 /**
- * Factory for creating parsers optimized for different CLI agents
+ * Factory for creating parsers optimized for different CLI agents.
+ *
+ * @deprecated NOT INTEGRATED -- See SemanticOutputParser deprecation note.
  */
 export class ParserFactory {
   /**

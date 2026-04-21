@@ -1,3 +1,12 @@
+/**
+ * @module sse-transport
+ * @deprecated NOT INTEGRATED -- This module provides a custom SSE transport
+ * with session isolation for the unintegrated StreamingCLIOrchestrator. The
+ * canonical HTTP transport uses StreamableHTTPServerTransport from the MCP SDK
+ * (see src/transport/http-transport.ts). Retained for possible future
+ * integration. See src/streaming/STREAMING_ARCHITECTURE.md for details.
+ */
+
 import { EventEmitter } from 'events';
 import { Request, Response } from 'express';
 import { logger } from '../logger.js';
@@ -19,8 +28,8 @@ export interface SSEConnection {
 }
 
 /**
- * Enhanced Server-Sent Events transport with session isolation
- * 
+ * Enhanced Server-Sent Events transport with session isolation.
+ *
  * Features:
  * - Session-scoped connections with isolation guarantees
  * - Connection pooling with resource limits
@@ -28,6 +37,9 @@ export interface SSEConnection {
  * - Graceful connection management
  * - Event filtering and routing by session
  * - Memory-efficient streaming with backpressure
+ *
+ * @deprecated NOT INTEGRATED -- The canonical HTTP transport uses
+ * StreamableHTTPServerTransport from the MCP SDK (src/transport/http-transport.ts).
  */
 export class EnhancedSSETransport extends EventEmitter {
   private connections = new Map<string, SSEConnection>();

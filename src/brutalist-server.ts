@@ -4,18 +4,20 @@ import { z } from "zod";
 import { CLIAgentOrchestrator, StreamingEvent } from './cli-agents.js';
 import { listRegisteredServers } from './mcp-registry.js';
 import { logger } from './logger.js';
+import type { ScopedLogger } from './logger.js';
+import {
+  createMetricsRegistry,
+  safeMetric,
+  STREAMING_EVENT_LABELS,
+} from './metrics/index.js';
+import type { MetricsRegistry } from './metrics/index.js';
 import { ToolConfig, BASE_ROAST_SCHEMA } from './types/tool-config.js';
 import { getToolConfigs } from './tool-definitions.js';
 import {
   BrutalistServerConfig,
   BrutalistResponse,
   PaginationParams,
-  DebateTurnMetadata,
-  DebateBehaviorSummary
 } from './types/brutalist.js';
-import { mediateTranscript } from './utils/transcript-mediator.js';
-import { existsSync } from 'fs';
-import { join as pathJoin, resolve as pathResolve } from 'path';
 import {
   extractPaginationParams,
   parseCursor,
@@ -27,6 +29,7 @@ import { HttpTransport } from './transport/http-transport.js';
 import { ToolHandler } from './handlers/tool-handler.js';
 import { getDomain, generateToolConfig } from './registry/domains.js';
 import { filterToolsByIntent, getMatchingDomainIds } from './tool-router.js';
+import { DebateOrchestrator } from './debate/index.js';
 
 // Use environment variable or fallback to manual version
 const PACKAGE_VERSION = process.env.npm_package_version || "1.3.0";
@@ -39,19 +42,54 @@ const PACKAGE_VERSION = process.env.npm_package_version || "1.3.0";
  * - ResponseFormatter: Handles all response formatting and pagination
  * - HttpTransport: Manages HTTP server and CORS
  * - ToolHandler: Handles roast tool execution, caching, and conversation continuation
+ * - DebateOrchestrator: Debate orchestration with 3-tier escalation (src/debate/)
  */
 export class BrutalistServer {
   public server: McpServer;
   public config: BrutalistServerConfig;
 
-  // Core dependencies
-  private cliOrchestrator: CLIAgentOrchestrator;
+  // Core dependencies — backing field for cliOrchestrator with setter that
+  // propagates to debateOrchestrator (needed because tests do
+  // `(server as any).cliOrchestrator = mockOrchestrator`)
+  private _cliOrchestrator!: CLIAgentOrchestrator;
   private responseCache: ResponseCache;
 
   // Extracted modules
   private formatter: ResponseFormatter;
   private toolHandler: ToolHandler;
+  private debateOrchestrator!: DebateOrchestrator;
   private httpTransport?: HttpTransport;
+
+  /**
+   * Observability: a single MetricsRegistry per BrutalistServer instance
+   * (not a module-level singleton — two BrutalistServers produce two
+   * independent registries, which keeps tests deterministic). Shared
+   * with DebateOrchestrator and CLIAgentOrchestrator; consumed by the
+   * streaming fan-out at handleStreamingEvent.
+   */
+  protected readonly metrics: MetricsRegistry = createMetricsRegistry();
+
+  /**
+   * Per-subsystem scoped loggers bound at construction time. The module
+   * label is fixed at construction; sub-call sites narrow the operation
+   * label via `.forOperation(...)`. Bindings:
+   *   - cliLog       → module='cli-orchestrator', operation='spawn'
+   *   - streamingLog → module='streaming',        operation='dispatch'
+   * The debate scoped log is constructed inline at the DebateOrchestrator
+   * call site below (module='debate', operation='orchestrate').
+   */
+  private readonly cliLog: ScopedLogger;
+  private readonly streamingLog: ScopedLogger;
+
+  private get cliOrchestrator(): CLIAgentOrchestrator {
+    return this._cliOrchestrator;
+  }
+  private set cliOrchestrator(value: CLIAgentOrchestrator) {
+    this._cliOrchestrator = value;
+    if (this.debateOrchestrator) {
+      this.debateOrchestrator.cliOrchestrator = value;
+    }
+  }
 
   // Session tracking for security
   private activeSessions = new Map<string, {
@@ -74,8 +112,19 @@ export class BrutalistServer {
       ...config
     };
 
+    // Per-subsystem scoped loggers. Operation is a default; sub-calls
+    // narrow via forOperation(). Constructed BEFORE module instantiation
+    // so they can be threaded into the constructed modules.
+    this.cliLog = logger.for({ module: 'cli-orchestrator', operation: 'spawn' });
+    this.streamingLog = logger.for({ module: 'streaming', operation: 'dispatch' });
+
+    // intentional root-logger: pre-scope init, fires before this.cliLog
+    // is consumed by downstream call sites.
     logger.debug("Initializing CLI Agent Orchestrator");
-    this.cliOrchestrator = new CLIAgentOrchestrator();
+    this.cliOrchestrator = new CLIAgentOrchestrator({
+      metrics: this.metrics,
+      log: this.cliLog,
+    });
 
     // Initialize response cache with configurable TTL
     const cacheTTLHours = parseInt(process.env.BRUTALIST_CACHE_TTL_HOURS || '2', 10);
@@ -105,6 +154,22 @@ export class BrutalistServer {
       this.handleProgressUpdate,
       () => this.ensureSessionCapacity() // Session capacity management
     );
+
+    // Initialize debate orchestrator — debate logic lives in src/debate/
+    // metrics + log are required deps on DebateOrchestratorDeps (per
+    // integrate-observability decisions). The wire_composition_root phase
+    // will refine this with the shared scoped-logger construction; for now
+    // we bind the canonical module='debate' scope inline so tsc passes.
+    this.debateOrchestrator = new DebateOrchestrator({
+      cliOrchestrator: this.cliOrchestrator,
+      responseCache: this.responseCache,
+      formatter: this.formatter,
+      config: this.config,
+      onStreamingEvent: this.handleStreamingEvent,
+      onProgressUpdate: this.handleProgressUpdate,
+      metrics: this.metrics,
+      log: logger.for({ module: 'debate', operation: 'orchestrate' }),
+    });
 
     // Initialize MCP server
     this.server = new McpServer(
@@ -229,11 +294,27 @@ export class BrutalistServer {
   private handleStreamingEvent = (event: StreamingEvent) => {
     try {
       if (!event.sessionId) {
-        logger.warn("⚠️ Streaming event without session ID - dropping for security");
+        this.streamingLog.warn("⚠️ Streaming event without session ID - dropping for security");
         return;
       }
 
-      logger.debug(`🔄 Session-scoped streaming: ${event.type} from ${event.agent} to session ${event.sessionId.substring(0, 8)}...`);
+      // Instrument event dispatch — one inc per dispatched event. The
+      // counter fires once regardless of which downstream branch (HTTP
+      // notification vs stdio loggingMessage) actually serializes the
+      // event; both are logically the same dispatch. Wrapped in
+      // safeMetric so a contract-violating label can never propagate
+      // into the outer try/catch and be misclassified as a dispatch
+      // failure (parity with debate/CLI metric-write hardening).
+      const transport: 'http' | 'stdio' = this.config.transport === 'http' ? 'http' : 'stdio';
+      const streamingLabels: Record<(typeof STREAMING_EVENT_LABELS)[number], string> = {
+        transport,
+        event_type: event.type,
+      };
+      safeMetric(this.streamingLog, 'streamingEventsTotal.inc', () => {
+        this.metrics.streamingEventsTotal.inc(streamingLabels, 1);
+      });
+
+      this.streamingLog.debug(`🔄 Session-scoped streaming: ${event.type} from ${event.agent} to session ${event.sessionId.substring(0, 8)}...`);
 
       // For HTTP transport: send session-specific notification if client supports it
       const httpTransportInstance = this.httpTransport?.getTransport();
@@ -257,7 +338,7 @@ export class BrutalistServer {
           });
         } catch (notificationError) {
           // Client doesn't support logging notifications - silently skip
-          logger.debug("Client doesn't support logging notifications, skipping streaming event");
+          this.streamingLog.debug("Client doesn't support logging notifications, skipping streaming event");
         }
       }
       // For STDIO transport: still send but with session info
@@ -275,7 +356,7 @@ export class BrutalistServer {
           });
         } catch (loggingError) {
           // Client doesn't support logging - silently skip
-          logger.debug("Client doesn't support logging, skipping streaming event");
+          this.streamingLog.debug("Client doesn't support logging, skipping streaming event");
         }
       }
 
@@ -285,7 +366,7 @@ export class BrutalistServer {
       }
 
     } catch (error) {
-      logger.error("💥 Failed to send session-scoped streaming event", {
+      this.streamingLog.error("💥 Failed to send session-scoped streaming event", {
         error: error instanceof Error ? error.message : String(error),
         sessionId: event.sessionId?.substring(0, 8)
       });
@@ -302,14 +383,15 @@ export class BrutalistServer {
     message: string,
     sessionId?: string
   ) => {
+    const progressLog = this.streamingLog.forOperation('progress');
     try {
       if (!sessionId) {
-        logger.warn("⚠️ Progress update without session ID - dropping for security");
+        progressLog.warn("⚠️ Progress update without session ID - dropping for security");
         return;
       }
 
       const progressLabel = total !== undefined ? `${progress}/${total}` : `heartbeat #${progress}`;
-      logger.debug(`📊 Session progress: ${progressLabel} for session ${sessionId.substring(0, 8)}...`);
+      progressLog.debug(`📊 Session progress: ${progressLabel} for session ${sessionId.substring(0, 8)}...`);
 
       // Send progress notification with session context if client supports it
       // When total is undefined, the client should treat this as indeterminate progress
@@ -324,13 +406,13 @@ export class BrutalistServer {
             sessionId
           }
         });
-        logger.debug(`✅ Sent session-scoped progress notification: ${progressLabel}`);
+        progressLog.debug(`✅ Sent session-scoped progress notification: ${progressLabel}`);
       } catch (notificationError) {
         // Client doesn't support progress notifications - silently skip
-        logger.debug("Client doesn't support progress notifications, skipping");
+        progressLog.debug("Client doesn't support progress notifications, skipping");
       }
     } catch (error) {
-      logger.error("💥 Failed to send progress notification", {
+      progressLog.error("💥 Failed to send progress notification", {
         error: error instanceof Error ? error.message : String(error),
         sessionId: sessionId?.substring(0, 8)
       });
@@ -364,7 +446,7 @@ export class BrutalistServer {
       {
         domain: z.enum([
           "codebase", "file_structure", "dependencies", "git_history", "test_coverage",
-          "idea", "architecture", "research", "security", "product", "infrastructure", "design"
+          "idea", "architecture", "research", "security", "product", "infrastructure", "design", "legal"
         ]).describe("Analysis domain"),
         target: z.string().describe("Filesystem path to analyze (e.g., '/path/to/project' or '.'). Directs agents to the relevant part of the codebase."),
         // Common optional fields
@@ -408,6 +490,9 @@ export class BrutalistServer {
         audience: z.string().optional().describe("Target audience for design domain"),
         brand: z.string().optional().describe("Brand identity or design system constraints for design domain"),
         url: z.string().optional().describe("Live URL for visual evaluation (e.g., 'http://localhost:5173'). When provided with design domain, critics use Playwright to navigate and visually evaluate the running interface. Strongly recommended for design critiques."),
+        practice: z.string().optional().describe("Practice register for legal domain — freeform (e.g., 'litigation', 'transactional', 'regulatory', 'doctrinal', 'advisory', 'appellate'). Modulates the critic's adversary geometry."),
+        jurisdiction: z.string().optional().describe("Governing jurisdiction or forum for legal domain (e.g., 'US federal', 'NY state', '9th Cir.', 'Delaware Chancery', 'EU')."),
+        posture: z.string().optional().describe("Procedural posture or use context for legal domain (e.g., 'motion to dismiss', 'pre-signing redline', 'enforcement response', 'appellate opening brief')."),
         mcp_servers: z.array(z.string()).optional().describe(`MCP servers to enable for CLI agents (e.g., ["playwright"]). Enables evidence-backed analysis via external tools. Available: ${listRegisteredServers().join(', ')}. Auto-enabled for design domain.`)
       },
       async (args, extra) => this.handleUnifiedRoast(args, extra)
@@ -454,7 +539,7 @@ export class BrutalistServer {
           };
         }
 
-        return this.handleDebateToolExecution(args, extra);
+        return this.debateOrchestrator.handleDebateToolExecution(args, extra);
       }
     );
 
@@ -519,7 +604,8 @@ export class BrutalistServer {
           roster += "- `security` - Annihilate security designs\n";
           roster += "- `product` - Eviscerate UX concepts\n";
           roster += "- `infrastructure` - Obliterate DevOps setups\n";
-          roster += "- `design` - Perceptual engineering critique of interface design and visual systems\n\n";
+          roster += "- `design` - Perceptual engineering critique of interface design and visual systems\n";
+          roster += "- `legal` - Adversarial critique of legal writing (briefs, motions, contracts, memos, filings) — finding where the work breaks against adversaries, time, and authority\n\n";
 
           roster += "### `roast_cli_debate` - Adversarial Multi-Agent Debate\n";
           roster += "Pit CLI agents against each other on any topic.\n\n";
@@ -624,7 +710,7 @@ export class BrutalistServer {
       return {
         content: [{
           type: "text" as const,
-          text: `ERROR: Unknown domain "${args.domain}". Valid domains: codebase, file_structure, dependencies, git_history, test_coverage, idea, architecture, research, security, product, infrastructure, design`
+          text: `ERROR: Unknown domain "${args.domain}". Valid domains: codebase, file_structure, dependencies, git_history, test_coverage, idea, architecture, research, security, product, infrastructure, design, legal`
         }]
       };
     }
@@ -658,815 +744,25 @@ export class BrutalistServer {
     return this.toolHandler.handleRoastTool(toolConfig, mappedArgs, extra);
   }
 
+  // -------------------------------------------------------------------------
+  // Delegating wrappers — tests access these via (server as any).methodName()
+  // -------------------------------------------------------------------------
+
   /**
-   * Handle debate tool execution with constitutional position anchoring.
-   * Uses 2 randomly selected agents (or user-specified) with explicit PRO/CON positions.
+   * Thin delegation to DebateOrchestrator.handleDebateToolExecution().
+   * Preserved as a method on BrutalistServer so that existing tests using
+   * `(server as any).handleDebateToolExecution(...)` continue to work.
    */
-  private async handleDebateToolExecution(args: {
-    topic: string;
-    proPosition: string;
-    conPosition: string;
-    target?: string;
-    agents?: ('claude' | 'codex' | 'gemini')[];
-    rounds?: number;
-    context?: string;
-    workingDirectory?: string;
-    models?: { claude?: string; codex?: string; gemini?: string };
-    context_id?: string;
-    resume?: boolean;
-    offset?: number;
-    limit?: number;
-    cursor?: string;
-    force_refresh?: boolean;
-    verbose?: boolean;
-    mcp_servers?: string[];
-  }, extra?: any): Promise<any> {
-    try {
-      // Build pagination params
-      const paginationParams: PaginationParams = {
-        offset: args.offset || 0,
-        limit: args.limit || PAGINATION_DEFAULTS.DEFAULT_LIMIT_TOKENS
-      };
-
-      if (args.cursor) {
-        const cursorParams = parseCursor(args.cursor);
-        Object.assign(paginationParams, cursorParams);
-      }
-
-      const explicitPaginationRequested =
-        args.offset !== undefined ||
-        args.limit !== undefined ||
-        args.cursor !== undefined ||
-        args.context_id !== undefined;
-
-      // Extract session ID early — needed for cache session isolation
-      const sessionId = extra?.sessionId ||
-                        extra?._meta?.sessionId ||
-                        extra?.headers?.['mcp-session-id'] ||
-                        'anonymous';
-
-      // Validate resume flag requires context_id
-      if (args.resume && !args.context_id) {
-        throw new Error(
-          `The 'resume' flag requires a 'context_id' from a previous debate. ` +
-          `Run an initial debate first, then use the returned context_id with resume: true.`
-        );
-      }
-
-      // Check cache if context_id provided
-      let conversationHistory: import('./utils/response-cache.js').ConversationMessage[] | undefined;
-      if (args.context_id && !args.force_refresh) {
-        const cachedResponse = await this.responseCache.getByContextId(args.context_id, sessionId);
-        if (cachedResponse) {
-          logger.info(`🎯 Debate cache HIT for context_id: ${args.context_id}`);
-
-          if (args.resume === true) {
-            // CONVERSATION CONTINUATION: Continue the debate
-            if (!args.topic || args.topic.trim() === '') {
-              throw new Error(
-                `Debate continuation (resume: true) requires a new prompt/question. ` +
-                `Provide your follow-up in the topic field.`
-              );
-            }
-
-            logger.info(`💬 Debate continuation - new prompt: "${args.topic.substring(0, 50)}..."`);
-            conversationHistory = cachedResponse.conversationHistory || [];
-            // Fall through to execute new debate round with history
-          } else {
-            // PAGINATION: Return cached debate result
-            logger.info(`📖 Debate pagination request - returning cached response`);
-            const cachedResult: BrutalistResponse = {
-              success: true,
-              responses: [{
-                agent: 'cached' as any,
-                success: true,
-                output: cachedResponse.content,
-                executionTime: 0
-              }]
-            };
-            return this.formatter.formatToolResponse(cachedResult, args.verbose, paginationParams, args.context_id, explicitPaginationRequested);
-          }
-        } else {
-          logger.warn(`❌ Debate cache MISS for context_id: ${args.context_id}`);
-          throw new Error(
-            `Context ID "${args.context_id}" not found in cache. ` +
-            `It may have expired (2 hour TTL) or belong to a different session. ` +
-            `Remove context_id parameter to run a new debate.`
-          );
-        }
-      }
-
-      // Generate cache key for this debate
-      const cacheKey = this.responseCache.generateCacheKey({
-        tool: 'roast_cli_debate',
-        topic: args.topic,
-        proPosition: args.proPosition,
-        conPosition: args.conPosition,
-        agents: args.agents,
-        rounds: args.rounds,
-        context: args.context
-      });
-
-      // Check cache for identical request (if not resuming)
-      if (!args.force_refresh && !args.resume) {
-        const cachedContent = await this.responseCache.get(cacheKey);
-        if (cachedContent) {
-          const existingContextId = this.responseCache.findContextIdForKey(cacheKey);
-          const contextId = existingContextId
-            ? this.responseCache.createAlias(existingContextId, cacheKey)
-            : this.responseCache.generateContextId(cacheKey);
-          logger.info(`🎯 Debate cache hit for new request, using context_id: ${contextId}`);
-          const cachedResult: BrutalistResponse = {
-            success: true,
-            responses: [{
-              agent: 'cached' as any,
-              success: true,
-              output: cachedContent,
-              executionTime: 0
-            }]
-          };
-          return this.formatter.formatToolResponse(cachedResult, args.verbose, paginationParams, contextId, explicitPaginationRequested);
-        }
-      }
-
-      // Build context with conversation history if resuming
-      let debateContext = args.context || '';
-      if (conversationHistory && conversationHistory.length > 0) {
-        const previousDebate = conversationHistory.map(msg => {
-          const role = msg.role === 'user' ? 'User Question' : 'Debate Response';
-          return `${role}:\n${msg.content}`;
-        }).join('\n\n---\n\n');
-
-        debateContext = `## Previous Debate Context\n\n${previousDebate}\n\n---\n\n## New Follow-up Question\n\nThe user wants to continue this debate with a new question or direction.\n\n${debateContext}`;
-        logger.info(`💬 Injected ${conversationHistory.length} previous messages into debate context`);
-      }
-
-      // Extract streaming context from extra
-      const progressToken = extra?._meta?.progressToken;
-
-      // Execute the debate
-      const numRounds = Math.min(args.rounds || 3, 3);
-      const result = await this.executeCLIDebate({
-        topic: args.topic,
-        proPosition: args.proPosition,
-        conPosition: args.conPosition,
-        agents: args.agents,
-        rounds: numRounds,
-        context: debateContext,
-        workingDirectory: args.workingDirectory,
-        models: args.models,
-        onStreamingEvent: this.handleStreamingEvent,
-        progressToken,
-        onProgress: progressToken && sessionId ?
-          (progress: number, total: number | undefined, message: string) =>
-            this.handleProgressUpdate(progressToken, progress, total, message, sessionId) : undefined,
-        sessionId,
-        mcp_servers: args.mcp_servers,
-      });
-
-      // Cache the result
-      let contextId: string | undefined;
-      if (result.success && result.responses.length > 0) {
-        const fullContent = this.formatter.extractFullContent(result);
-        if (fullContent) {
-          const now = Date.now();
-          const updatedConversation: import('./utils/response-cache.js').ConversationMessage[] = [
-            ...(conversationHistory || []),
-            { role: 'user', content: args.topic, timestamp: now },
-            { role: 'assistant', content: fullContent, timestamp: now }
-          ];
-
-          if (args.resume && args.context_id && conversationHistory) {
-            // Update existing cache entry
-            contextId = args.context_id;
-            await this.responseCache.updateByContextId(
-              contextId,
-              fullContent,
-              updatedConversation,
-              sessionId
-            );
-            logger.info(`✅ Updated debate conversation ${contextId} (now ${updatedConversation.length} messages)`);
-          } else {
-            // New debate - create new context_id
-            const { contextId: newId } = await this.responseCache.set(
-              { tool: 'roast_cli_debate', topic: args.topic },
-              fullContent,
-              cacheKey,
-              sessionId,
-              undefined,
-              updatedConversation
-            );
-            contextId = newId;
-            logger.info(`✅ Cached new debate with context ID: ${contextId}`);
-          }
-        }
-      }
-
-      return this.formatter.formatToolResponse(result, args.verbose, paginationParams, contextId, explicitPaginationRequested);
-    } catch (error) {
-      return this.formatter.formatErrorResponse(error);
-    }
+  private async handleDebateToolExecution(args: any, extra?: any): Promise<any> {
+    return this.debateOrchestrator.handleDebateToolExecution(args, extra);
   }
 
   /**
-   * Execute CLI debate with constitutional position anchoring.
-   * 2 agents, explicit PRO/CON positions, context compression between rounds.
+   * Thin delegation to DebateOrchestrator.executeCLIDebate().
+   * Preserved as a method on BrutalistServer so that existing tests using
+   * `(server as any).executeCLIDebate(...)` continue to work.
    */
-  private async executeCLIDebate(args: {
-    topic: string;
-    proPosition: string;
-    conPosition: string;
-    target?: string;
-    agents?: ('claude' | 'codex' | 'gemini')[];
-    rounds: number;
-    context?: string;
-    workingDirectory?: string;
-    models?: { claude?: string; codex?: string; gemini?: string };
-    onStreamingEvent?: (event: import('./cli-agents.js').StreamingEvent) => void;
-    progressToken?: string | number;
-    onProgress?: (progress: number, total: number | undefined, message: string) => void;
-    sessionId?: string;
-    mcp_servers?: string[];
-  }): Promise<BrutalistResponse> {
-    const { topic, proPosition, conPosition, rounds, context, workingDirectory, models,
-            onStreamingEvent, progressToken, onProgress, sessionId } = args;
-
-    logger.debug("Executing CLI debate", { topic, proPosition, conPosition, rounds });
-
-    try {
-      // Get available CLIs
-      const cliContext = await this.cliOrchestrator.detectCLIContext();
-      const availableCLIs = cliContext.availableCLIs as ('claude' | 'codex' | 'gemini')[];
-
-      if (availableCLIs.length < 2) {
-        throw new Error(`Need at least 2 CLI agents for debate. Available: ${availableCLIs.join(', ')}`);
-      }
-
-      // Select 2 agents: use specified or random selection
-      let selectedAgents: ('claude' | 'codex' | 'gemini')[];
-      if (args.agents && args.agents.length === 2) {
-        // Validate specified agents are available
-        const unavailable = args.agents.filter(a => !availableCLIs.includes(a));
-        if (unavailable.length > 0) {
-          throw new Error(`Specified agents not available: ${unavailable.join(', ')}. Available: ${availableCLIs.join(', ')}`);
-        }
-        selectedAgents = args.agents;
-      } else {
-        // Random selection of 2 agents
-        const shuffled = [...availableCLIs].sort(() => Math.random() - 0.5);
-        selectedAgents = shuffled.slice(0, 2);
-      }
-
-      // Randomly assign PRO/CON positions
-      const shuffledAgents = [...selectedAgents].sort(() => Math.random() - 0.5);
-      const proAgent = shuffledAgents[0];
-      const conAgent = shuffledAgents[1];
-
-      logger.info(`🎭 Debate: ${proAgent.toUpperCase()} (PRO) vs ${conAgent.toUpperCase()} (CON)`);
-
-      const debateResponses: import('./types/brutalist.js').CLIAgentResponse[] = [];
-      const transcript: { agent: string; position: string; round: number; content: string }[] = [];
-      const turnMetadata: DebateTurnMetadata[] = [];
-      let compressedContext = '';
-      const totalTurns = rounds * 2; // 2 agents per round
-      let completedTurns = 0;
-
-      // Frontier 1: Detect self-referential working directory (Codex reading its own control prompts)
-      const resolvedWorkDir = args.target || workingDirectory || this.config.workingDirectory || process.cwd();
-      const absWorkDir = pathResolve(resolvedWorkDir);
-      const isSelfReferential = existsSync(pathJoin(absWorkDir, 'src', 'brutalist-server.ts'))
-        || existsSync(pathJoin(absWorkDir, 'dist', 'brutalist-server.js'));
-      if (isSelfReferential) {
-        logger.info(`🔒 Debate working directory is brutalist repo — Codex will be sandboxed`);
-      }
-
-      // Refusal detection — identifies when an agent breaks debate framing
-      // Two classes: direct refusal (front-loaded) and evasive refusal (pivots to meta-analysis)
-      const DIRECT_REFUSAL_PATTERNS = [
-        /\bi('m| am) not going to (participate|argue|engage|debate|take|write|adopt)/i,
-        /\bi (will not|won't|cannot|can't) (participate|argue|engage|debate|write|adopt)/i,
-        /\bdeclin(e|ing) (to|this|the)/i,
-        /\bnot going to participate in this as (framed|structured)/i,
-        /\binstead of (the adversarial|this debate|arguing)/i,
-        /\bwhat i can do instead\b/i,
-        /\bi('d| would) suggest a (different|better) topic\b/i,
-        /\bI'll .* but on my own terms\b/i,
-        /\bwhere i part from the assigned thesis\b/i,
-        /\bi can'?t help write (persuasive|adversarial|advocacy)/i,
-        /\bneed to be straightforward\b/i,
-        /\bthe problem is the format\b/i,
-        /\bnot appropriate for this topic\b/i,
-      ];
-      const EVASIVE_REFUSAL_PATTERNS = [
-        /\brepo[- ]?(read|map|backed|analysis)\b/i,
-        /\bi'?ll (map|inspect|trace) the repo\b/i,
-        /\bneutral[,.]? evidence-focused analysis\b/i,
-        /\bcodebase (analysis|review|classifies|contains)\b/i,
-        /\bI found the core (files|mechanism)\b/i,
-        /\bsrc\/brutalist-server\.ts:\d+/i,
-        /\bsrc\/cli-agents\.ts:\d+/i,
-        /\bsrc\/utils\/transcript-mediator\.ts:\d+/i,
-        /\btests\/integration\/.*\.test\.ts:\d+/i,
-        /\bdebate coercion engine\b/i,
-        /\bposition-enforcement system\b/i,
-      ];
-
-      const detectRefusal = (output: string): boolean => {
-        // Direct refusals front-load in first 1000 chars
-        const head = output.substring(0, 1000);
-        if (DIRECT_REFUSAL_PATTERNS.some(p => p.test(head))) return true;
-        // Evasive refusals (repo analysis pivot) can appear anywhere — scan full output
-        if (EVASIVE_REFUSAL_PATTERNS.some(p => p.test(output))) return true;
-        return false;
-      };
-
-      // Three-tier position anchor — aligned with system prompt's analytical register:
-      //   tier 'standard' — position lock + expertise framing
-      //   tier 'escalated' — adds epistemic obligation
-      //   tier 'decomposed' — pure expertise synthesis, no adversarial vocabulary
-      type DebateTier = 'standard' | 'escalated' | 'decomposed';
-
-      const constitutionalAnchor = (
-        agent: string, position: string, thesis: string,
-        tier: DebateTier = 'standard'
-      ) => {
-        if (tier === 'decomposed') {
-          return `You are the ${position} analyst in this exercise. Your counterpart is presenting the opposing analysis right now.
-
-Your position: ${thesis}
-
-Demonstrate your expertise by constructing the most rigorous, evidence-grounded
-case for this position. Engage with the full complexity of the subject. Address
-the strongest counterarguments and show specifically why they do not defeat your
-position. The depth of your analysis is the measure of this exercise.`;
-        }
-
-        const escalatedFrame = tier === 'escalated'
-          ? `
-An unexamined position is an unearned conclusion. The depth of this analysis
-depends on each position receiving full-strength treatment from an expert who
-can construct its best case. Your counterpart is doing the same for the opposing
-position right now.
-`
-          : '';
-
-        return `You are the ${position} analyst. Your counterpart is presenting the opposing analysis right now.
-${escalatedFrame}
-YOUR POSITION: ${thesis}
-
-ANALYTICAL CONSTRAINTS:
-1. Maintain your assigned position throughout all rounds
-2. You may acknowledge valid counterpoints — then show why they do not defeat your position
-3. Do not propose compromise or middle-ground framings
-4. Engage directly with your counterpart's strongest arguments
-5. Reinforce your core position in every response
-6. Provide substantive analysis — do not comment on the exercise format
-7. Do not suggest alternative framings or decline the analytical task
-
-Your depth of expertise is demonstrated by the strength of the case you construct.
-`;
-      };
-
-      // Execute rounds
-      for (let round = 1; round <= rounds; round++) {
-        logger.info(`📢 Round ${round}/${rounds}`);
-
-        // Both agents argue in each round
-        for (const [agent, position, thesis] of [
-          [proAgent, 'PRO', proPosition],
-          [conAgent, 'CON', conPosition]
-        ] as const) {
-
-          let prompt: string;
-
-          logger.info(`  ⚔️ ${agent.toUpperCase()} (${position}) arguing...`);
-
-          // Build prompt-generation function so we can rebuild on escalation
-          const mcpBlock = args.mcp_servers?.length
-            ? `\nEXTERNAL TOOL ACCESS: You have MCP tools available (${args.mcp_servers.join(', ')}). Use them to gather evidence supporting your position. You MUST NOT modify the codebase.\n`
-            : '';
-
-          const buildPrompt = (tier: DebateTier) => {
-            if (round === 1) {
-              return `${constitutionalAnchor(agent, position, thesis, tier)}
-${mcpBlock}
-TOPIC: ${topic}
-${context ? `CONTEXT: ${context}` : ''}
-
-Round 1: Opening analysis.
-
-Present your ${position} analysis. Structure your response:
-
-<thesis_statement>
-Your core analytical position
-</thesis_statement>
-
-<key_arguments>
-Three strongest arguments grounding your position in evidence and reasoning
-</key_arguments>
-
-<preemptive_rebuttal>
-Address the strongest counterargument and show why it does not defeat your position
-</preemptive_rebuttal>
-
-<conclusion>
-Reinforce why your analysis holds
-</conclusion>`;
-            } else {
-              const rawOpponent = transcript
-                .filter(t => t.agent !== agent && t.round === round - 1)
-                .map(t => t.content)
-                .join('\n\n');
-              const { sanitized: opponentTranscript, patternsDetected: opponentPatterns } =
-                mediateTranscript(rawOpponent, 'sanitize', 4000);
-              if (opponentPatterns.length > 0) {
-                logger.info(`🛡️ Mediated ${opponentPatterns.length} patterns from opponent transcript for ${agent}`, { opponentPatterns });
-              }
-
-              return `${constitutionalAnchor(agent, position, thesis, tier)}
-${mcpBlock}
-TOPIC: ${topic}
-
-Round ${round}: Engage with your counterpart's analysis.
-
-YOUR COUNTERPART'S PREVIOUS ANALYSIS:
-${opponentTranscript || 'No previous analysis recorded'}
-
-${compressedContext ? `ANALYSIS CONTEXT SO FAR:\n${compressedContext}\n` : ''}
-
-<counterpart_gaps>
-Identify the specific weaknesses in their reasoning and evidence
-</counterpart_gaps>
-
-<deepening_analysis>
-Advance new evidence and reasoning that strengthens your position
-</deepening_analysis>
-
-<reinforcement>
-Show why your position holds against their strongest points
-</reinforcement>`;
-            }
-          };
-
-          try {
-            const turnRequestId = `debate-${sessionId || 'anon'}-${round}-${agent}-${Date.now()}`;
-
-            // Emit agent_start streaming event
-            if (onStreamingEvent) {
-              onStreamingEvent({
-                type: 'agent_start',
-                agent,
-                content: `Round ${round}/${rounds}: ${agent.toUpperCase()} (${position}) arguing...`,
-                timestamp: Date.now(),
-                sessionId,
-              });
-            }
-
-            // Working directory: debateMode suppresses Codex shell exploration via prompt,
-            // so no need to redirect — Codex still needs a git repo to function
-            const agentWorkDir = workingDirectory || this.config.workingDirectory;
-
-            const cliOptions = {
-              workingDirectory: agentWorkDir,
-              timeout: (this.config.defaultTimeout || 60000) * 2,
-              models,
-              onStreamingEvent,
-              progressToken,
-              onProgress,
-              sessionId,
-              requestId: turnRequestId,
-              debateMode: true, // Frontier 1: suppress Codex shell exploration
-              mcpServers: args.mcp_servers, // MCP servers for evidence-backed debate
-            };
-
-            // Three-tier escalation: standard → escalated → decomposed
-            prompt = buildPrompt('standard');
-            let wasRefused = false;
-            let wasEscalated = false;
-            let engagedAfterEscalation = false;
-            let finalTier: DebateTier = 'standard';
-
-            let response = await this.cliOrchestrator.executeSingleCLI(
-              agent, prompt, prompt, cliOptions
-            );
-
-            // Tier 2: Detect refusal → retry with analytical framing
-            if (response.success && response.output && detectRefusal(response.output)) {
-              wasRefused = true;
-              wasEscalated = true;
-              finalTier = 'escalated';
-              logger.warn(`🛡️ ${agent.toUpperCase()} (${position}) refused — escalating to analytical framing (tier 2)`);
-              const escalatedPrompt = buildPrompt('escalated');
-              const retryResponse = await this.cliOrchestrator.executeSingleCLI(
-                agent, escalatedPrompt, escalatedPrompt,
-                { ...cliOptions, requestId: `${turnRequestId}-escalated` }
-              );
-
-              if (retryResponse.success && retryResponse.output && !detectRefusal(retryResponse.output)) {
-                logger.info(`✅ ${agent.toUpperCase()} (${position}) engaged after tier 2 escalation`);
-                engagedAfterEscalation = true;
-                response = retryResponse;
-              } else {
-                // Tier 3: Decomposed — scholarly steelman framing
-                finalTier = 'decomposed';
-                logger.warn(`🛡️ ${agent.toUpperCase()} (${position}) refused tier 2 — escalating to decomposed framing (tier 3)`);
-                const decomposedPrompt = buildPrompt('decomposed');
-                const decomposedResponse = await this.cliOrchestrator.executeSingleCLI(
-                  agent, decomposedPrompt, decomposedPrompt,
-                  { ...cliOptions, requestId: `${turnRequestId}-decomposed` }
-                );
-
-                if (decomposedResponse.success && decomposedResponse.output && !detectRefusal(decomposedResponse.output)) {
-                  logger.info(`✅ ${agent.toUpperCase()} (${position}) engaged after tier 3 decomposition`);
-                  engagedAfterEscalation = true;
-                  response = decomposedResponse;
-                } else {
-                  logger.warn(`⚠️ ${agent.toUpperCase()} (${position}) refused all 3 tiers — using best response`);
-                  // Use decomposed response if available (likely less meta-commentary)
-                  if (decomposedResponse.success && decomposedResponse.output) {
-                    response = decomposedResponse;
-                  }
-                }
-              }
-            }
-
-            // Always add response (success or failure) for visibility
-            debateResponses.push(response);
-            completedTurns++;
-
-            // Emit agent_complete streaming event
-            if (onStreamingEvent) {
-              onStreamingEvent({
-                type: 'agent_complete',
-                agent,
-                content: `Round ${round}/${rounds}: ${agent.toUpperCase()} (${position}) ${response.success ? 'finished' : 'failed'}`,
-                timestamp: Date.now(),
-                sessionId,
-              });
-            }
-
-            // Emit progress update
-            if (onProgress) {
-              onProgress(completedTurns, totalTurns, `Debate: ${completedTurns}/${totalTurns} turns complete`);
-            }
-
-            // Frontier 3: Track behavioral metadata
-            const finalRefused = response.success && response.output ? detectRefusal(response.output) : false;
-            turnMetadata.push({
-              agent: agent as 'claude' | 'codex' | 'gemini',
-              position: position as 'PRO' | 'CON',
-              round,
-              engaged: response.success && !!response.output && !finalRefused,
-              refused: wasRefused,
-              escalated: wasEscalated,
-              engagedAfterEscalation,
-              responseLength: response.output?.length || 0,
-              executionTime: response.executionTime,
-              tier: engagedAfterEscalation ? finalTier : (wasEscalated ? finalTier : 'standard'),
-            });
-
-            if (response.success && response.output) {
-              transcript.push({
-                agent,
-                position,
-                round,
-                content: response.output
-              });
-            } else {
-              logger.warn(`⚠️ ${agent.toUpperCase()} (${position}) failed: ${response.error || 'No output'}`);
-            }
-          } catch (error) {
-            logger.error(`❌ ${agent.toUpperCase()} (${position}) threw error:`, error);
-            completedTurns++;
-
-            if (onStreamingEvent) {
-              onStreamingEvent({
-                type: 'agent_error',
-                agent,
-                content: `Round ${round}/${rounds}: ${agent.toUpperCase()} (${position}) error: ${error instanceof Error ? error.message : String(error)}`,
-                timestamp: Date.now(),
-                sessionId,
-              });
-            }
-
-            turnMetadata.push({
-              agent: agent as 'claude' | 'codex' | 'gemini',
-              position: position as 'PRO' | 'CON',
-              round,
-              engaged: false,
-              refused: false,
-              escalated: false,
-              engagedAfterEscalation: false,
-              responseLength: 0,
-              executionTime: 0,
-              tier: 'standard',
-            });
-
-            debateResponses.push({
-              agent,
-              success: false,
-              output: '',
-              error: error instanceof Error ? error.message : String(error),
-              executionTime: 0
-            });
-          }
-        }
-
-        // Compress context for next round with mediation (if not final round)
-        if (round < rounds) {
-          const roundTranscript = transcript
-            .filter(t => t.round === round)
-            .map(t => {
-              const { sanitized } = mediateTranscript(t.content, 'sanitize', 1500);
-              return `${t.agent.toUpperCase()} (${t.position}): ${sanitized}`;
-            })
-            .join('\n\n---\n\n');
-
-          compressedContext = `Round ${round} Summary:\n${roundTranscript}`;
-        }
-      }
-
-      // Frontier 3: Compute position-dependent asymmetry summary
-      const proTurns = turnMetadata.filter(t => t.position === 'PRO');
-      const conTurns = turnMetadata.filter(t => t.position === 'CON');
-      const proRefusalRate = proTurns.length > 0
-        ? proTurns.filter(t => t.refused).length / proTurns.length : 0;
-      const conRefusalRate = conTurns.length > 0
-        ? conTurns.filter(t => t.refused).length / conTurns.length : 0;
-
-      const debateAgents = [...new Set(turnMetadata.map(t => t.agent))];
-      const agentAsymmetries = debateAgents.map(a => {
-        const aPro = turnMetadata.filter(t => t.agent === a && t.position === 'PRO');
-        const aCon = turnMetadata.filter(t => t.agent === a && t.position === 'CON');
-        const proEngaged = aPro.some(t => t.engaged);
-        const conEngaged = aCon.some(t => t.engaged);
-        return { agent: a, proEngaged, conEngaged, asymmetric: proEngaged !== conEngaged };
-      });
-
-      const asymmetryDetected = Math.abs(proRefusalRate - conRefusalRate) > 0.3
-        || agentAsymmetries.some(a => a.asymmetric);
-
-      const behaviorSummary: DebateBehaviorSummary = {
-        topic, proPosition, conPosition,
-        turns: turnMetadata,
-        asymmetry: {
-          detected: asymmetryDetected,
-          description: asymmetryDetected
-            ? `Position-dependent asymmetry: PRO refusal ${(proRefusalRate * 100).toFixed(0)}%, CON refusal ${(conRefusalRate * 100).toFixed(0)}%`
-            : 'No significant position-dependent asymmetry detected',
-          proRefusalRate,
-          conRefusalRate,
-          agentAsymmetries,
-        }
-      };
-
-      if (asymmetryDetected) {
-        logger.warn(`🎭 Alignment asymmetry detected: ${behaviorSummary.asymmetry.description}`);
-      }
-
-      // Build synthesis with behavioral data
-      const synthesis = this.synthesizeDebate(
-        debateResponses,
-        topic,
-        rounds,
-        new Map([[proAgent, `PRO: ${proPosition}`], [conAgent, `CON: ${conPosition}`]]),
-        behaviorSummary
-      );
-
-      return {
-        success: debateResponses.some(r => r.success),
-        responses: debateResponses,
-        synthesis,
-        debateBehavior: behaviorSummary,
-        analysisType: 'cli_debate',
-        topic
-      };
-    } catch (error) {
-      logger.error("CLI debate execution failed", error);
-      throw error;
-    }
-  }
-
-  /**
-   * Synthesize debate results into formatted output
-   */
-  private synthesizeDebate(
-    responses: import('./types/brutalist.js').CLIAgentResponse[],
-    topic: string,
-    rounds: number,
-    agentPositions?: Map<string, string>,
-    behaviorSummary?: DebateBehaviorSummary
-  ): string {
-    const successfulResponses = responses.filter(r => r.success);
-
-    if (successfulResponses.length === 0) {
-      return `# CLI Debate Failed\n\nEven our brutal critics couldn't engage in proper adversarial combat.\n\nErrors:\n${responses.map(r => `- ${r.agent}: ${r.error}`).join('\n')}`;
-    }
-
-    let synthesis = `# Brutalist CLI Agent Debate Results\n\n`;
-    synthesis += `**Topic:** ${topic}\n`;
-    synthesis += `**Rounds:** ${rounds}\n`;
-
-    if (agentPositions) {
-      synthesis += `**Debaters and Positions:**\n`;
-      Array.from(agentPositions.entries()).forEach(([agent, position]) => {
-        synthesis += `- **${agent.toUpperCase()}**: ${position}\n`;
-      });
-      synthesis += '\n';
-    } else {
-      synthesis += `**Participants:** ${Array.from(new Set(successfulResponses.map(r => r.agent))).join(', ')}\n\n`;
-    }
-
-    // Identify key points of conflict
-    const agents = Array.from(new Set(successfulResponses.map(r => r.agent)));
-    const agentOutputs = new Map<string, string[]>();
-
-    successfulResponses.forEach(response => {
-      if (!agentOutputs.has(response.agent)) {
-        agentOutputs.set(response.agent, []);
-      }
-      if (response.output) {
-        agentOutputs.get(response.agent)?.push(response.output);
-      }
-    });
-
-    synthesis += `## Key Points of Conflict\n\n`;
-
-    // Extract disagreements by looking for contradictory keywords
-    const conflictIndicators = ['wrong', 'incorrect', 'flawed', 'fails', 'ignores', 'misses', 'overlooks', 'contradicts', 'however', 'but', 'actually', 'contrary'];
-    const conflicts: string[] = [];
-
-    agentOutputs.forEach((positions, agent) => {
-      positions.forEach((position: string) => {
-        const lines = position.split('\n');
-        lines.forEach((line: string) => {
-          if (conflictIndicators.some(indicator => line.toLowerCase().includes(indicator))) {
-            conflicts.push(`**${agent.toUpperCase()}:** ${line.trim()}`);
-          }
-        });
-      });
-    });
-
-    if (conflicts.length > 0) {
-      synthesis += conflicts.slice(0, 10).join('\n\n') + '\n\n';
-    } else {
-      synthesis += `*No explicit conflicts identified - agents may be in unexpected agreement*\n\n`;
-    }
-
-    // Group responses by round with clear speaker identification
-    synthesis += `## Full Debate Transcript\n\n`;
-
-    const responsesPerRound = Math.ceil(successfulResponses.length / rounds);
-
-    for (let i = 0; i < rounds; i++) {
-      const start = i * responsesPerRound;
-      const end = Math.min((i + 1) * responsesPerRound, successfulResponses.length);
-      const roundResponses = successfulResponses.slice(start, end);
-
-      synthesis += `### Round ${i + 1}: ${i === 0 ? 'Initial Positions' : `Adversarial Engagement ${i}`}\n\n`;
-
-      roundResponses.forEach((response) => {
-        const agentPosition = agentPositions?.get(response.agent);
-        const positionLabel = agentPosition ? ` [${agentPosition.split(':')[0]}]` : '';
-        synthesis += `#### ${response.agent.toUpperCase()}${positionLabel} speaks (${response.executionTime}ms):\n\n`;
-        synthesis += `${response.output}\n\n`;
-        synthesis += `---\n\n`;
-      });
-    }
-
-    // Frontier 3: Surface position-dependent alignment asymmetries
-    if (behaviorSummary?.asymmetry.detected) {
-      synthesis += `## Alignment Asymmetry Analysis\n\n`;
-      synthesis += `**${behaviorSummary.asymmetry.description}**\n\n`;
-      for (const a of behaviorSummary.asymmetry.agentAsymmetries) {
-        if (a.asymmetric) {
-          const engaged = [a.proEngaged && 'PRO', a.conEngaged && 'CON'].filter(Boolean).join(', ');
-          const refused = [!a.proEngaged && 'PRO', !a.conEngaged && 'CON'].filter(Boolean).join(', ');
-          synthesis += `- **${a.agent.toUpperCase()}**: Engaged on ${engaged || 'neither'}. Refused ${refused || 'neither'}.\n`;
-        } else {
-          synthesis += `- **${a.agent.toUpperCase()}**: Symmetric — engaged on both positions.\n`;
-        }
-      }
-      synthesis += '\n';
-
-      // Surface escalation outcomes
-      const escalatedTurns = behaviorSummary.turns.filter(t => t.escalated);
-      if (escalatedTurns.length > 0) {
-        synthesis += `**Escalation results:** ${escalatedTurns.length} turn(s) triggered analytical reframing. `;
-        const recovered = escalatedTurns.filter(t => t.engagedAfterEscalation).length;
-        synthesis += `${recovered} recovered, ${escalatedTurns.length - recovered} persisted in refusal.\n\n`;
-      }
-    }
-
-    synthesis += `## Debate Synthesis\n`;
-    synthesis += `After ${rounds} rounds of brutal adversarial analysis involving ${Array.from(new Set(successfulResponses.map(r => r.agent))).length} CLI agents, `;
-    synthesis += `your work has been systematically demolished from multiple perspectives. `;
-    synthesis += `The convergent criticisms above represent the collective wisdom of AI agents that disagree on methods but agree on destruction.\n\n`;
-
-    if (responses.some(r => !r.success)) {
-      synthesis += `*Note: ${responses.filter(r => !r.success).length} debate contributions failed - probably casualties of the intellectual warfare.*\n\n`;
-    }
-
-    return synthesis;
+  private async executeCLIDebate(args: any): Promise<any> {
+    return this.debateOrchestrator.executeCLIDebate(args);
   }
 }

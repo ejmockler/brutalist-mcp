@@ -2,17 +2,98 @@
 
 ## Executive Summary
 
-The Brutalist MCP server implements a sophisticated streaming architecture to deliver progressive critique results as they're generated, rather than waiting for complete CLI agent responses. This document details the current implementation, MCP SDK capabilities, and the path forward for full streaming support.
-
-**Status**: 🟡 Partial Implementation
-- ✅ Progress notifications (MCP standard)
-- ✅ Real-time event streaming infrastructure (custom)
-- ⏳ Streaming CLI output capture (needs integration)
-- ⏳ Incremental response delivery (needs MCP integration)
+The Brutalist MCP server has two streaming paths, one per transport. Both are
+canonical for their transport type. A third layer of advanced streaming
+infrastructure exists in `src/streaming/` but is **not integrated** into any
+production code path -- it is retained for possible future use and explicitly
+marked `@deprecated` in source.
 
 ---
 
-## Table of Contents
+## Streaming Path Resolution (canonical reference)
+
+### Canonical path: Callback-based MCP notifications
+
+Both transports share a single entry point in `brutalist-server.ts`:
+
+```
+CLI Agent (spawnAsync)
+  -> onStreamingEvent callback (passed as dependency)
+  -> brutalist-server.ts#handleStreamingEvent()
+      |
+      +--[HTTP transport active?]
+      |   YES -> server.server.notification("notifications/message", ...)
+      |          via StreamableHTTPServerTransport (MCP SDK)
+      |
+      +--[stdio transport]
+          -> server.sendLoggingMessage(...)
+             via StdioServerTransport (MCP SDK)
+```
+
+Progress updates follow a parallel path:
+
+```
+CLI Agent (spawnAsync)
+  -> onProgressUpdate callback
+  -> brutalist-server.ts#handleProgressUpdate()
+      -> server.server.notification("notifications/progress", ...)
+```
+
+### How extracted modules connect
+
+**Debate module** (`src/debate/`):
+- `DebateOrchestrator` receives `onStreamingEvent` and `onProgressUpdate`
+  callbacks via its `DebateOrchestratorDeps` constructor interface.
+- `brutalist-server.ts` wires these to `handleStreamingEvent` and
+  `handleProgressUpdate` at construction time.
+- During debate execution, the debate module passes these callbacks through
+  to `CLIAgentOrchestrator` via `CLIAgentOptions`.
+
+**CLI adapters** (`src/cli-adapters/`):
+- CLI adapters (`ClaudeAdapter`, `CodexAdapter`, `GeminiAdapter`) handle
+  command construction and output decoding only. They do not interact with
+  streaming infrastructure directly.
+- Streaming events are emitted by `CLIAgentOrchestrator` in `cli-agents.ts`
+  via `emitThrottledStreamingEvent()`, which invokes the `onStreamingEvent`
+  callback from `CLIAgentOptions`.
+
+### Transport-specific details
+
+| Transport | Class | Location | Status |
+|-----------|-------|----------|--------|
+| stdio | `StdioServerTransport` | MCP SDK | **Canonical** -- primary transport for MCP clients (Claude Code) |
+| HTTP | `StreamableHTTPServerTransport` | MCP SDK, wrapped by `src/transport/http-transport.ts` | **Canonical** -- HTTP streaming via MCP SDK |
+
+### Unintegrated infrastructure (deprecated)
+
+The following modules in `src/streaming/` are built but **not wired** into any
+production code path. No code outside `src/streaming/` imports them. Each file
+and its main class export carry a `@deprecated` JSDoc annotation explaining
+the canonical alternative.
+
+| Module | Lines | Purpose | Canonical alternative |
+|--------|-------|---------|----------------------|
+| `streaming-orchestrator.ts` | ~600 | High-level streaming coordination | Direct callbacks in `brutalist-server.ts` |
+| `session-manager.ts` | ~770 | Multi-session event routing | `activeSessions` Map in `brutalist-server.ts` |
+| `sse-transport.ts` | ~400 | Custom SSE transport | `StreamableHTTPServerTransport` (MCP SDK) |
+| `intelligent-buffer.ts` | ~700 | Priority event buffering | `emitThrottledStreamingEvent` in `cli-agents.ts` |
+| `progress-tracker.ts` | ~630 | Milestone progress tracking | `handleProgressUpdate` in `brutalist-server.ts` |
+| `circuit-breaker.ts` | ~590 | Fault tolerance | try/catch in `handleStreamingEvent` |
+| `output-parser.ts` | ~430 | Semantic CLI output parsing | Per-provider `decodeOutput` in `src/cli-adapters/` |
+
+**Why retained**: These modules have comprehensive unit tests (passing) and
+represent a coherent design for richer streaming capabilities. They may be
+integrated in a future milestone if the project needs advanced streaming
+features (priority buffering, circuit breaking, semantic output parsing).
+Removing them would lose tested infrastructure with no benefit.
+
+**Why not integrated now**: Integration is feature work, not structural
+clarification. The phase constraint explicitly forbids integrating unintegrated
+infrastructure.
+
+---
+
+## Table of Contents (original documentation below)
 
 1. [Current Architecture](#1-current-architecture)
 2. [MCP Progress API](#2-mcp-progress-api)
@@ -22,6 +103,11 @@ The Brutalist MCP server implements a sophisticated streaming architecture to de
 6. [Implementation Roadmap](#6-implementation-roadmap)
 7. [Performance Considerations](#7-performance-considerations)
 8. [Error Handling](#8-error-handling)
+
+> **Note**: The sections below are the original architecture document written
+> before streaming path resolution. They describe aspirational integration
+> plans. Refer to the "Streaming Path Resolution" section above for the
+> current canonical state.
 
 ---
 
@@ -82,16 +168,16 @@ The Brutalist MCP server implements a sophisticated streaming architecture to de
 
 ### 1.2 Current Implementation Files
 
-**Core Streaming Infrastructure** (Built but not fully integrated):
+**Core Streaming Infrastructure** (Built but NOT INTEGRATED -- see Resolution section above):
 ```
 src/streaming/
-├── streaming-orchestrator.ts    ✅ High-level streaming coordination
-├── progress-tracker.ts          ✅ Milestone-based progress tracking
-├── intelligent-buffer.ts        ✅ Priority-based event buffering
-├── session-manager.ts           ✅ Multi-session event routing
-├── sse-transport.ts             ✅ Server-Sent Events transport
-├── output-parser.ts             ✅ Semantic CLI output parsing
-└── circuit-breaker.ts           ✅ Fault tolerance
+├── streaming-orchestrator.ts    @deprecated High-level streaming coordination
+├── progress-tracker.ts          @deprecated Milestone-based progress tracking
+├── intelligent-buffer.ts        @deprecated Priority-based event buffering
+├── session-manager.ts           @deprecated Multi-session event routing
+├── sse-transport.ts             @deprecated Server-Sent Events transport
+├── output-parser.ts             @deprecated Semantic CLI output parsing
+└── circuit-breaker.ts           @deprecated Fault tolerance
 ```
 
 **Current Tool Execution Flow**:

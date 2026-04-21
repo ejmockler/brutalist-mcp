@@ -1,3 +1,13 @@
+/**
+ * @module session-manager
+ * @deprecated NOT INTEGRATED -- This module provides multi-session event
+ * routing for the unintegrated StreamingCLIOrchestrator and
+ * EnhancedSSETransport. The canonical streaming path manages sessions via
+ * activeSessions in brutalist-server.ts (a simple Map<string, SessionInfo>).
+ * Retained for possible future integration. See
+ * src/streaming/STREAMING_ARCHITECTURE.md for details.
+ */
+
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { logger } from '../logger.js';
@@ -117,8 +127,8 @@ export interface SessionConfig {
 }
 
 /**
- * Session channel manager with comprehensive lifecycle management
- * 
+ * Session channel manager with comprehensive lifecycle management.
+ *
  * Features:
  * - Session isolation with secure access control
  * - Automatic resource cleanup and garbage collection
@@ -127,6 +137,10 @@ export interface SessionConfig {
  * - Event buffering and delivery guarantees
  * - Analysis state tracking
  * - Graceful error handling and recovery
+ *
+ * @deprecated NOT INTEGRATED -- The canonical streaming path manages sessions
+ * via a simple Map in brutalist-server.ts. This class is used only by the
+ * unintegrated EnhancedSSETransport and StreamingCLIOrchestrator.
  */
 export class SessionChannelManager extends EventEmitter {
   private sessions = new Map<string, SessionContext>();

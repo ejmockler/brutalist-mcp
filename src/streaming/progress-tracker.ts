@@ -1,3 +1,13 @@
+/**
+ * @module progress-tracker
+ * @deprecated NOT INTEGRATED -- This module provides milestone-based progress
+ * tracking for the unintegrated StreamingCLIOrchestrator. The canonical
+ * streaming path uses the simpler handleProgressUpdate callback in
+ * brutalist-server.ts, which sends MCP notifications/progress directly.
+ * Retained for possible future integration. See
+ * src/streaming/STREAMING_ARCHITECTURE.md for details.
+ */
+
 import { EventEmitter } from 'events';
 import { logger } from '../logger.js';
 import { StreamingEvent } from '../cli-agents.js';
@@ -228,14 +238,18 @@ export const ANALYSIS_MILESTONES: Record<string, ProgressMilestone[]> = {
 };
 
 /**
- * Progress milestone system with intelligent phase detection
- * 
+ * Progress milestone system with intelligent phase detection.
+ *
  * Features:
  * - Dynamic milestone tracking based on analysis type
  * - Intelligent progress estimation with dependencies
  * - Phase transition detection from CLI output
  * - ETA calculation with adaptive learning
  * - Progress events for real-time updates
+ *
+ * @deprecated NOT INTEGRATED -- The canonical streaming path uses the simpler
+ * handleProgressUpdate callback in brutalist-server.ts. This tracker is used
+ * only by the unintegrated StreamingCLIOrchestrator.
  */
 export class ProgressTracker extends EventEmitter {
   private state: ProgressState;

@@ -20,15 +20,35 @@ export default {
   ],
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'html'],
-  // Temporarily disabled until test suite is fully updated
-  // coverageThreshold: {
-  //   global: {
-  //     branches: 70,
-  //     functions: 80,
-  //     lines: 80,
-  //     statements: 80
-  //   }
-  // },
+  // Regression-prevention floors on the extracted module boundaries.
+  // Numbers are calibrated from the fresh coverage/lcov.info baseline
+  // (2026-04-18) at 2–5 percentage points below observed coverage, rounded
+  // down to whole integers. Files near 100% are floored at 95 to tolerate
+  // single-test churn. See .clou/milestones/quality-infrastructure/
+  // decisions.md for the per-path rationale.
+  //
+  // Path keys use the directory-style form documented at
+  // https://jestjs.io/docs/configuration#coveragethreshold-object — Jest
+  // matches keys that look like directory paths against file paths whose
+  // prefix matches, so "./src/debate/" guards every file under that directory.
+  //
+  // NO raw `global` threshold is set — a global default would either mask
+  // regressions in the guarded paths (if loose) or fail the suite on files
+  // outside the extracted boundaries (if tight). Scope is intentional.
+  coverageThreshold: {
+    './src/debate/': {
+      branches: 80,
+      functions: 80,
+      lines: 92,
+      statements: 92
+    },
+    './src/cli-adapters/': {
+      branches: 82,
+      functions: 80,
+      lines: 92,
+      statements: 92
+    }
+  },
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@/(.*)$': '<rootDir>/src/$1'

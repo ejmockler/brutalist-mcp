@@ -1,3 +1,15 @@
+/**
+ * @module streaming-orchestrator
+ * @deprecated NOT INTEGRATED -- This module is built but not wired into the
+ * production streaming path. The canonical streaming path uses direct callbacks
+ * (onStreamingEvent / onProgressUpdate) routed through
+ * brutalist-server.ts#handleStreamingEvent, which dispatches via MCP
+ * notifications (HTTP) or sendLoggingMessage (stdio). This orchestrator,
+ * along with its dependencies (SessionManager, EnhancedSSETransport,
+ * ProgressTracker, CircuitBreaker), is retained for possible future
+ * integration. See src/streaming/STREAMING_ARCHITECTURE.md for details.
+ */
+
 import { EventEmitter } from 'events';
 import { logger } from '../logger.js';
 import { CLIAgentOrchestrator, StreamingEvent, CLIAgentOptions } from '../cli-agents.js';
@@ -60,16 +72,19 @@ export interface StreamingOrchestratorConfig {
 }
 
 /**
- * Advanced streaming CLI orchestrator with comprehensive real-time capabilities
- * 
+ * Advanced streaming CLI orchestrator with comprehensive real-time capabilities.
+ *
  * Integrates all streaming components:
  * - Real-time output parsing with semantic boundaries
- * - Intelligent buffering with adaptive throttling  
+ * - Intelligent buffering with adaptive throttling
  * - Session management with lifecycle tracking
  * - SSE transport with session isolation
  * - Progress tracking with milestone detection
  * - Circuit breaker with fallback strategies
  * - Comprehensive monitoring and analytics
+ *
+ * @deprecated NOT INTEGRATED -- retained for possible future use. The canonical
+ * streaming path bypasses this class entirely. See STREAMING_ARCHITECTURE.md.
  */
 export class StreamingCLIOrchestrator extends EventEmitter {
   private cliOrchestrator: CLIAgentOrchestrator;

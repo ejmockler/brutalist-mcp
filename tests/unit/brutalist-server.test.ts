@@ -43,14 +43,21 @@ jest.mock('@modelcontextprotocol/sdk/server/mcp.js');
 jest.mock('@modelcontextprotocol/sdk/server/stdio.js');
 jest.mock('@modelcontextprotocol/sdk/server/streamableHttp.js');
 jest.mock('../../src/cli-agents.js');
-jest.mock('../../src/logger.js', () => ({
-  logger: {
-    debug: jest.fn(),
+jest.mock('../../src/logger.js', () => {
+  const scoped: any = {
     info: jest.fn(),
     warn: jest.fn(),
-    error: jest.fn()
-  }
-}));
+    error: jest.fn(),
+    debug: jest.fn(),
+  };
+  scoped.for = jest.fn(() => scoped);
+  scoped.forOperation = jest.fn(() => scoped);
+  const root = { ...scoped, shutdown: jest.fn() };
+  return {
+    logger: root,
+    Logger: { getInstance: () => root },
+  };
+});
 
 // Proper type for tool handlers that matches ToolCallback signature
 type TestToolHandler = (args: unknown) => CallToolResult | Promise<CallToolResult>;

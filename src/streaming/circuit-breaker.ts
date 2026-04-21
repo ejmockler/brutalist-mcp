@@ -1,3 +1,12 @@
+/**
+ * @module circuit-breaker
+ * @deprecated NOT INTEGRATED -- This module provides fault-tolerance circuit
+ * breaking for the unintegrated StreamingCLIOrchestrator. The canonical
+ * streaming path has no circuit breaker; failures are handled by try/catch in
+ * brutalist-server.ts#handleStreamingEvent. Retained for possible future
+ * integration. See src/streaming/STREAMING_ARCHITECTURE.md for details.
+ */
+
 import { EventEmitter } from 'events';
 import { logger } from '../logger.js';
 
@@ -58,8 +67,8 @@ export interface FallbackStrategy {
 }
 
 /**
- * Circuit breaker with intelligent fallback handling
- * 
+ * Circuit breaker with intelligent fallback handling.
+ *
  * Features:
  * - Automatic failure detection and recovery
  * - Configurable thresholds and timeouts
@@ -67,6 +76,10 @@ export interface FallbackStrategy {
  * - Real-time statistics and monitoring
  * - Graceful degradation patterns
  * - Request queuing during recovery
+ *
+ * @deprecated NOT INTEGRATED -- The canonical streaming path has no circuit
+ * breaker; errors are caught by try/catch in handleStreamingEvent. This
+ * breaker is used only by the unintegrated StreamingCLIOrchestrator.
  */
 export class CircuitBreaker extends EventEmitter {
   private state: CircuitState = CircuitState.CLOSED;

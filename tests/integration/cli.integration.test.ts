@@ -185,7 +185,7 @@ describe('CLI Integration Tests', () => {
         }
       });
 
-      it('should respect model selection', async () => {
+      it('should tolerate codex model selection while preserving CLI config/default by default', async () => {
         if (!availableCLIs.includes('codex')) {
           return;
         }
@@ -195,7 +195,7 @@ describe('CLI Integration Tests', () => {
           'Brief analysis',
           {
             timeout: 20000,
-            models: { codex: 'gpt-5.4' },
+            models: { codex: 'gpt-5.5' },
             workingDirectory: await testIsolation.createWorkspace()
           }
         );
@@ -205,7 +205,8 @@ describe('CLI Integration Tests', () => {
         expect(typeof result.agent).toBe('string');
         expect(typeof result.success).toBe('boolean');
         expect(typeof result.executionTime).toBe('number');
-        // Model is in args, not always in redacted command string
+        // Codex model overrides are ignored by default so local CLI config can
+        // remain the source of truth for current model tags.
         expect(result.agent).toBe('codex');
       });
     });

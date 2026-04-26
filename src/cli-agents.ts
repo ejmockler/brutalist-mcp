@@ -41,6 +41,26 @@ function isGeminiRotatableError(error?: string): boolean {
   return /no capacity available|\b429\b|overloaded|rateLimitExceeded|rate limit|quota|too many requests|ModelNotFoundError|Requested entity was not found|\b403\b|permission denied|access denied/i.test(error);
 }
 
+function sanitizeModelNameForMessage(model?: string): string {
+  if (!model) return 'requested model';
+  const bounded = model.slice(0, 80);
+  const sanitized = bounded.replace(/[^a-zA-Z0-9._:-]/g, '?');
+  return sanitized || 'requested model';
+}
+
+function isCodexUnsupportedChatGPTModelError(error: ChildProcessError, requestedModel?: string): boolean {
+  if (!requestedModel) return false;
+  const combined = `${error.message || ''}\n${error.stdout || ''}\n${error.stderr || ''}`;
+  return /model['"\\\s:A-Za-z0-9._-]*not supported when using Codex with a ChatGPT account/i.test(combined);
+}
+
+function isCodexUnsupportedModelResponse(response: CLIAgentResponse, requestedModel?: string): boolean {
+  if (response.agent !== 'codex' || response.success || !requestedModel || !response.error) {
+    return false;
+  }
+  return response.error.includes(`CODEX model "${sanitizeModelNameForMessage(requestedModel)}" is not supported`);
+}
+
 interface ChildProcessError extends Error {
   code?: number;
   stdout?: string;
@@ -1111,8 +1131,10 @@ export class CLIAgentOrchestrator {
         'quota', 'exhausted', 'billing', 'spending limit',
         'token limit', 'plan limit',
       ];
-      const errorText = `${execError.message || ''} ${execError.stderr || ''}`.toLowerCase();
+      const errorText = `${execError.message || ''} ${execError.stdout || ''} ${execError.stderr || ''}`.toLowerCase();
       const isRateLimit = rateLimitPatterns.some(p => errorText.includes(p.toLowerCase()));
+      const unsupportedCodexModel = cliName === 'codex'
+        && isCodexUnsupportedChatGPTModelError(execError, options.models?.codex);
 
       // Classify outcome for the spawn counter. Priority: rate-limit > timeout
       // > generic failure. Timeout check uses the centralized heuristic.
@@ -1166,9 +1188,11 @@ export class CLIAgentOrchestrator {
       // callers can still distinguish timeout from generic failure.
       const errorMsg = isRateLimit
         ? `${cliName.toUpperCase()} hit rate/usage limit. Try again later or use a different agent.`
-        : this.isTimeoutError(execError)
-          ? `${cliName.toUpperCase()} execution timed out after ${timeout}ms. See internal logs for details.`
-          : `${cliName.toUpperCase()} execution failed. See internal logs for details.`;
+        : unsupportedCodexModel
+          ? `${cliName.toUpperCase()} model "${sanitizeModelNameForMessage(options.models?.codex)}" is not supported by this Codex account.`
+          : this.isTimeoutError(execError)
+            ? `${cliName.toUpperCase()} execution timed out after ${timeout}ms. See internal logs for details.`
+            : `${cliName.toUpperCase()} execution failed. See internal logs for details.`;
 
       // Emit error event. The content derives from the redacted
       // `errorMsg` above, never from `error.message` directly, so
@@ -1276,13 +1300,45 @@ export class CLIAgentOrchestrator {
       }
 
       // Dispatch to adapter via buildCLICommand (which delegates to provider)
-      return await this._executeCLI(
+      const response = await this._executeCLI(
         cli,
         userPrompt,
         systemPromptSpec,
         options,
         (user, sys, opts) => this.buildCLICommand(cli, user, sys, opts)
       );
+
+      const requestedCodexModel = options.models?.codex;
+      if (cli === 'codex' && isCodexUnsupportedModelResponse(response, requestedCodexModel)) {
+        this.emitLog().warn('Codex model unsupported for this account; retrying with CLI default', {
+          requestedModel: sanitizeModelNameForMessage(requestedCodexModel),
+        });
+
+        const fallbackModels = { ...(options.models || {}) };
+        delete fallbackModels.codex;
+        const fallbackOptions: CLIAgentOptions = {
+          ...options,
+          models: Object.keys(fallbackModels).length > 0 ? fallbackModels : undefined,
+        };
+
+        const fallback = await this._executeCLI(
+          cli,
+          userPrompt,
+          systemPromptSpec,
+          fallbackOptions,
+          (user, sys, opts) => this.buildCLICommand(cli, user, sys, opts)
+        );
+
+        if (fallback.success) {
+          const note = `Codex model "${sanitizeModelNameForMessage(requestedCodexModel)}" is not available for this account; retried with the Codex CLI default.`;
+          fallback.output = fallback.output ? `${note}\n\n${fallback.output}` : note;
+        } else {
+          fallback.error = `${response.error} Retried with the Codex CLI default, which also failed: ${fallback.error || 'unknown error'}`;
+        }
+        return fallback;
+      }
+
+      return response;
     } finally {
       this.runningCLIs--;
       this.emitLog().info(`\u2705 Released CLI slot (${this.runningCLIs}/${this.MAX_CONCURRENT_CLIS} slots used)`);

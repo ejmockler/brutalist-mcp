@@ -107,7 +107,16 @@ export class CodexAdapter implements CLIProvider {
 
     // Build args
     const args = [...config.defaultArgs];
-    const resolvedModel = modelResolver.resolveModel('codex', options.models?.codex);
+    const allowModelOverride = process.env.BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE === 'true';
+    const requestedModel = options.models?.codex;
+    if (requestedModel && !allowModelOverride) {
+      log.info('Codex model override ignored; using Codex CLI configured/default model', {
+        requestedModelLength: requestedModel.length,
+      });
+    }
+    const resolvedModel = allowModelOverride
+      ? modelResolver.resolveModel('codex', requestedModel)
+      : undefined;
     if (resolvedModel) {
       args.push(config.modelArgName, resolvedModel);
     }

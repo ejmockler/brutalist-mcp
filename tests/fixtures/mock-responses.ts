@@ -8,7 +8,7 @@ export const mockSuccessfulResponse: CLIAgentResponse = {
   success: true,
   output: 'Your code has severe SQL injection vulnerabilities in the authentication module. The user input is directly concatenated into database queries without any sanitization.',
   executionTime: 2400,
-  command: 'codex exec --model gpt-5 --sandbox read-only',
+  command: 'codex exec --sandbox read-only --skip-git-repo-check',
   workingDirectory: '/test',
   exitCode: 0
 };

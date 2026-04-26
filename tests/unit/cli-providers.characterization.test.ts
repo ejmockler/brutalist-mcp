@@ -202,11 +202,26 @@ describe('CLI Provider Command Construction', () => {
       }
     });
 
-    it('should include --model when a model is specified', async () => {
-      const result = await buildCommand('codex', { models: { codex: 'gpt-5' } });
-      expect(result.args).toContain('--model');
-      const modelIdx = result.args.indexOf('--model');
-      expect(result.args[modelIdx + 1]).toBe('gpt-5');
+    it('should ignore codex model override by default and use CLI config/default', async () => {
+      const result = await buildCommand('codex', { models: { codex: 'gpt-5.5' } });
+      expect(result.args).not.toContain('--model');
+    });
+
+    it('should include --model only when BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true', async () => {
+      const origVal = process.env.BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE;
+      try {
+        process.env.BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE = 'true';
+        const result = await buildCommand('codex', { models: { codex: 'gpt-5.5' } });
+        expect(result.args).toContain('--model');
+        const modelIdx = result.args.indexOf('--model');
+        expect(result.args[modelIdx + 1]).toBe('gpt-5.5');
+      } finally {
+        if (origVal === undefined) {
+          delete process.env.BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE;
+        } else {
+          process.env.BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE = origVal;
+        }
+      }
     });
 
     it('should wrap prompt with Codex-specific exploration instructions (non-debate mode)', async () => {
@@ -798,6 +813,74 @@ describe('CLI Provider Error Detection', () => {
       );
       expect(result.success).toBe(false);
       expect(result.error).not.toContain('rate/usage limit');
+    });
+
+    it('should retry Codex with the CLI default when the requested model is unsupported for ChatGPT accounts', async () => {
+      const origVal = process.env.BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE;
+      process.env.BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE = 'true';
+      const spawnArgs: string[][] = [];
+      let callIndex = 0;
+
+      mockSpawn.mockImplementation((_command, args) => {
+        spawnArgs.push(Array.isArray(args) ? [...args] : []);
+        const child = new MockChildProcess();
+        const currentCall = callIndex++;
+
+        setTimeout(() => {
+          if (currentCall === 0) {
+            child.stdout.emit('data', JSON.stringify({
+              type: 'error',
+              message: JSON.stringify({
+                type: 'error',
+                status: 400,
+                error: {
+                  type: 'invalid_request_error',
+                  message: "The 'gpt-5' model is not supported when using Codex with a ChatGPT account."
+                }
+              })
+            }));
+            child.emit('close', 1);
+            return;
+          }
+
+          child.stdout.emit('data', JSON.stringify({
+            type: 'item.completed',
+            item: {
+              type: 'agent_message',
+              text: 'Fallback worked.'
+            }
+          }));
+          child.emit('close', 0);
+        }, 5);
+
+        return child as any;
+      });
+
+      try {
+        const result = await orchestrator.executeSingleCLI(
+          'codex',
+          'Analyze this',
+          'System prompt',
+          {
+            workingDirectory: process.cwd(),
+            models: { codex: 'gpt-5' }
+          }
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.output).toContain('retried with the Codex CLI default');
+        expect(result.output).toContain('Fallback worked.');
+        expect(spawnArgs).toHaveLength(2);
+        expect(spawnArgs[0]).toContain('--model');
+        expect(spawnArgs[0][spawnArgs[0].indexOf('--model') + 1]).toBe('gpt-5');
+        expect(spawnArgs[1]).not.toContain('--model');
+      } finally {
+        if (origVal === undefined) {
+          delete process.env.BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE;
+        } else {
+          process.env.BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE = origVal;
+        }
+      }
     });
   });
 });

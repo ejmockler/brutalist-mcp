@@ -92,7 +92,7 @@ export class ModelResolver {
       const def = this.cliModels[cli].defaultModel;
       parts.push(`${cli}: ${def ? `default ${def}` : 'uses CLI default'}`);
     }
-    return `Per-CLI model override. Pass any model the CLI supports. Omit to use each CLI's configured default. Current defaults — ${parts.join(', ')}`;
+    return `Per-CLI model override. Claude/Gemini honor overrides. Codex uses the Codex CLI configured/default model unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Omit to use each CLI's configured default. Current defaults — ${parts.join(', ')}`;
   }
 
   /** Build roster text for cli_agent_roster. */
@@ -108,7 +108,7 @@ export class ModelResolver {
     }
     info += '\n';
     info += `**Gemini:** ${defaults.gemini || '(CLI default)'}\n\n`;
-    info += '*Pass any model name via the `models` parameter. Deprecated codex model names are auto-resolved through the migration chain.*\n';
+    info += '*Claude/Gemini model overrides are passed through. Codex uses the Codex CLI configured/default model unless `BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true` is set; deprecated codex names are auto-resolved only when that opt-in is enabled.*\n';
     return info;
   }
 

@@ -46,10 +46,10 @@ export const BASE_ARGUMENTS = z.object({
     .describe("Ignore cache"),
 
   context_id: z.string().optional()
-    .describe("Context ID from previous response for pagination or conversation continuation"),
+    .describe("Context ID from previous response for cached pagination or conversation continuation"),
 
   resume: z.boolean().optional()
-    .describe("Continue conversation with history injection (requires context_id)"),
+    .describe("Continue conversation with a new prompt and history injection; omit for pagination/page reads"),
 
   limit: z.number().min(1000).max(100000).optional()
     .describe("Max chars/chunk (default: 90000)"),

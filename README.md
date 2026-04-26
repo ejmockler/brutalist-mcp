@@ -175,11 +175,11 @@ For analyses that exceed your IDE's token limit:
 # Set chunk size for large codebases
 roast_codebase({targetPath: "/monorepo", limit: 20000})
 
-# Continue from where you left off
-roast_codebase({targetPath: "/monorepo", offset: 20000, limit: 20000})
+# Continue from cached output; omit resume
+roast_codebase({targetPath: "/monorepo", context_id: "abc123", offset: 20000, limit: 20000})
 
 # Use cursor-based navigation
-roast_codebase({targetPath: "/complex-system", cursor: "offset:25000"})
+roast_codebase({targetPath: "/complex-system", context_id: "abc123", cursor: "offset:25000"})
 ```
 
 Features:
@@ -187,6 +187,7 @@ Features:
 - Token estimation (~4 chars = 1 token)
 - Progress indicators
 - Configurable chunk size (1K to 100K characters)
+- `resume: true` is only for new follow-up prompts and starts another agent run
 
 ## Tools
 
@@ -275,6 +276,12 @@ Rotation aborts immediately on unrelated failures (auth, subprocess crash, promp
 Overrides:
 - Per-call: `roast(..., models={gemini: "gemini-2.5-flash"})` — caller chooses, no rotation.
 - Per-environment: `BRUTALIST_GEMINI_MODEL=gemini-2.5-pro` — operator chooses, no rotation. Set this to `gemini-2.5-pro` to skip the preview-tier probe cost if you know your account lacks access.
+
+### Codex Model Selection
+
+Codex uses the Codex CLI's configured/default model by default. The server deliberately does not pass `--model` for Codex, even if `models.codex` is present, so stale tool-call tags cannot override a newer `~/.codex/config.toml` value.
+
+Set `BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true` only if you explicitly want Brutalist to pass `models.codex` through as `codex exec --model ...`. When that opt-in is enabled, deprecated Codex model names are still resolved through the migration table discovered from the Codex CLI config.
 
 ## Why Multiple Perspectives
 

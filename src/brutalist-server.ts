@@ -457,13 +457,13 @@ export class BrutalistServer {
           claude: z.string().optional(),
           codex: z.string().optional(),
           gemini: z.string().optional()
-        }).optional().describe("Per-CLI model override. Pass any model the CLI supports. Deprecated codex names auto-resolve. Omit to use each CLI's configured default."),
+        }).optional().describe("Per-CLI model override. Claude/Gemini honor overrides. Codex uses the Codex CLI configured/default model by default; set BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true to allow a codex override. Omit to use each CLI's configured default."),
         // Pagination
         offset: z.number().min(0).optional().describe("Pagination offset"),
         limit: z.number().min(1000).max(100000).optional().describe("Max chars/chunk"),
         cursor: z.string().optional().describe("Pagination cursor"),
-        context_id: z.string().optional().describe("Context ID for pagination/continuation"),
-        resume: z.boolean().optional().describe("Continue conversation"),
+        context_id: z.string().optional().describe("Context ID for cached pagination or conversation continuation"),
+        resume: z.boolean().optional().describe("Continue conversation with a new prompt; omit for pagination/page reads"),
         force_refresh: z.boolean().optional().describe("Ignore cache"),
         // Domain-specific optional fields (passed through to handler)
         depth: z.number().optional().describe("Max depth for file_structure"),
@@ -516,10 +516,10 @@ export class BrutalistServer {
           claude: z.string().optional(),
           codex: z.string().optional(),
           gemini: z.string().optional()
-        }).optional().describe("Model overrides for specific agents"),
+        }).optional().describe("Model overrides for specific agents. Codex uses the Codex CLI configured/default model by default unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true."),
         // Pagination and conversation continuation
-        context_id: z.string().optional().describe("Context ID for pagination/continuation"),
-        resume: z.boolean().optional().describe("Continue debate (requires context_id)"),
+        context_id: z.string().optional().describe("Context ID for cached pagination or debate continuation"),
+        resume: z.boolean().optional().describe("Continue debate with a new prompt; omit for pagination/page reads"),
         offset: z.number().min(0).optional(),
         limit: z.number().min(1000).max(100000).optional(),
         cursor: z.string().optional(),
@@ -642,9 +642,10 @@ export class BrutalistServer {
           roster += "- `context_id` alone returns cached response at different offsets\n";
           roster += "- Example: `roast(domain: 'codebase', target: '.', context_id: 'abc123', offset: 25000)`\n\n";
           roster += "**2. Conversation Continuation** (resume dialogue with history):\n";
-          roster += "- `context_id` + `resume: true` + new content continues the conversation\n";
+          roster += "- `context_id` + `resume: true` + new content continues the conversation and re-runs agents\n";
           roster += "- Prior conversation is injected into CLI agent context\n";
-          roster += "- Example: `roast(domain: 'codebase', target: '.', context_id: 'abc123', resume: true)`\n\n";
+          roster += "- Do not set `resume` when reading another page of cached output\n";
+          roster += "- Example: `roast(domain: 'codebase', target: '.', context_id: 'abc123', resume: true, context: 'Follow up on issue 3')`\n\n";
           roster += "**Cache TTL:** 2 hours\n\n";
 
           // Add MCP server info

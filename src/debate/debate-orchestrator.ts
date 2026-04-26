@@ -220,6 +220,9 @@ export class DebateOrchestrator {
         args.limit !== undefined ||
         args.cursor !== undefined ||
         args.context_id !== undefined;
+      const pageReadRequested =
+        args.context_id !== undefined &&
+        (args.offset !== undefined || args.cursor !== undefined);
 
       // Extract session ID early — needed for cache session isolation
       const sessionId = extra?.sessionId ||
@@ -242,7 +245,7 @@ export class DebateOrchestrator {
         if (cachedResponse) {
           handleToolLog.info(`🎯 Debate cache HIT for context_id: ${args.context_id}`);
 
-          if (args.resume === true) {
+          if (args.resume === true && !pageReadRequested) {
             // CONVERSATION CONTINUATION: Continue the debate
             if (!args.topic || args.topic.trim() === '') {
               throw new Error(
@@ -261,6 +264,11 @@ export class DebateOrchestrator {
           } else {
             // PAGINATION: Return cached debate result — no agent ran,
             // outcome='success' and tier='standard' (their initial values).
+            if (args.resume === true) {
+              handleToolLog.warn(
+                'Ignoring resume=true on debate page-read request; context_id + offset/cursor returns cached content'
+              );
+            }
             handleToolLog.info(`📖 Debate pagination request - returning cached response`);
             const cachedResult: BrutalistResponse = {
               success: true,

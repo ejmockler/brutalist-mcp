@@ -632,7 +632,7 @@ describe('Debate Tool Tests', () => {
     it('should pass model configurations to CLI execution', async () => {
       const models = {
         claude: 'opus',
-        codex: 'gpt-5.4'
+        codex: 'gpt-5.5'
       };
 
       mockOrchestrator.executeSingleCLI.mockImplementation(async (agent: any, prompt: any, systemPrompt?: any, options?: any) => {
@@ -667,7 +667,7 @@ describe('Debate Tool Tests', () => {
         expect.any(String),
         expect.any(String),
         expect.objectContaining({
-          models: expect.objectContaining({ codex: 'gpt-5.4' })
+          models: expect.objectContaining({ codex: 'gpt-5.5' })
         })
       );
     });
@@ -850,6 +850,33 @@ describe('Debate Tool Tests', () => {
 
       // No new CLI calls for pagination
       expect(mockOrchestrator.executeSingleCLI.mock.calls.length).toBe(callCountBeforePagination);
+    });
+
+    it('should not re-run agents when resume is accidentally included on a page read', async () => {
+      const firstResult = await (brutalistServer as any).handleDebateToolExecution({
+        topic: 'Should we use server components?',
+        proPosition: 'Server components reduce client work',
+        conPosition: 'Client boundaries become harder to reason about',
+        rounds: 1
+      });
+
+      const contextIdMatch = firstResult.content[0].text.match(/Context ID:\*\*\s*([a-f0-9-]+)/i);
+      expect(contextIdMatch).toBeTruthy();
+      const contextId = contextIdMatch![1];
+      const callCountAfterInitial = mockOrchestrator.executeSingleCLI.mock.calls.length;
+
+      const pagedResult = await (brutalistServer as any).handleDebateToolExecution({
+        topic: 'Should we use server components?',
+        proPosition: 'Server components reduce client work',
+        conPosition: 'Client boundaries become harder to reason about',
+        context_id: contextId,
+        resume: true,
+        offset: 1000,
+        limit: 12000
+      });
+
+      expect(pagedResult.content[0].text).toBeDefined();
+      expect(mockOrchestrator.executeSingleCLI.mock.calls.length).toBe(callCountAfterInitial);
     });
 
     it('should support conversation continuation with resume flag', async () => {

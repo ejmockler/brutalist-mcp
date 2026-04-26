@@ -60,21 +60,30 @@ Every brutalist tool now supports pagination parameters:
 
 ## Usage Patterns
 
+### Cached Page Reads vs. Continuation
+
+`context_id` has two modes:
+
+- Pagination reads cached output. Use `context_id` with `offset` or `cursor`; do not set `resume`.
+- Continuation starts a new agent run. Use `context_id` with `resume: true` only when you are asking a new follow-up prompt.
+
+If a client accidentally sends `resume: true` together with `offset` or `cursor`, Brutalist treats the call as a cached page read to avoid re-running agents.
+
 ### Basic Pagination
 
 ```bash
 # Get first chunk (default: 90K characters / ~22.5K tokens)
 roast_codebase({targetPath: "/src"})
 
-# Get next chunk explicitly
-roast_codebase({targetPath: "/src", offset: 90000, limit: 90000})
+# Get next chunk explicitly from cached output
+roast_codebase({targetPath: "/src", context_id: "abc123", offset: 90000, limit: 90000})
 ```
 
 ### Cursor-Based Navigation
 
 ```bash
 # Use cursor from previous response
-roast_codebase({targetPath: "/src", cursor: "offset:25000"})
+roast_codebase({targetPath: "/src", context_id: "abc123", cursor: "offset:25000"})
 ```
 
 ### Custom Chunk Sizes
@@ -97,7 +106,7 @@ Paginated responses include rich metadata:
 **📊 Pagination Status:** Part 1/3: chars 0-25,000 of 75,000 • Use offset parameter to continue
 **🔢 Token Estimate:** ~6,250 tokens (chunk) / ~18,750 tokens (total)
 
-**⏭️ Continue Reading:** Use `offset: 25000` for next chunk
+**⏭️ Continue Reading:** Use `context_id: "abc123", offset: 25000` without `resume`
 
 ---
 
@@ -106,7 +115,7 @@ Paginated responses include rich metadata:
 ---
 
 📖 **End of chunk 1/3**
-🔄 To continue: Use same tool with `offset: 25000`
+🔄 To continue: Include `context_id: "abc123"` with `offset: 25000` in next request; omit `resume`
 ```
 
 ## Configuration

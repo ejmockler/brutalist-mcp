@@ -328,7 +328,7 @@ export class ResponseFormatter {
 
       if (pagination.hasMore) {
         if (contextId) {
-          header += `**⏭️ Continue Reading:** Use \`context_id: "${contextId}", offset: ${endOffset}\`\n\n`;
+          header += `**⏭️ Continue Reading:** Use \`context_id: "${contextId}", offset: ${endOffset}\` without \`resume\`\n\n`;
         } else {
           header += `**⏭️ Continue Reading:** Use \`offset: ${endOffset}\` for next chunk\n\n`;
         }
@@ -355,7 +355,7 @@ export class ResponseFormatter {
     if (pagination.hasMore) {
       footer += `📖 **End of chunk ${pagination.chunkIndex}/${pagination.totalChunks}**\n`;
       if (contextId) {
-        footer += `🔄 To continue: Include \`context_id: "${contextId}"\` with \`offset: ${endOffset}\` in next request`;
+        footer += `🔄 To continue: Include \`context_id: "${contextId}"\` with \`offset: ${endOffset}\` in next request; omit \`resume\``;
       } else {
         footer += `🔄 To continue: Use same tool with \`offset: ${endOffset}\``;
       }

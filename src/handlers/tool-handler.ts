@@ -105,6 +105,9 @@ export class ToolHandler {
         args.limit !== undefined ||
         args.cursor !== undefined ||
         args.context_id !== undefined;
+      const pageReadRequested =
+        args.context_id !== undefined &&
+        (args.offset !== undefined || args.cursor !== undefined);
 
       logger.info(`🔧 DEBUG: explicitPaginationRequested=${explicitPaginationRequested}, offset=${args.offset}, limit=${args.limit}, cursor=${args.cursor}, context_id=${args.context_id}, resume=${args.resume}`);
 
@@ -126,7 +129,7 @@ export class ToolHandler {
         if (cachedResponse) {
           logger.info(`🎯 Cache HIT for context_id: ${args.context_id}`);
 
-          if (args.resume === true) {
+          if (args.resume === true && !pageReadRequested) {
             // CONVERSATION CONTINUATION: User explicitly wants to continue with history injection
             const textContent = args.content || args.idea || args.architecture || args.research || args.product || args.security || args.infrastructure;
             const primaryArg = textContent || args[config.primaryArgField];
@@ -149,6 +152,11 @@ export class ToolHandler {
             // Fall through to execute new analysis with history
           } else {
             // PAGINATION: Just retrieving previous response (no resume flag)
+            if (args.resume === true) {
+              logger.warn(
+                'Ignoring resume=true on page-read request; context_id + offset/cursor returns cached content'
+              );
+            }
             logger.info(`📖 Pagination request - returning cached response`);
             const cachedResult: BrutalistResponse = {
               success: true,

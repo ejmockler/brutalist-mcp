@@ -1,0 +1,43 @@
+name: Brutalist Review
+
+# Dogfood: the brutalist-mcp repo runs its own action on incoming PRs.
+# Pinned to v1.10.2 so this workflow doesn't trail mainline changes
+# silently — bump the tag manually when shipping a new release.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read          # actions/checkout
+  pull-requests: write    # post the review
+
+jobs:
+  brutalist:
+    runs-on: ubuntu-latest
+    # Skip on draft PRs and on PRs from forks (forks don't have access
+    # to the OAUTH secret, so the preflight would fail noisily).
+    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install CLI critics
+        # claude + brutalist-mcp are hard preflight requirements. gemini
+        # is a soft critic (warn if missing). codex's installer isn't on
+        # npm — skip in the dogfood; expect a "1 critic missing" warning.
+        run: |
+          npm install -g @brutalist/mcp@1.10.2 \
+                         @anthropic-ai/claude-code \
+                         @google/gemini-cli
+
+      - name: Brutalist review
+        uses: ejmockler/brutalist-mcp/packages/github-action@v1.10.2
+        with:
+          anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          minimum-severity: medium

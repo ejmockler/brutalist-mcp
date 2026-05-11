@@ -37,20 +37,21 @@ jobs:
           # ts-jest under workspaces requires the experimental flag for ESM.
           NODE_OPTIONS: --experimental-vm-modules
 
+      - name: Build packages/orchestrator
+        # Must run before github-action's tests AND verify-dist.
+        # github-action's TypeScript imports `@brutalist/orchestrator`,
+        # which resolves via package.json `main: dist/index.js`. Without
+        # a pre-built orchestrator dist, ts-jest fails to find the
+        # module and every github-action test suite errors with TS2307.
+        # The build also feeds verify-dist below: ncc bundles the
+        # orchestrator into the action artifact, so we need fresh
+        # upstream code visible to ncc.
+        run: npm run build --workspace=packages/orchestrator
+
       - name: Run tests (packages/github-action)
         run: npm test --workspace=packages/github-action
         env:
           NODE_OPTIONS: --experimental-vm-modules
-
-      - name: Build packages/orchestrator
-        # Required before github-action's verify-dist: ncc bundles
-        # @brutalist/orchestrator from its `main: dist/index.js`. If
-        # orchestrator src changed but its dist was stale, ncc would
-        # silently bake the old behavior into the action bundle. Building
-        # here forces ncc to see current orchestrator code, so the
-        # subsequent diff against the committed action bundle catches
-        # any drift originating in either package.
-        run: npm run build --workspace=packages/orchestrator
 
       - name: Verify github-action dist/ is fresh
         run: npm run verify-dist --workspace=packages/github-action

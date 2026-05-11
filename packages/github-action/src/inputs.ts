@@ -20,6 +20,12 @@ export interface ActionInputs {
   githubToken: string;
   openaiApiKey?: string;
   googleApiKey?: string;
+  /** Contents of ~/.codex/auth.json for OAuth-based Codex auth. */
+  codexAuth?: string;
+  /** Contents of ~/.gemini/oauth_creds.json (paired with geminiGoogleAccounts). */
+  geminiOauthCreds?: string;
+  /** Contents of ~/.gemini/google_accounts.json (paired with geminiOauthCreds). */
+  geminiGoogleAccounts?: string;
   workingDirectory: string;
   minimumSeverity: SeverityFilter;
   /** Soft cap on diff size passed to the orchestrator. */
@@ -61,6 +67,9 @@ export function readInputs(): ActionInputs {
     githubToken,
     openaiApiKey: core.getInput('openai-api-key') || undefined,
     googleApiKey: core.getInput('google-api-key') || undefined,
+    codexAuth: core.getInput('codex-auth') || undefined,
+    geminiOauthCreds: core.getInput('gemini-oauth-creds') || undefined,
+    geminiGoogleAccounts: core.getInput('gemini-google-accounts') || undefined,
     workingDirectory: core.getInput('working-directory') || '.',
     minimumSeverity: minimumSeverityRaw as SeverityFilter,
     maxDiffChars,

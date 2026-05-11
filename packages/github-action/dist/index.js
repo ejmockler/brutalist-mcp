@@ -40145,6 +40145,9 @@ function readInputs() {
         githubToken,
         openaiApiKey: lib_core.getInput('openai-api-key') || undefined,
         googleApiKey: lib_core.getInput('google-api-key') || undefined,
+        codexAuth: lib_core.getInput('codex-auth') || undefined,
+        geminiOauthCreds: lib_core.getInput('gemini-oauth-creds') || undefined,
+        geminiGoogleAccounts: lib_core.getInput('gemini-google-accounts') || undefined,
         workingDirectory: lib_core.getInput('working-directory') || '.',
         minimumSeverity: minimumSeverityRaw,
         maxDiffChars,
@@ -41424,6 +41427,161 @@ function truncateDiff(diff, maxChars) {
     return { text, didTruncate: true, originalChars: diff.length, keptChars: cut };
 }
 
+// EXTERNAL MODULE: external "node:crypto"
+var external_node_crypto_ = __nccwpck_require__(7598);
+// EXTERNAL MODULE: external "node:fs"
+var external_node_fs_ = __nccwpck_require__(3024);
+;// CONCATENATED MODULE: ./src/oauth-provisioning.ts
+/**
+ * OAuth credential provisioning for the Codex and Gemini CLIs.
+ *
+ * Both CLIs persist their OAuth state as JSON files in $HOME, not as env
+ * vars. To run them under OAuth in CI we capture each file once locally
+ * (via `codex login` / first `gemini` run), store the contents as
+ * GitHub secrets, and write the secrets back to the runner's $HOME on
+ * each spinup before invoking the CLIs.
+ *
+ * Lifecycle caveat (real but bounded): both CLIs rotate access tokens
+ * during use and rewrite the file. In ephemeral CI runners those writes
+ * vanish with the VM. Each subsequent run starts from the secret's
+ * original refresh_token. This works fine as long as the provider
+ * treats refresh_tokens as long-lived (typical for installed-app OAuth).
+ * If the provider does hard refresh-token rotation, the stored secret
+ * goes stale after one CI run and needs regeneration. detectRefreshRotation
+ * surfaces this as a warning so operators learn empirically.
+ */
+
+
+
+
+
+/**
+ * Write each non-empty credential blob to its $HOME path with 0600
+ * permissions. Returns which providers got provisioned and the initial
+ * fingerprints for later drift detection.
+ */
+async function provisionCredentials(opts) {
+    const home = opts.homeDir ?? external_node_os_namespaceObject.homedir();
+    const fingerprints = new Map();
+    const codexWritten = await writeSlot({
+        label: 'CODEX_AUTH',
+        contents: opts.codexAuth,
+        relPath: external_node_path_.join('.codex', 'auth.json'),
+        refreshTokenAccessor: (j) => j?.tokens?.refresh_token,
+    }, home, fingerprints);
+    const geminiCredsWritten = await writeSlot({
+        label: 'GEMINI_OAUTH_CREDS',
+        contents: opts.geminiOauthCreds,
+        relPath: external_node_path_.join('.gemini', 'oauth_creds.json'),
+        refreshTokenAccessor: (j) => j?.refresh_token,
+    }, home, fingerprints);
+    const geminiAccountsWritten = await writeSlot({
+        label: 'GEMINI_GOOGLE_ACCOUNTS',
+        contents: opts.geminiGoogleAccounts,
+        relPath: external_node_path_.join('.gemini', 'google_accounts.json'),
+        // No refresh_token in this file — just the account binding.
+    }, home, fingerprints);
+    // Gemini needs BOTH files. If only one was supplied, the CLI may
+    // prompt or fail unpredictably — warn and treat as un-provisioned so
+    // the env-var fallback path can take over (if a Google API key was
+    // also supplied).
+    let geminiOauth = false;
+    if (geminiCredsWritten && geminiAccountsWritten) {
+        geminiOauth = true;
+    }
+    else if (geminiCredsWritten || geminiAccountsWritten) {
+        lib_core.warning('Gemini OAuth requires BOTH gemini-oauth-creds AND gemini-google-accounts. ' +
+            'Only one was supplied; falling back to GEMINI_API_KEY env if present.');
+    }
+    return { codexOauth: codexWritten, geminiOauth, initialFingerprints: fingerprints };
+}
+/**
+ * After the orchestrator run, compare the on-disk refresh_token against
+ * the fingerprint we captured at write time. A drift means the provider
+ * rotated mid-run; the new refresh_token is on the runner's disk (which
+ * is about to be destroyed) and the GitHub secret is now stale. The
+ * operator needs to re-capture and re-store before the OLD refresh_token
+ * expires.
+ *
+ * This is a warning, not a hard failure — the current run succeeded.
+ * Future runs may start failing if the provider hard-rotates.
+ */
+async function detectRefreshRotation(initialFingerprints, homeDir = external_node_os_namespaceObject.homedir()) {
+    const slots = [
+        ['CODEX_AUTH', external_node_path_.join(homeDir, '.codex', 'auth.json'), (j) => j?.tokens?.refresh_token],
+        ['GEMINI_OAUTH_CREDS', external_node_path_.join(homeDir, '.gemini', 'oauth_creds.json'), (j) => j?.refresh_token],
+    ];
+    for (const [label, file, accessor] of slots) {
+        const before = initialFingerprints.get(label);
+        if (!before)
+            continue;
+        try {
+            const after = fingerprintRefreshToken(await external_node_fs_.promises.readFile(file, 'utf8'), accessor);
+            if (after && after !== before) {
+                lib_core.warning(`${label}: refresh_token rotated during this run (${before} → ${after}). ` +
+                    `The stored secret is now stale. Regenerate locally (codex login / gemini "hi") ` +
+                    `and update the GitHub secret before the prior refresh_token expires.`);
+            }
+        }
+        catch {
+            // File missing / unparseable post-run: the CLI may have removed
+            // it, or the run didn't get far enough to use it. Skip silently
+            // rather than false-warning.
+        }
+    }
+}
+async function writeSlot(slot, home, fingerprintsOut) {
+    if (!slot.contents || !slot.contents.trim())
+        return false;
+    // Validate JSON before writing — corrupt secrets shouldn't silently
+    // land on disk and trip the CLI with an opaque parse error later.
+    let parsed;
+    try {
+        parsed = JSON.parse(slot.contents);
+    }
+    catch (err) {
+        lib_core.warning(`${slot.label}: input is not valid JSON; skipping write. ` +
+            `Re-run the local capture command and copy the file verbatim. ` +
+            `(${err instanceof Error ? err.message : String(err)})`);
+        return false;
+    }
+    const destPath = external_node_path_.join(home, slot.relPath);
+    await external_node_fs_.promises.mkdir(external_node_path_.dirname(destPath), { recursive: true });
+    await external_node_fs_.promises.writeFile(destPath, slot.contents, { mode: 0o600 });
+    // Belt + suspenders: chmod explicitly in case the umask collapsed
+    // the create-time mode (some umasks strip group/world bits but not
+    // explicit owner bits we want).
+    await external_node_fs_.promises.chmod(destPath, 0o600).catch(() => undefined);
+    lib_core.info(`Wrote OAuth credential: ${slot.label} → ${destPath}`);
+    if (slot.refreshTokenAccessor) {
+        const fp = fingerprintRefreshToken(slot.contents, slot.refreshTokenAccessor);
+        if (fp)
+            fingerprintsOut.set(slot.label, fp);
+    }
+    return true;
+}
+/**
+ * Return a 12-char SHA-256 prefix of the refresh_token field, or
+ * undefined if the field is absent. The prefix is enough to detect
+ * rotation without exposing the token to logs (full hash would be
+ * cryptographically reversible only against the actual token, so even
+ * the full hash is safe — but we use 12 chars to keep log noise low).
+ */
+function fingerprintRefreshToken(jsonContents, accessor) {
+    try {
+        const parsed = JSON.parse(jsonContents);
+        const token = accessor(parsed);
+        if (!token || typeof token !== 'string')
+            return undefined;
+        return (0,external_node_crypto_.createHash)('sha256').update(token).digest('hex').slice(0, 12);
+    }
+    catch {
+        return undefined;
+    }
+}
+// Re-export fs constants used by tests for permission assertions.
+const FILE_PERMS_OWNER_RW = external_node_fs_.constants.S_IRUSR | external_node_fs_.constants.S_IWUSR;
+
 ;// CONCATENATED MODULE: ./src/index.ts
 /**
  * Action entrypoint.
@@ -41448,6 +41606,7 @@ function truncateDiff(diff, maxChars) {
 
 
 
+
 async function main() {
     const inputs = readInputs();
     // Preflight: fail fast with an actionable error if `brutalist-mcp` or
@@ -41456,14 +41615,30 @@ async function main() {
     lib_core.info('Running preflight checks...');
     const preflight = await runPreflight();
     assertPreflight(preflight);
-    // Forward provider keys into process.env so the orchestrator (and the
-    // brutalist-mcp subprocess it spawns) can pick them up. The orchestrator
-    // already wires through ANTHROPIC_API_KEY / OPENAI_API_KEY / etc. from
-    // process.env into its MCP child process.
-    if (inputs.openaiApiKey)
+    // Provision OAuth credential files for Codex + Gemini. The CLIs read
+    // their OAuth state from disk (~/.codex/auth.json /
+    // ~/.gemini/oauth_creds.json + google_accounts.json), so we write the
+    // GitHub secrets back to those paths before invoking the orchestrator.
+    // Files are mode 0600.
+    const provisioned = await provisionCredentials({
+        codexAuth: inputs.codexAuth,
+        geminiOauthCreds: inputs.geminiOauthCreds,
+        geminiGoogleAccounts: inputs.geminiGoogleAccounts,
+    });
+    // Forward provider keys into process.env ONLY when OAuth wasn't
+    // provisioned for that provider. The CLIs prefer env-based API keys
+    // over file-based OAuth, so setting both would override the OAuth
+    // path we just wrote to disk.
+    if (!provisioned.codexOauth && inputs.openaiApiKey) {
         process.env.OPENAI_API_KEY = inputs.openaiApiKey;
-    if (inputs.googleApiKey)
+    }
+    if (!provisioned.geminiOauth && inputs.googleApiKey) {
         process.env.GEMINI_API_KEY = inputs.googleApiKey;
+    }
+    if (provisioned.codexOauth)
+        lib_core.info('Codex critic will authenticate via OAuth.');
+    if (provisioned.geminiOauth)
+        lib_core.info('Gemini critic will authenticate via OAuth.');
     const pull = getPullRequestRef();
     if (!pull) {
         throw new Error('This action runs on pull_request events only. github.context.payload.pull_request was missing.');
@@ -41545,6 +41720,10 @@ async function main() {
         dropped: resolution.dropped,
         result,
     });
+    // Detect mid-run refresh-token rotation so operators learn empirically
+    // whether their provider hard-rotates (in which case the stored secret
+    // is now stale and the next run will fail auth).
+    await detectRefreshRotation(provisioned.initialFingerprints);
     lib_core.info(`Review submitted: ${submission.htmlUrl}`);
     if (submission.degradedToSummaryOnly) {
         lib_core.warning('Review submitted in degraded mode (summary only). Inline comments could not be posted; see the review body for details.');

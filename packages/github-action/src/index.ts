@@ -22,6 +22,7 @@ import { groupInlineFindingsWithSubThreshold, applyReviewsApiLimits } from './gr
 import { submitReview } from './reviews-api.js';
 import { runPreflight, assertPreflight } from './preflight.js';
 import { truncateDiff } from './truncate-diff.js';
+import { provisionCredentials, detectRefreshRotation } from './oauth-provisioning.js';
 
 async function main(): Promise<void> {
   const inputs = readInputs();
@@ -33,12 +34,29 @@ async function main(): Promise<void> {
   const preflight = await runPreflight();
   assertPreflight(preflight);
 
-  // Forward provider keys into process.env so the orchestrator (and the
-  // brutalist-mcp subprocess it spawns) can pick them up. The orchestrator
-  // already wires through ANTHROPIC_API_KEY / OPENAI_API_KEY / etc. from
-  // process.env into its MCP child process.
-  if (inputs.openaiApiKey) process.env.OPENAI_API_KEY = inputs.openaiApiKey;
-  if (inputs.googleApiKey) process.env.GEMINI_API_KEY = inputs.googleApiKey;
+  // Provision OAuth credential files for Codex + Gemini. The CLIs read
+  // their OAuth state from disk (~/.codex/auth.json /
+  // ~/.gemini/oauth_creds.json + google_accounts.json), so we write the
+  // GitHub secrets back to those paths before invoking the orchestrator.
+  // Files are mode 0600.
+  const provisioned = await provisionCredentials({
+    codexAuth: inputs.codexAuth,
+    geminiOauthCreds: inputs.geminiOauthCreds,
+    geminiGoogleAccounts: inputs.geminiGoogleAccounts,
+  });
+
+  // Forward provider keys into process.env ONLY when OAuth wasn't
+  // provisioned for that provider. The CLIs prefer env-based API keys
+  // over file-based OAuth, so setting both would override the OAuth
+  // path we just wrote to disk.
+  if (!provisioned.codexOauth && inputs.openaiApiKey) {
+    process.env.OPENAI_API_KEY = inputs.openaiApiKey;
+  }
+  if (!provisioned.geminiOauth && inputs.googleApiKey) {
+    process.env.GEMINI_API_KEY = inputs.googleApiKey;
+  }
+  if (provisioned.codexOauth) core.info('Codex critic will authenticate via OAuth.');
+  if (provisioned.geminiOauth) core.info('Gemini critic will authenticate via OAuth.');
 
   const pull = getPullRequestRef();
   if (!pull) {
@@ -149,6 +167,11 @@ async function main(): Promise<void> {
     dropped: resolution.dropped,
     result,
   });
+
+  // Detect mid-run refresh-token rotation so operators learn empirically
+  // whether their provider hard-rotates (in which case the stored secret
+  // is now stale and the next run will fail auth).
+  await detectRefreshRotation(provisioned.initialFingerprints);
 
   core.info(`Review submitted: ${submission.htmlUrl}`);
   if (submission.degradedToSummaryOnly) {

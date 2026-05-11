@@ -23,16 +23,47 @@ inputs:
     default: ${{ github.token }}
   openai-api-key:
     description: |
-      Optional OpenAI / ChatGPT API key for the Codex CLI critic. If absent,
-      Codex falls back to its own configured auth (e.g. ChatGPT account
-      session). Skip this if your Codex CLI is configured locally on the
-      runner.
+      Optional OpenAI API key for the Codex CLI critic. Falls back when
+      codex-auth (OAuth) is absent. Mutually exclusive with codex-auth —
+      OAuth wins if both are provided.
     required: false
   google-api-key:
     description: |
-      Optional Google API key for the Gemini CLI critic. If absent the
-      Gemini CLI falls back to its own auth (gcloud / OAuth). Skip if
-      your Gemini CLI is configured locally on the runner.
+      Optional Google API key for the Gemini CLI critic. Falls back when
+      gemini-oauth-creds + gemini-google-accounts (OAuth) are absent.
+      Mutually exclusive with the Gemini OAuth inputs — OAuth wins if both.
+    required: false
+  codex-auth:
+    description: |
+      Full contents of ~/.codex/auth.json from `codex login`. When provided,
+      Codex uses ChatGPT-account OAuth (no OPENAI_API_KEY required).
+
+      One-time capture locally:
+        codex login
+        gh secret set CODEX_AUTH < ~/.codex/auth.json
+
+      Note: Codex's CLI rotates the access_token + last_refresh fields on
+      use; in CI those writes are lost when the runner is destroyed. The
+      refresh_token in your secret is what survives across runs. If runs
+      start failing auth after weeks, re-run `codex login` and update the
+      secret.
+    required: false
+  gemini-oauth-creds:
+    description: |
+      Full contents of ~/.gemini/oauth_creds.json from the first interactive
+      `gemini` run. Paired with gemini-google-accounts (both required for
+      Gemini OAuth to work in CI).
+
+      One-time capture locally:
+        gemini "hi"   # triggers OAuth browser flow on first run
+        gh secret set GEMINI_OAUTH_CREDS < ~/.gemini/oauth_creds.json
+        gh secret set GEMINI_GOOGLE_ACCOUNTS < ~/.gemini/google_accounts.json
+    required: false
+  gemini-google-accounts:
+    description: |
+      Full contents of ~/.gemini/google_accounts.json. Paired with
+      gemini-oauth-creds; both required together — the file binds the
+      OAuth credentials to a specific Google account.
     required: false
   working-directory:
     description: |

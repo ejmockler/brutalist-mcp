@@ -29,15 +29,18 @@ jobs:
 
       - name: Install CLI critics
         # claude + brutalist-mcp are hard preflight requirements. gemini
-        # is a soft critic (warn if missing). codex's installer isn't on
-        # npm — skip in the dogfood; expect a "1 critic missing" warning.
+        # + codex are soft critics (warn if missing).
         run: |
-          npm install -g @brutalist/mcp@1.10.2 \
+          npm install -g @brutalist/mcp@1.11.0 \
                          @anthropic-ai/claude-code \
-                         @google/gemini-cli
+                         @google/gemini-cli \
+                         @openai/codex
 
       - name: Brutalist review
-        uses: ejmockler/brutalist-mcp/packages/github-action@v1.10.2
+        uses: ejmockler/brutalist-mcp/packages/github-action@v1.11.0
         with:
           anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          codex-auth: ${{ secrets.CODEX_AUTH }}
+          gemini-oauth-creds: ${{ secrets.GEMINI_OAUTH_CREDS }}
+          gemini-google-accounts: ${{ secrets.GEMINI_GOOGLE_ACCOUNTS }}
           minimum-severity: medium

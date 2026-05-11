@@ -18,6 +18,11 @@ export interface CLIAgentResponse {
   systemPromptType?: string;
   workingDirectory?: string;
   exitCode?: number;
+  // Resolved model name for downstream attribution (e.g. orchestrators
+  // extracting per-CLI findings need to distinguish claude+opus from
+  // claude+sonnet). Populated by adapter buildCommand on the success
+  // path; may be absent on pre-spawn failures where no model was resolved.
+  model?: string;
 }
 
 export interface RoastOptions {

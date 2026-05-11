@@ -10,7 +10,10 @@ export const mockSuccessfulResponse: CLIAgentResponse = {
   executionTime: 2400,
   command: 'codex exec --sandbox read-only --skip-git-repo-check',
   workingDirectory: '/test',
-  exitCode: 0
+  exitCode: 0,
+  // model intentionally absent — exercises the "default" header fallback
+  // path on the Codex side, where BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE is
+  // off by default and the adapter returns model: undefined.
 };
 
 export const mockFailedResponse: CLIAgentResponse = {
@@ -31,7 +34,8 @@ export const mockClaudeResponse: CLIAgentResponse = {
   executionTime: 1800,
   command: 'claude --print',
   workingDirectory: '/test',
-  exitCode: 0
+  exitCode: 0,
+  model: 'opus'
 };
 
 export const mockGeminiResponse: CLIAgentResponse = {
@@ -41,7 +45,8 @@ export const mockGeminiResponse: CLIAgentResponse = {
   executionTime: 3200,
   command: 'gemini --model gemini-2.5-flash --yolo',
   workingDirectory: '/test',
-  exitCode: 0
+  exitCode: 0,
+  model: 'gemini-3.1-pro-preview'
 };
 
 export const mockMixedResponses: CLIAgentResponse[] = [

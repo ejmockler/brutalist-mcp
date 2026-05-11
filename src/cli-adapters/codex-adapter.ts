@@ -100,6 +100,7 @@ export class CodexAdapter implements CLIProvider {
     input: string;
     env: Record<string, string>;
     tempMcpConfigPath?: string;
+    model?: string;
   }> {
     const log = options.log ?? rootLogger;
     const config = CODEX_CONFIG;
@@ -171,7 +172,7 @@ export class CodexAdapter implements CLIProvider {
 
     env.BRUTALIST_SUBPROCESS = '1';
 
-    return { command: config.command, args, input: combinedPrompt, env, tempMcpConfigPath };
+    return { command: config.command, args, input: combinedPrompt, env, tempMcpConfigPath, model: resolvedModel };
   }
 
   /**

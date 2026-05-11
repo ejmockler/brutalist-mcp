@@ -73,6 +73,11 @@ export interface CLIProvider {
     input: string;
     env: Record<string, string>;
     tempMcpConfigPath?: string;
+    // Resolved model name. Surfaced for downstream attribution
+    // (per-CLI section headers, orchestrator finding extraction).
+    // Undefined when the CLI runs against its own configured default
+    // (e.g. Codex without BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE).
+    model?: string;
   }>;
 
   /**

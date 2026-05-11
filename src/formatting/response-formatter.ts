@@ -56,22 +56,14 @@ export class ResponseFormatter {
     logger.info(`🔧 DEBUG: pagination params:`, paginationParams);
     logger.info(`🔧 DEBUG: explicitPaginationRequested=${explicitPaginationRequested}`);
 
-    // Get the primary content to paginate
-    let primaryContent = '';
-
-    if (result.synthesis) {
-      primaryContent = result.synthesis;
-      logger.info(`🔧 DEBUG: Using synthesis content (${primaryContent.length} characters)`);
-    } else if (result.responses) {
-      const successfulResponses = result.responses.filter(r => r.success);
-      if (successfulResponses.length > 0) {
-        primaryContent = successfulResponses.map(r => r.output).join('\n\n---\n\n');
-        logger.info(`🔧 DEBUG: Using raw CLI output (${primaryContent.length} characters)`);
-      }
-    }
-
-    // Append adversarial framing epilogue to every successful response
+    // Get the primary content to paginate. `synthesis` is always populated
+    // by ToolHandler.executeBrutalistAnalysis (tool-handler.ts:403), so the
+    // historical `else if (result.responses)` fallback was unreachable and
+    // has been removed. If synthesis is missing the response is genuinely
+    // empty and falls through to formatNoContentError below.
+    let primaryContent = result.synthesis ?? '';
     if (primaryContent) {
+      logger.info(`🔧 DEBUG: Using synthesis content (${primaryContent.length} characters)`);
       primaryContent += ADVERSARIAL_EPILOGUE;
     }
 
@@ -249,30 +241,16 @@ export class ResponseFormatter {
   }
 
   /**
-   * Extract full content from analysis result for caching
+   * Extract full content from analysis result for caching.
+   *
+   * `synthesis` is always populated by ToolHandler.executeBrutalistAnalysis
+   * (tool-handler.ts:403), so the historical raw-response reconstruction
+   * branch was unreachable. Removed as part of the per-CLI delimiter
+   * hardening — synthesis itself now carries the canonical
+   * BRUTALIST_CLI_BEGIN/END section markers.
    */
   public extractFullContent(result: BrutalistResponse): string | null {
-    if (result.synthesis) {
-      return result.synthesis;
-    } else if (result.responses && result.responses.length > 0) {
-      const successfulResponses = result.responses.filter(r => r.success);
-      if (successfulResponses.length > 0) {
-        let output = `${successfulResponses.length} AI critics have systematically demolished your work.\n\n`;
-
-        successfulResponses.forEach((response, index) => {
-          output += `## Critic ${index + 1}: ${response.agent.toUpperCase()}\n`;
-          output += `*Execution time: ${response.executionTime}ms*\n\n`;
-          output += response.output;
-          // Only add separator between critics, not after the last one
-          if (index < successfulResponses.length - 1) {
-            output += '\n\n---\n\n';
-          }
-        });
-
-        return output;
-      }
-    }
-    return null;
+    return result.synthesis ?? null;
   }
 
   // Private helper methods

@@ -158,8 +158,13 @@ export class ToolHandler {
               );
             }
             logger.info(`📖 Pagination request - returning cached response`);
+            // `synthesis` is the field formatToolResponse paginates;
+            // populating it directly preserves the cache-read path. Keeping
+            // `responses[]` for backward-compat with consumers that
+            // introspect the raw response shape.
             const cachedResult: BrutalistResponse = {
               success: true,
+              synthesis: cachedResponse.content,
               responses: [{
                 agent: 'cached' as any,
                 success: true,
@@ -198,8 +203,12 @@ export class ToolHandler {
             ? this.responseCache.createAlias(existingContextId, cacheKey)
             : this.responseCache.generateContextId(cacheKey);
           logger.info(`🎯 Cache hit for new request, using context_id: ${contextId}`);
+          // Same shape as the pagination-read above — synthesis is what
+          // formatToolResponse reads, responses[] is preserved for
+          // backward-compat introspection.
           const cachedResult: BrutalistResponse = {
             success: true,
+            synthesis: cachedContent,
             responses: [{
               agent: 'cached' as any,
               success: true,

@@ -130,7 +130,7 @@ describe('CLI Provider Command Construction', () => {
     it('should always include --disallowedTools and --permission-mode bypassPermissions (write protection + tool access in --print mode)', async () => {
       const result = await buildCommand('claude');
       expect(result.args).toContain('--disallowedTools');
-      expect(result.args).toContain('Edit,Write,NotebookEdit');
+      expect(result.args).toContain('Bash,Edit,Write,NotebookEdit');
       expect(result.args).toContain('--permission-mode');
       expect(result.args).toContain('bypassPermissions');
     });
@@ -140,7 +140,7 @@ describe('CLI Provider Command Construction', () => {
       expect(result.args).toContain('--mcp-config');
       expect(result.args).toContain('--strict-mcp-config');
       expect(result.args).toContain('--disallowedTools');
-      expect(result.args).toContain('Edit,Write,NotebookEdit');
+      expect(result.args).toContain('Bash,Edit,Write,NotebookEdit');
       expect(result.args).toContain('--permission-mode');
       expect(result.args).toContain('bypassPermissions');
     });

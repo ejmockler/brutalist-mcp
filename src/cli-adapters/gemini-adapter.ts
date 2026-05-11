@@ -82,34 +82,46 @@ const GEMINI_CONFIG: CLIBuilderConfig = {
 /**
  * Frontier Gemini model chain.
  *
- * Ordered by preference: newest frontier preview → previous frontier preview
- * → stable last-gen frontier. The orchestrator rotates through this chain
- * on saturation failures (429 / "No capacity available"), trading "freshest
- * capability" for "delivered response" as preview tiers are exhausted.
+ * Ordered by preference: newest pro preview → previous pro preview →
+ * 3-series flash preview. The orchestrator rotates through this chain
+ * on saturation/access failures (429 / "No capacity available" / 403),
+ * trading "freshest capability" for "delivered response" as the
+ * preview tiers exhaust.
  *
  * Rationale: Gemini CLI's default Auto routing resolves to
  * `gemini-2.5-flash-lite` for prompts the router classifies as "simple" —
  * a classification our full adversarial verification protocol apparently
  * does not escape. flash-lite lacks the capacity to maintain URL/quote
  * source-provenance across 5+ citation verification loads, so it
- * fabricates. Pinning the heaviest tier-3 model trades the Auto router's
- * variable downselect for predictable frontier capacity; rotation handles
- * the preview tier's variable availability.
+ * fabricates. Pinning specific frontier models trades the Auto router's
+ * variable downselect for predictable capacity; rotation handles the
+ * preview tier's availability.
  *
- * Probe-tested 2026-04-21 in Gemini CLI 0.30: the strings below are the
- * only ones the CLI accepts for the tier-3 frontier. `gemini-3-pro`,
- * `gemini-3.1-pro`, `gemini-3.0-pro`, `gemini-3-flash`, `gemini-3-pro-exp`,
- * `gemini-3-pro-002`, and `gemini-pro-3` all return ModelNotFoundError.
- * The `-preview` suffix is required for the 3.x tier.
+ * Why `gemini-3-flash-preview` as the floor (not `gemini-2.5-pro`):
+ * Gemini 3 Flash ships with "Pro-grade reasoning at Flash-level speed
+ * and lower cost" per Google's docs, and unlike 2.5-flash-lite it has
+ * the capacity for our verification protocol. It's also priced an
+ * order of magnitude below the pro tiers, so when both pro previews
+ * are unavailable, 3-flash is a substantively better fallback than
+ * dropping a generation back to 2.5-pro.
  *
- * Override the whole chain with a single model via BRUTALIST_GEMINI_MODEL=...
- * (disables rotation — operator takes responsibility for availability).
- * Passing `models.gemini` on a tool call similarly disables rotation.
+ * Probe-tested in Gemini CLI: the strings below are the canonical
+ * preview identifiers. `gemini-3-pro`, `gemini-3.1-pro`,
+ * `gemini-3.0-pro`, `gemini-3-flash` (no `-preview`),
+ * `gemini-3-pro-exp`, `gemini-3-pro-002`, and `gemini-pro-3` all
+ * return ModelNotFoundError. The `-preview` suffix is required for
+ * the 3.x tier.
+ *
+ * Override the whole chain with a single model via
+ * `BRUTALIST_GEMINI_MODEL=...` (disables rotation — operator takes
+ * responsibility for availability; this is the path for users who
+ * still want `gemini-2.5-pro` as their pin). Passing `models.gemini`
+ * on a tool call similarly disables rotation.
  */
 export const GEMINI_FRONTIER_CHAIN: readonly string[] = Object.freeze([
-  'gemini-3.1-pro-preview',  // newest frontier, preview-tier (capacity-limited)
-  'gemini-3-pro-preview',    // previous frontier, preview-tier
-  'gemini-2.5-pro',          // stable last-gen frontier, ~always available
+  'gemini-3.1-pro-preview',  // newest pro frontier, preview (capacity-limited)
+  'gemini-3-pro-preview',    // previous pro frontier, preview
+  'gemini-3-flash-preview',  // 3-series flash, pro-grade reasoning at flash cost
 ]);
 
 const GEMINI_FRONTIER_MODEL = process.env.BRUTALIST_GEMINI_MODEL || GEMINI_FRONTIER_CHAIN[0];
@@ -133,6 +145,7 @@ export class GeminiAdapter implements CLIProvider {
     input: string;
     env: Record<string, string>;
     tempMcpConfigPath?: string;
+    model?: string;
   }> {
     const log = options.log ?? rootLogger;
     const config = GEMINI_CONFIG;
@@ -191,7 +204,7 @@ export class GeminiAdapter implements CLIProvider {
 
     env.BRUTALIST_SUBPROCESS = '1';
 
-    return { command: config.command, args, input: combinedPrompt, env };
+    return { command: config.command, args, input: combinedPrompt, env, model: resolvedModel };
   }
 
   /**

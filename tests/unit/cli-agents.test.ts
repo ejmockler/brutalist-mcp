@@ -317,6 +317,98 @@ describe('CLIAgentOrchestrator', () => {
       // Should include timing information
       expect(synthesis).toMatch(/\d+ms/); // Contains millisecond timing
     });
+
+    // Regression tests for deterministic per-CLI section delimiters
+    // (hypergraph node A2 / A3). Downstream PR-bot orchestrators extract
+    // per-CLI findings by matching the BRUTALIST_CLI_BEGIN/END HTML
+    // comments — these tests guard the format contract.
+    describe('deterministic per-CLI delimiters', () => {
+      it('emits one BEGIN/END pair per successful CLI with stable metadata', () => {
+        const synthesis = orchestrator.synthesizeBrutalistFeedback(
+          mockAllSuccessfulResponses,
+          'codebase'
+        );
+
+        const beginMatches = [
+          ...synthesis.matchAll(/<!-- BRUTALIST_CLI_BEGIN cli="(\w+)" model="([^"]*)" exec_ms="(\d+)" success="(true|false)" -->/g),
+        ];
+        const endMatches = [...synthesis.matchAll(/<!-- BRUTALIST_CLI_END cli="(\w+)" -->/g)];
+
+        expect(beginMatches.length).toBe(mockAllSuccessfulResponses.length);
+        expect(endMatches.length).toBe(mockAllSuccessfulResponses.length);
+
+        // Each BEGIN must have a matching END with the same cli identifier.
+        const beginClis = beginMatches.map(m => m[1]);
+        const endClis = endMatches.map(m => m[1]);
+        expect(beginClis).toEqual(endClis);
+
+        // Metadata identity check: cli + model + exec_ms + success line up
+        // with the source response by index. This pins the contract that
+        // downstream parsers rely on.
+        for (let i = 0; i < mockAllSuccessfulResponses.length; i++) {
+          const r = mockAllSuccessfulResponses[i];
+          expect(beginMatches[i][1]).toBe(r.agent);
+          expect(beginMatches[i][2]).toBe(r.model ?? '');
+          expect(parseInt(beginMatches[i][3], 10)).toBe(r.executionTime);
+          expect(beginMatches[i][4]).toBe('true');
+        }
+      });
+
+      it('extracts per-CLI body content between delimiters', () => {
+        const synthesis = orchestrator.synthesizeBrutalistFeedback(
+          mockAllSuccessfulResponses,
+          'security'
+        );
+
+        // Capture the body between BEGIN and END for each CLI. Validates
+        // the orchestrator-side extraction pattern works.
+        const sectionPattern = /<!-- BRUTALIST_CLI_BEGIN cli="(\w+)"[^>]+-->\n([\s\S]*?)<!-- BRUTALIST_CLI_END cli="\1" -->/g;
+        const sections = [...synthesis.matchAll(sectionPattern)];
+        expect(sections.length).toBe(mockAllSuccessfulResponses.length);
+
+        for (const section of sections) {
+          const cli = section[1];
+          const body = section[2];
+          const expected = mockAllSuccessfulResponses.find(r => r.agent === cli);
+          expect(expected).toBeDefined();
+          expect(body).toContain(expected!.output!);
+        }
+      });
+
+      it('marks failed critics with success="false" delimiters', () => {
+        const synthesis = orchestrator.synthesizeBrutalistFeedback(
+          mockPartialFailureResponses,
+          'security'
+        );
+
+        const failedMatches = [
+          ...synthesis.matchAll(/<!-- BRUTALIST_CLI_BEGIN cli="(\w+)"[^>]*success="false" -->/g),
+        ];
+        expect(failedMatches.length).toBe(1);
+        expect(failedMatches[0][1]).toBe('gemini');
+      });
+
+      it('handles missing model gracefully — header reads "default"', () => {
+        const synthesis = orchestrator.synthesizeBrutalistFeedback(
+          [mockAllSuccessfulResponses[0]], // codex, no model
+          'codebase'
+        );
+
+        // Empty model attribute in the comment, "default" in the visible header
+        expect(synthesis).toContain('<!-- BRUTALIST_CLI_BEGIN cli="codex" model=""');
+        expect(synthesis).toMatch(/### CLI: CODEX \*\(default · \d+ms\)\*/);
+      });
+
+      it('serializes model name when present', () => {
+        const synthesis = orchestrator.synthesizeBrutalistFeedback(
+          [mockAllSuccessfulResponses[1]], // claude with model=opus
+          'architecture'
+        );
+
+        expect(synthesis).toContain('<!-- BRUTALIST_CLI_BEGIN cli="claude" model="opus"');
+        expect(synthesis).toMatch(/### CLI: CLAUDE \*\(opus · \d+ms\)\*/);
+      });
+    });
   });
 
   describe('Concurrent Execution Management', () => {

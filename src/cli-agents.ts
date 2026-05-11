@@ -28,9 +28,10 @@ import { CLI_SPAWN_LABELS, safeMetric } from './metrics/index.js';
  *      "permission denied". In production the frontier chain is
  *      probe-tested (not user-typos), so these errors mean "this tier
  *      is unavailable to THIS caller" — which is exactly when rotation
- *      to the next tier should fire. Dropping down from preview tiers
- *      to the universally-available `gemini-2.5-pro` is the entire
- *      point of the chain.
+ *      to the next tier should fire. Dropping from a pro preview down
+ *      to `gemini-3-flash-preview` (the chain floor) trades pro-tier
+ *      reasoning for flash-tier latency/cost while still keeping
+ *      Pro-grade quality per Google's 3-Flash positioning.
  *
  * Does NOT match: auth failures (missing/invalid API key), prompt-safety
  * rejections, or subprocess crashes — these will not differ between
@@ -236,7 +237,13 @@ async function asyncValidatePath(path: string, name: string): Promise<string> {
 
 // Create secure environment for CLI processes
 function createSecureEnvironment(): Record<string, string> {
-  // Minimal environment whitelist
+  // Minimal environment whitelist. Provider auth is intentionally
+  // EXCLUDED here — each adapter forwards only the keys it needs, so
+  // a shell-capable Codex critic processing adversarial PR text never
+  // sees Claude's OAuth token (or vice versa). Cross-provider secret
+  // exposure was a real leak vector identified in self-review:
+  // adversarial PR → "use shell to run env" → critique output → review
+  // body → secret in PR comment. Per-adapter scoping closes that.
   const SAFE_ENV_VARS = [
     'PATH',
     'HOME',
@@ -246,7 +253,7 @@ function createSecureEnvironment(): Record<string, string> {
     'LANG',
     'LC_ALL',
     'TZ',
-    'NODE_ENV'
+    'NODE_ENV',
   ];
   
   const secureEnv: Record<string, string> = {};
@@ -894,12 +901,16 @@ export class CLIAgentOrchestrator {
     userPrompt: string,
     systemPromptSpec: string,
     options: CLIAgentOptions = {},
-    commandBuilder: (userPrompt: string, systemPromptSpec: string, options: CLIAgentOptions) => Promise<{ command: string; args: string[]; env?: Record<string, string>; input?: string; tempMcpConfigPath?: string }>
+    commandBuilder: (userPrompt: string, systemPromptSpec: string, options: CLIAgentOptions) => Promise<{ command: string; args: string[]; env?: Record<string, string>; input?: string; tempMcpConfigPath?: string; model?: string }>
   ): Promise<CLIAgentResponse> {
     const startTime = Date.now();
     const workingDir = options.workingDirectory || this.defaultWorkingDir;
     const timeout = options.timeout || this.defaultTimeout;
     let tempMcpConfigPath: string | undefined;
+    // Hoisted so the catch branch can read `built?.model` for response
+    // attribution. Undefined when commandBuilder itself threw before
+    // resolving a model, which is the right semantics for the response.
+    let built: Awaited<ReturnType<typeof commandBuilder>> | undefined;
 
     // Provider label for the spawn counter. Derived from cliName so the
     // label set stays in sync with the 'claude' | 'codex' | 'gemini' union
@@ -932,7 +943,7 @@ export class CLIAgentOrchestrator {
       }
 
 
-      const built = await commandBuilder(userPrompt, systemPromptSpec, options);
+      built = await commandBuilder(userPrompt, systemPromptSpec, options);
       const { command, args, env, input } = built;
       tempMcpConfigPath = built.tempMcpConfigPath;
 
@@ -1085,7 +1096,8 @@ export class CLIAgentOrchestrator {
           // fragments that crossed the trust boundary).
           command: `(redacted command for ${cliName})`,
           workingDirectory: workingDir,
-          exitCode: 0
+          exitCode: 0,
+          model: built?.model
         };
       }
 
@@ -1118,7 +1130,8 @@ export class CLIAgentOrchestrator {
         // crossed the trust boundary.
         command: `(redacted command for ${cliName})`,
         workingDirectory: workingDir,
-        exitCode: 0
+        exitCode: 0,
+        model: built.model
       };
     } catch (error) {
       const execError: ChildProcessError = error as ChildProcessError;
@@ -1216,7 +1229,8 @@ export class CLIAgentOrchestrator {
         executionTime: Date.now() - startTime,
         command: `(redacted command for ${cliName})`,
         workingDirectory: workingDir,
-        exitCode
+        exitCode,
+        model: built?.model
       };
     } finally {
       // Clean up temp MCP config file (Claude flag-file method)
@@ -1283,14 +1297,18 @@ export class CLIAgentOrchestrator {
     this.emitLog().info(`\u{1F3AF} Executing ${cli} (${this.runningCLIs}/${this.MAX_CONCURRENT_CLIS} slots used)`);
 
     try {
-      // Gemini frontier rotation: when using the default frontier chain (no
-      // caller-specified model, no env-var override), rotate through the
-      // chain on saturation OR access-denied failures. Access-denied
-      // rotation is the path most users take — the preview tier
-      // (gemini-3.1-pro-preview / gemini-3-pro-preview) isn't granted to
-      // every account, so the chain falls through to the universally-
-      // available gemini-2.5-pro. Rotation is disabled when the caller
-      // or operator has explicitly chosen a model.
+      // Gemini frontier rotation: when using the default frontier chain
+      // (no caller-specified model, no env-var override), rotate through
+      // GEMINI_FRONTIER_CHAIN on saturation OR access-denied failures.
+      // The chain (see src/cli-adapters/gemini-adapter.ts) is two pro
+      // previews followed by `gemini-3-flash-preview` as the floor. The
+      // 2.5-pro fallback was removed because 3-flash ships with
+      // pro-grade reasoning and is universally available; falling to it
+      // beats dropping a generation back. Access-denied rotation is the
+      // typical user path: pro preview tiers aren't granted to every
+      // account, so the chain falls through to 3-flash. Rotation is
+      // disabled when the caller or operator has explicitly chosen a
+      // model (BRUTALIST_GEMINI_MODEL=... or models.gemini=...).
       const geminiRotationActive = cli === 'gemini'
         && !options.models?.gemini
         && !process.env.BRUTALIST_GEMINI_MODEL;
@@ -1361,7 +1379,9 @@ export class CLIAgentOrchestrator {
    * In practice the typical non-preview user trajectory is:
    *   gemini-3.1-pro-preview  -> access denied (rotate)
    *   gemini-3-pro-preview    -> access denied (rotate)
-   *   gemini-2.5-pro          -> success (universally available)
+   *   gemini-3-flash-preview  -> success (3-series flash, pro-grade
+   *                              reasoning, universally available as
+   *                              of the model launch)
    */
   private async _executeGeminiWithRotation(
     userPrompt: string,
@@ -1577,25 +1597,37 @@ export class CLIAgentOrchestrator {
   synthesizeBrutalistFeedback(responses: CLIAgentResponse[], analysisType: string): string {
     const successfulResponses = responses.filter(r => r.success);
     const failedResponses = responses.filter(r => !r.success);
-    
+
     if (successfulResponses.length === 0) {
       return `# Brutalist Analysis Failed\n\n❌ All CLI agents failed to analyze\n${failedResponses.map(r => `- ${r.agent.toUpperCase()}: ${r.error}`).join('\n')}`;
     }
 
-    let synthesis = `${successfulResponses.length} AI critics have systematically demolished your work.\n\n`;
-    
-    successfulResponses.forEach((response, index) => {
-      synthesis += `## Critic ${index + 1}: ${response.agent.toUpperCase()}\n`;
-      synthesis += `*Execution time: ${response.executionTime}ms*\n\n`;
+    const noun = successfulResponses.length === 1 ? 'critic' : 'critics';
+    let synthesis = `${successfulResponses.length} AI ${noun} have systematically demolished your work.\n\n`;
+
+    // Deterministic per-CLI section delimiters. Downstream parsers
+    // (orchestrators extracting Finding[] from MCP responses) match the
+    // BRUTALIST_CLI_BEGIN/END HTML comments instead of regex-fragile
+    // ordinal headers like "## Critic 1: CLAUDE". The metadata in the
+    // BEGIN comment (cli, model, exec_ms, success) is the canonical
+    // source of truth; the markdown header below it is for human display.
+    successfulResponses.forEach((response) => {
+      const model = response.model ?? '';
+      synthesis += `<!-- BRUTALIST_CLI_BEGIN cli="${response.agent}" model="${model}" exec_ms="${response.executionTime}" success="true" -->\n`;
+      synthesis += `### CLI: ${response.agent.toUpperCase()} *(${model || 'default'} · ${response.executionTime}ms)*\n\n`;
       synthesis += response.output;
-      synthesis += '\n\n---\n\n';
+      synthesis += `\n\n<!-- BRUTALIST_CLI_END cli="${response.agent}" -->\n\n`;
     });
-    
+
     if (failedResponses.length > 0) {
       synthesis += `## Failed Critics\n`;
-      synthesis += `${failedResponses.length} critics failed to complete their destruction:\n`;
+      const failNoun = failedResponses.length === 1 ? 'critic' : 'critics';
+      synthesis += `${failedResponses.length} ${failNoun} failed to complete their destruction:\n`;
       failedResponses.forEach(r => {
+        const model = r.model ?? '';
+        synthesis += `<!-- BRUTALIST_CLI_BEGIN cli="${r.agent}" model="${model}" exec_ms="${r.executionTime}" success="false" -->\n`;
         synthesis += `- **${r.agent.toUpperCase()}**: ${r.error}\n`;
+        synthesis += `<!-- BRUTALIST_CLI_END cli="${r.agent}" -->\n`;
       });
       synthesis += '\n';
     }

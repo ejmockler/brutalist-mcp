@@ -261,11 +261,13 @@ Untagged citations are a protocol violation. The "state doctrine without a cite"
 
 For Gemini, the server pins `gemini-3.1-pro-preview` as the default to prevent the CLI's Auto router from downselecting to `gemini-2.5-flash-lite` under verification load. The orchestrator automatically rotates through the frontier chain when the current tier is unavailable:
 
-1. `gemini-3.1-pro-preview` (newest frontier, preview-tier access)
-2. `gemini-3-pro-preview` (previous frontier, preview-tier access)
-3. `gemini-2.5-pro` (stable last-gen frontier, universally available)
+1. `gemini-3.1-pro-preview` (newest pro frontier, preview-tier access)
+2. `gemini-3-pro-preview` (previous pro frontier, preview-tier access)
+3. `gemini-3-flash-preview` (3-series flash — Pro-grade reasoning at Flash-level speed and cost; the floor of the rotation chain)
 
-**Rotation fires on both capacity and access failures.** Users without preview-tier access (most accounts) will see the chain naturally fall through to `gemini-2.5-pro` on the first call — which is still a frontier-class model, far better than the Auto router's `gemini-2.5-flash-lite` downselect. Users *with* preview access get the newest model when capacity is available, with graceful fallback when it isn't.
+**Rotation fires on both capacity and access failures.** Users without preview-tier access to the pro variants fall through to `gemini-3-flash-preview` — which is materially better than the Auto router's `gemini-2.5-flash-lite` downselect because Gemini 3 Flash carries Pro-grade reasoning. Users *with* preview access get the newest pro model when capacity is available, with graceful fallback when it isn't.
+
+If you need the last-generation pro model as your pin (e.g. your account has no 3.x preview access at all), use the env override below — `gemini-2.5-pro` is no longer in the rotation chain by default.
 
 Rotatable failure patterns:
 - Capacity: `429`, `"No capacity available"`, `quota`, `rate limit`, `too many requests`
@@ -275,7 +277,7 @@ Rotation aborts immediately on unrelated failures (auth, subprocess crash, promp
 
 Overrides:
 - Per-call: `roast(..., models={gemini: "gemini-2.5-flash"})` — caller chooses, no rotation.
-- Per-environment: `BRUTALIST_GEMINI_MODEL=gemini-2.5-pro` — operator chooses, no rotation. Set this to `gemini-2.5-pro` to skip the preview-tier probe cost if you know your account lacks access.
+- Per-environment: `BRUTALIST_GEMINI_MODEL=<model>` — operator chooses, no rotation. Common picks: `gemini-3-flash-preview` to skip the pro-preview probe cost; `gemini-2.5-pro` if you want the previous-generation pro pin (no longer in the rotation default).
 
 ### Codex Model Selection
 

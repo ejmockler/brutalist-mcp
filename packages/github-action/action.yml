@@ -1,0 +1,61 @@
+name: 'Brutalist Code Review'
+description: 'Multi-CLI brutalist code review (Claude, Codex, Gemini) posted as inline PR comments via the @brutalist/orchestrator.'
+author: 'Brutalist'
+branding:
+  icon: 'alert-triangle'
+  color: 'red'
+inputs:
+  anthropic-oauth-token:
+    description: |
+      Long-lived Anthropic OAuth token from `claude setup-token`. Required.
+      Store as a repository secret and reference like:
+        ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+      The token authenticates the orchestrator's Claude Agent SDK session
+      and is passed through to the spawned brutalist-mcp subprocess for
+      its own Claude critic.
+    required: true
+  github-token:
+    description: |
+      Token used to post the PR review. Defaults to the workflow-provided
+      ${{ github.token }} (GITHUB_TOKEN). Must have the `pull-requests: write`
+      permission on the workflow.
+    required: false
+    default: ${{ github.token }}
+  openai-api-key:
+    description: |
+      Optional OpenAI / ChatGPT API key for the Codex CLI critic. If absent,
+      Codex falls back to its own configured auth (e.g. ChatGPT account
+      session). Skip this if your Codex CLI is configured locally on the
+      runner.
+    required: false
+  google-api-key:
+    description: |
+      Optional Google API key for the Gemini CLI critic. If absent the
+      Gemini CLI falls back to its own auth (gcloud / OAuth). Skip if
+      your Gemini CLI is configured locally on the runner.
+    required: false
+  working-directory:
+    description: |
+      Subtree of the repository to focus on. Defaults to the repo root.
+      Useful when only a particular package or service should be analyzed.
+    required: false
+    default: '.'
+  minimum-severity:
+    description: |
+      Filter: only inline-comment findings at this severity or above.
+      Lower-severity findings still appear in the review summary.
+      One of: critical, high, medium, low, nit. Default: low.
+    required: false
+    default: 'low'
+  max-diff-chars:
+    description: |
+      Maximum diff size in characters passed to the orchestrator. Diffs
+      above this threshold are truncated to keep prompt budgets in check
+      and a warning is emitted. Set higher (e.g. 200000) for monorepo
+      PRs where partial diff context produces unreliable findings.
+      Default: 80000.
+    required: false
+    default: '80000'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

@@ -1,0 +1,42 @@
+{
+  "name": "@brutalist/github-action",
+  "version": "0.0.1",
+  "description": "GitHub Action that runs the brutalist orchestrator against a pull request and posts inline review comments + summary.",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist/index.js",
+    "dist/**/*.cjs",
+    "dist/**/*.map",
+    "action.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && ncc build src/index.ts -o dist --source-map --license=licenses.txt",
+    "build:tsc": "tsc",
+    "clean": "rm -rf dist",
+    "test": "jest",
+    "verify-dist": "node scripts/verify-dist.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^6.0.0",
+    "@brutalist/orchestrator": "*",
+    "@octokit/rest": "^21.0.2"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.17.28",
+    "@vercel/ncc": "^0.38.4",
+    "jest": "^30.1.3",
+    "ts-jest": "^29.4.2",
+    "typescript": "^5.8.2"
+  },
+  "license": "MIT",
+  "private": true
+}

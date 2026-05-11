@@ -28,11 +28,50 @@ jobs:
       - name: Install dependencies
         run: npm ci
       
-      - name: Run tests
+      - name: Run tests (root @brutalist/mcp)
         run: npm test -- tests/unit tests/integration/pagination-e2e.test.ts tests/integration/cache.integration.test.ts tests/smoke
-      
+
+      - name: Run tests (packages/orchestrator)
+        run: npm test --workspace=packages/orchestrator
+        env:
+          # ts-jest under workspaces requires the experimental flag for ESM.
+          NODE_OPTIONS: --experimental-vm-modules
+
+      - name: Run tests (packages/github-action)
+        run: npm test --workspace=packages/github-action
+        env:
+          NODE_OPTIONS: --experimental-vm-modules
+
+      - name: Build packages/orchestrator
+        # Required before github-action's verify-dist: ncc bundles
+        # @brutalist/orchestrator from its `main: dist/index.js`. If
+        # orchestrator src changed but its dist was stale, ncc would
+        # silently bake the old behavior into the action bundle. Building
+        # here forces ncc to see current orchestrator code, so the
+        # subsequent diff against the committed action bundle catches
+        # any drift originating in either package.
+        run: npm run build --workspace=packages/orchestrator
+
+      - name: Verify github-action dist/ is fresh
+        run: npm run verify-dist --workspace=packages/github-action
+
       - name: Build
         run: npm run build
+
+      - name: Verify root dist/ is fresh
+        # The brutalist-mcp binary points at root dist/index.js (see
+        # package.json `bin`). If src/ outpaced dist/ in this PR, the
+        # published binary would ship stale code — silently masking
+        # the security and correctness fixes contributors thought
+        # they'd shipped. We just ran `npm run build` above, so any
+        # diff against the committed dist/ means it was stale.
+        run: |
+          if ! git diff --quiet -- dist/; then
+            echo "::error::Root dist/ is out of date with src/. Run 'npm run build' and commit the result."
+            git diff --stat -- dist/
+            exit 1
+          fi
+          echo "Root dist/ matches src/."
 
   publish:
     needs: test

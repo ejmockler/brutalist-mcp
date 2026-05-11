@@ -1,0 +1,35 @@
+{
+  "name": "@brutalist/orchestrator",
+  "version": "0.0.1",
+  "description": "Claude Agent SDK orchestrator that consumes brutalist-mcp prose output and emits structured Finding[] for downstream PR adapters.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "jest"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.138",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.17.28",
+    "jest": "^30.1.3",
+    "ts-jest": "^29.4.2",
+    "typescript": "^5.8.2"
+  },
+  "license": "MIT",
+  "private": true
+}

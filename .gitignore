@@ -1,5 +1,10 @@
 node_modules/
 dist/
+# packages/github-action/dist/ is the bundled action runtime — action.yml
+# runs `dist/index.js` from the git checkout (consumers don't `npm install`
+# an action), so it MUST be tracked despite the global `dist/` rule.
+# verify-dist gates drift against the committed bundle.
+!packages/github-action/dist/
 coverage/
 .claude/
 .env

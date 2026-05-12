@@ -6,21 +6,19 @@ branding:
   color: 'red'
 inputs:
   anthropic-oauth-token:
-    description: |
+    description: >-
       Long-lived Anthropic OAuth token from `claude setup-token`. Required.
-      Store as a repository secret and reference like:
-        ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
-      The token authenticates the orchestrator's Claude Agent SDK session
-      and is passed through to the spawned brutalist-mcp subprocess for
-      its own Claude critic.
+      Store as a repository secret and reference via secrets.ANTHROPIC_OAUTH_TOKEN
+      in your workflow file. The token authenticates the orchestrator's
+      Claude Agent SDK session and is passed through to the spawned
+      brutalist-mcp subprocess for its own Claude critic.
     required: true
   github-token:
-    description: |
-      Token used to post the PR review. Defaults to the workflow-provided
-      ${{ github.token }} (GITHUB_TOKEN). Must have the `pull-requests: write`
-      permission on the workflow.
+    description: >-
+      Token used to post the PR review. If omitted, falls back to the
+      GITHUB_TOKEN environment variable provided by the runner. Needs the
+      pull-requests:write permission on the workflow.
     required: false
-    default: ${{ github.token }}
   openai-api-key:
     description: |
       Optional OpenAI API key for the Codex CLI critic. Falls back when

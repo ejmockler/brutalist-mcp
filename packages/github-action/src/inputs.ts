@@ -40,10 +40,15 @@ export function readInputs(): ActionInputs {
     );
   }
 
-  const githubToken = core.getInput('github-token', { required: true });
+  // GitHub Actions populates GITHUB_TOKEN automatically; the workflow
+  // can still override via `github-token:` input if it wants a finer-
+  // grained PAT. We can't put `default: ${{ github.token }}` in action.yml
+  // because action.yml's parser evaluates `${{ }}` and rejects context
+  // refs there — so the fallback is here in code.
+  const githubToken = core.getInput('github-token') || process.env.GITHUB_TOKEN || '';
   if (!githubToken.trim()) {
     throw new Error(
-      'Missing github-token input. The action defaults to ${{ github.token }} — ensure your workflow has `permissions: { pull-requests: write }`.',
+      'Missing github-token. Either pass `github-token: ${{ github.token }}` as an action input, or let the runner-provided GITHUB_TOKEN environment variable do it. Ensure your workflow has `permissions: { pull-requests: write }`.',
     );
   }
 

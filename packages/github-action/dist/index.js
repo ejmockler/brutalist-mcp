@@ -41579,6 +41579,58 @@ function fingerprintRefreshToken(jsonContents, accessor) {
         return undefined;
     }
 }
+/**
+ * Extract individual token strings from an OAuth credential JSON blob
+ * so the global redactor can mask them if a CLI subprocess accidentally
+ * echoes one in an error message.
+ *
+ * Without this, `redactSecrets` only sees the WHOLE JSON blob as a
+ * single secret — partial echoes (e.g. a CLI logging
+ * `Bearer abc...xyz` from a debug path) wouldn't be substring-matched
+ * and would leak into the action log. Extracting and registering each
+ * sensitive field individually closes that gap.
+ *
+ * Conservative on inclusion: only string values from known token field
+ * names are returned, and only when ≥16 chars (real OAuth tokens are
+ * always much longer; the floor avoids masking trivial substrings like
+ * a 4-char `account_id` numeric or any non-token string that happens to
+ * sit in a field with a similar name).
+ *
+ * Tolerates malformed JSON silently — provisionCredentials already
+ * validates upstream, so the only way malformed input reaches this
+ * function is during the .catch handler when readInputs itself threw.
+ */
+function extractOauthSecrets(jsonContents) {
+    if (!jsonContents || !jsonContents.trim())
+        return [];
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonContents);
+    }
+    catch {
+        return [];
+    }
+    const out = [];
+    const collect = (v) => {
+        if (typeof v === 'string' && v.length >= 16)
+            out.push(v);
+    };
+    const obj = parsed;
+    if (!obj || typeof obj !== 'object')
+        return out;
+    // Codex shape: { tokens: { access_token, refresh_token, id_token, account_id } }
+    const tokens = obj.tokens;
+    if (tokens && typeof tokens === 'object') {
+        collect(tokens.access_token);
+        collect(tokens.refresh_token);
+        collect(tokens.id_token);
+    }
+    // Gemini shape: top-level { access_token, refresh_token, id_token }
+    collect(obj.access_token);
+    collect(obj.refresh_token);
+    collect(obj.id_token);
+    return out;
+}
 // Re-export fs constants used by tests for permission assertions.
 const FILE_PERMS_OWNER_RW = external_node_fs_.constants.S_IRUSR | external_node_fs_.constants.S_IWUSR;
 
@@ -41752,6 +41804,19 @@ main().catch((err) => {
     try {
         const i = readInputs();
         secrets = [i.anthropicOauthToken, i.openaiApiKey, i.googleApiKey].filter((s) => typeof s === 'string' && s.length >= 8);
+        // Extract individual token fields from each OAuth credential blob
+        // so partial echoes (e.g. a CLI logging "Bearer <token>") get
+        // masked even when the whole-blob match doesn't fire. Defense in
+        // depth on top of the blob-level mask.
+        secrets.push(...extractOauthSecrets(i.codexAuth));
+        secrets.push(...extractOauthSecrets(i.geminiOauthCreds));
+        // Also register the whole blob — covers full-payload echoes that
+        // the field-level extractor wouldn't reach (e.g. an error dump that
+        // serialized the input dict).
+        if (i.codexAuth && i.codexAuth.length >= 16)
+            secrets.push(i.codexAuth);
+        if (i.geminiOauthCreds && i.geminiOauthCreds.length >= 16)
+            secrets.push(i.geminiOauthCreds);
     }
     catch {
         // readInputs may itself throw (e.g. missing required input) — in

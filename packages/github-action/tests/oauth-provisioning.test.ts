@@ -6,6 +6,7 @@ import {
   provisionCredentials,
   detectRefreshRotation,
   fingerprintRefreshToken,
+  extractOauthSecrets,
 } from '../src/oauth-provisioning.js';
 
 let fakeHome: string;
@@ -135,6 +136,74 @@ describe('fingerprintRefreshToken', () => {
 
   it('returns undefined on malformed JSON without throwing', () => {
     expect(fingerprintRefreshToken('not json', () => 'x')).toBeUndefined();
+  });
+});
+
+describe('extractOauthSecrets', () => {
+  it('pulls all three token fields from a Codex-shape blob', () => {
+    const codexAuth = JSON.stringify({
+      OPENAI_API_KEY: null,
+      tokens: {
+        access_token: 'sk-codex-access-1234567890ab',
+        refresh_token: 'rt-codex-refresh-1234567890ab',
+        id_token: 'id-codex-jwt-12345678901234567890',
+        account_id: 'acc-42',
+      },
+      last_refresh: '2026-05-12T00:00:00Z',
+    });
+    const secrets = extractOauthSecrets(codexAuth);
+    expect(secrets).toContain('sk-codex-access-1234567890ab');
+    expect(secrets).toContain('rt-codex-refresh-1234567890ab');
+    expect(secrets).toContain('id-codex-jwt-12345678901234567890');
+    // account_id is shorter than the 16-char floor → excluded.
+    expect(secrets.some((s) => s.includes('acc-42'))).toBe(false);
+  });
+
+  it('pulls all three token fields from a Gemini-shape blob', () => {
+    const geminiCreds = JSON.stringify({
+      access_token: 'ya29-gemini-access-token-1234567890',
+      refresh_token: '1//gemini-refresh-token-1234567890',
+      id_token: 'eyJ-gemini-id-jwt-1234567890',
+      scope: 'https://www.googleapis.com/auth/cloud-platform',
+      token_type: 'Bearer',
+      expiry_date: 1747094400000,
+    });
+    const secrets = extractOauthSecrets(geminiCreds);
+    expect(secrets).toContain('ya29-gemini-access-token-1234567890');
+    expect(secrets).toContain('1//gemini-refresh-token-1234567890');
+    expect(secrets).toContain('eyJ-gemini-id-jwt-1234567890');
+    // Non-token short fields (token_type="Bearer") excluded.
+    expect(secrets.some((s) => s === 'Bearer')).toBe(false);
+  });
+
+  it('returns empty for undefined / empty / whitespace input', () => {
+    expect(extractOauthSecrets(undefined)).toEqual([]);
+    expect(extractOauthSecrets('')).toEqual([]);
+    expect(extractOauthSecrets('   ')).toEqual([]);
+  });
+
+  it('returns empty for malformed JSON (tolerated silently)', () => {
+    expect(extractOauthSecrets('{not valid')).toEqual([]);
+    expect(extractOauthSecrets('null')).toEqual([]);
+    expect(extractOauthSecrets('"just a string"')).toEqual([]);
+  });
+
+  it('filters out string values shorter than 16 chars (avoids masking trivial substrings)', () => {
+    // Real OAuth tokens are always much longer than 16; a 4-byte field
+    // like a numeric ID matching token-field-name is excluded.
+    const blob = JSON.stringify({
+      access_token: 'short', // 5 chars — excluded
+      refresh_token: 'this-one-is-long-enough-to-pass-the-floor', // included
+    });
+    const secrets = extractOauthSecrets(blob);
+    expect(secrets).toEqual(['this-one-is-long-enough-to-pass-the-floor']);
+  });
+
+  it('returns empty when token fields are missing or non-string', () => {
+    expect(extractOauthSecrets(JSON.stringify({}))).toEqual([]);
+    expect(extractOauthSecrets(JSON.stringify({ tokens: {} }))).toEqual([]);
+    expect(extractOauthSecrets(JSON.stringify({ refresh_token: 12345 }))).toEqual([]);
+    expect(extractOauthSecrets(JSON.stringify({ tokens: { refresh_token: null } }))).toEqual([]);
   });
 });
 

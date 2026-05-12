@@ -213,5 +213,55 @@ export function fingerprintRefreshToken(
   }
 }
 
+/**
+ * Extract individual token strings from an OAuth credential JSON blob
+ * so the global redactor can mask them if a CLI subprocess accidentally
+ * echoes one in an error message.
+ *
+ * Without this, `redactSecrets` only sees the WHOLE JSON blob as a
+ * single secret — partial echoes (e.g. a CLI logging
+ * `Bearer abc...xyz` from a debug path) wouldn't be substring-matched
+ * and would leak into the action log. Extracting and registering each
+ * sensitive field individually closes that gap.
+ *
+ * Conservative on inclusion: only string values from known token field
+ * names are returned, and only when ≥16 chars (real OAuth tokens are
+ * always much longer; the floor avoids masking trivial substrings like
+ * a 4-char `account_id` numeric or any non-token string that happens to
+ * sit in a field with a similar name).
+ *
+ * Tolerates malformed JSON silently — provisionCredentials already
+ * validates upstream, so the only way malformed input reaches this
+ * function is during the .catch handler when readInputs itself threw.
+ */
+export function extractOauthSecrets(jsonContents: string | undefined): string[] {
+  if (!jsonContents || !jsonContents.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonContents);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  const collect = (v: unknown): void => {
+    if (typeof v === 'string' && v.length >= 16) out.push(v);
+  };
+  const obj = parsed as Record<string, unknown> | null;
+  if (!obj || typeof obj !== 'object') return out;
+
+  // Codex shape: { tokens: { access_token, refresh_token, id_token, account_id } }
+  const tokens = (obj as { tokens?: Record<string, unknown> }).tokens;
+  if (tokens && typeof tokens === 'object') {
+    collect(tokens.access_token);
+    collect(tokens.refresh_token);
+    collect(tokens.id_token);
+  }
+  // Gemini shape: top-level { access_token, refresh_token, id_token }
+  collect(obj.access_token);
+  collect(obj.refresh_token);
+  collect(obj.id_token);
+  return out;
+}
+
 // Re-export fs constants used by tests for permission assertions.
 export const FILE_PERMS_OWNER_RW = fsConstants.S_IRUSR | fsConstants.S_IWUSR;

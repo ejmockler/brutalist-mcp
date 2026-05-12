@@ -22,7 +22,7 @@ import { groupInlineFindingsWithSubThreshold, applyReviewsApiLimits } from './gr
 import { submitReview } from './reviews-api.js';
 import { runPreflight, assertPreflight } from './preflight.js';
 import { truncateDiff } from './truncate-diff.js';
-import { provisionCredentials, detectRefreshRotation } from './oauth-provisioning.js';
+import { provisionCredentials, detectRefreshRotation, extractOauthSecrets } from './oauth-provisioning.js';
 
 async function main(): Promise<void> {
   const inputs = readInputs();
@@ -210,6 +210,17 @@ main().catch((err) => {
     secrets = [i.anthropicOauthToken, i.openaiApiKey, i.googleApiKey].filter(
       (s): s is string => typeof s === 'string' && s.length >= 8,
     );
+    // Extract individual token fields from each OAuth credential blob
+    // so partial echoes (e.g. a CLI logging "Bearer <token>") get
+    // masked even when the whole-blob match doesn't fire. Defense in
+    // depth on top of the blob-level mask.
+    secrets.push(...extractOauthSecrets(i.codexAuth));
+    secrets.push(...extractOauthSecrets(i.geminiOauthCreds));
+    // Also register the whole blob — covers full-payload echoes that
+    // the field-level extractor wouldn't reach (e.g. an error dump that
+    // serialized the input dict).
+    if (i.codexAuth && i.codexAuth.length >= 16) secrets.push(i.codexAuth);
+    if (i.geminiOauthCreds && i.geminiOauthCreds.length >= 16) secrets.push(i.geminiOauthCreds);
   } catch {
     // readInputs may itself throw (e.g. missing required input) — in
     // that case there's nothing input-side to redact; fall through to

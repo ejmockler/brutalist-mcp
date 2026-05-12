@@ -32,7 +32,7 @@ import { filterToolsByIntent, getMatchingDomainIds } from './tool-router.js';
 import { DebateOrchestrator } from './debate/index.js';
 
 // Use environment variable or fallback to manual version
-const PACKAGE_VERSION = process.env.npm_package_version || "1.11.1";
+const PACKAGE_VERSION = process.env.npm_package_version || "1.11.2";
 
 /**
  * BrutalistServer - Composition root for the Brutalist MCP Server

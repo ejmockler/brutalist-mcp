@@ -39,6 +39,9 @@ jobs:
       - name: Brutalist review
         uses: ejmockler/brutalist-mcp/packages/github-action@v1.11.2
         with:
+          # github.token is a workflow context — not available inside
+          # action.yml's `default:` field — so the workflow must pass it.
+          github-token: ${{ github.token }}
           anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
           codex-auth: ${{ secrets.CODEX_AUTH }}
           gemini-oauth-creds: ${{ secrets.GEMINI_OAUTH_CREDS }}

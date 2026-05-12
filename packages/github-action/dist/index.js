@@ -40127,9 +40127,14 @@ function readInputs() {
     if (!anthropicOauthToken.trim()) {
         throw new Error('Missing anthropic-oauth-token input. Run `claude setup-token` locally to generate an OAuth session token, then add it to your repo secrets and pass it via the action input.');
     }
-    const githubToken = lib_core.getInput('github-token', { required: true });
+    // GitHub Actions populates GITHUB_TOKEN automatically; the workflow
+    // can still override via `github-token:` input if it wants a finer-
+    // grained PAT. We can't put `default: ${{ github.token }}` in action.yml
+    // because action.yml's parser evaluates `${{ }}` and rejects context
+    // refs there — so the fallback is here in code.
+    const githubToken = lib_core.getInput('github-token') || process.env.GITHUB_TOKEN || '';
     if (!githubToken.trim()) {
-        throw new Error('Missing github-token input. The action defaults to ${{ github.token }} — ensure your workflow has `permissions: { pull-requests: write }`.');
+        throw new Error('Missing github-token. Either pass `github-token: ${{ github.token }}` as an action input, or let the runner-provided GITHUB_TOKEN environment variable do it. Ensure your workflow has `permissions: { pull-requests: write }`.');
     }
     const minimumSeverityRaw = (lib_core.getInput('minimum-severity') || 'low').toLowerCase();
     if (!(minimumSeverityRaw in SEVERITY_RANK)) {

@@ -17,7 +17,7 @@ export type CLIName = 'claude' | 'codex' | 'gemini';
 
 export interface MCPSupportConfig {
   /** How this CLI receives MCP server configuration */
-  configMethod: 'flag-file' | 'config-override' | 'server-whitelist';
+  configMethod: 'flag-inline-json' | 'config-override' | 'server-whitelist';
 
   // Claude: --mcp-config <path> --strict-mcp-config
   configFlag?: string;
@@ -72,7 +72,6 @@ export interface CLIProvider {
     args: string[];
     input: string;
     env: Record<string, string>;
-    tempMcpConfigPath?: string;
     // Resolved model name. Surfaced for downstream attribution
     // (per-CLI section headers, orchestrator finding extraction).
     // Undefined when the CLI runs against its own configured default

@@ -6,9 +6,6 @@
  * analysis while remaining unable to modify the codebase.
  */
 
-import { promises as fs } from 'fs';
-import path from 'path';
-import os from 'os';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { logger } from './logger.js';
@@ -112,16 +109,16 @@ export function ensurePlaywrightBrowsers(): Promise<void> {
   return playwrightInstallPromise;
 }
 
-// ── Claude: temp JSON config file ──────────────────────────────────────────
+// ── Claude: inline MCP config JSON ─────────────────────────────────────────
 
 /**
- * Write a temporary Claude MCP config file and return its path.
- * Caller is responsible for cleanup via `cleanupTempConfig`.
+ * Build the Claude `--mcp-config` argument value: a single JSON string
+ * the binary accepts directly (no temp file). `claude --help` documents
+ * `--mcp-config <configs...>  Load MCP servers from JSON files or strings`.
  */
-export async function writeClaudeMCPConfig(
+export function buildClaudeMcpConfigJson(
   servers: Record<string, MCPServerSpec>,
-  sessionId: string,
-): Promise<string> {
+): string {
   const config: ClaudeMCPConfigJSON = { mcpServers: {} };
   for (const [name, spec] of Object.entries(servers)) {
     config.mcpServers[name] = {
@@ -130,24 +127,7 @@ export async function writeClaudeMCPConfig(
       ...(spec.env && { env: spec.env }),
     };
   }
-
-  const tmpDir = os.tmpdir();
-  const filename = `brutalist-mcp-${sessionId}-${Date.now()}.json`;
-  const filepath = path.join(tmpDir, filename);
-
-  await fs.writeFile(filepath, JSON.stringify(config, null, 2), 'utf-8');
-  logger.info(`Wrote Claude MCP config: ${filepath}`);
-  return filepath;
-}
-
-/** Remove a temp config file. Swallows errors (file may already be gone). */
-export async function cleanupTempConfig(filepath: string): Promise<void> {
-  try {
-    await fs.unlink(filepath);
-    logger.info(`Cleaned up MCP config: ${filepath}`);
-  } catch {
-    // Already removed or never created — fine
-  }
+  return JSON.stringify(config);
 }
 
 // ── Codex: -c config override string ───────────────────────────────────────

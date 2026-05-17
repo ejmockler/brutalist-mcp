@@ -31,8 +31,8 @@ jest.mock('../../src/logger.js', () => ({
 // Mock mcp-registry to avoid filesystem side-effects
 jest.mock('../../src/mcp-registry.js', () => ({
   resolveServers: jest.fn<() => Record<string, any>>().mockReturnValue({ playwright: { command: 'npx', args: ['playwright'] } }),
-  writeClaudeMCPConfig: jest.fn<() => Promise<string>>().mockResolvedValue('/tmp/mock-mcp-config.json'),
-  cleanupTempConfig: jest.fn<() => Promise<void>>().mockResolvedValue(undefined as any),
+  listRegisteredServers: jest.fn<() => string[]>().mockReturnValue(['playwright']),
+  buildClaudeMcpConfigJson: jest.fn<() => string>().mockReturnValue('{"mcpServers":{"playwright":{"command":"npx","args":["playwright"]}}}'),
   buildCodexMCPOverride: jest.fn<() => string>().mockReturnValue('{playwright={command="npx",args=["playwright"]}}'),
   ensureGeminiMCPServers: jest.fn<() => Promise<void>>().mockResolvedValue(undefined as any),
   ensurePlaywrightBrowsers: jest.fn<() => Promise<void>>().mockResolvedValue(undefined as any),
@@ -100,10 +100,16 @@ describe('CLI Provider Command Construction', () => {
 
   // ---- Claude ----------------------------------------------------------
   describe('Claude CLI', () => {
-    it('should use "claude" command with --print as default arg', async () => {
+    it('should use "claude" command with --input-format stream-json as default args', async () => {
       const result = await buildCommand('claude');
       expect(result.command).toBe('claude');
-      expect(result.args).toContain('--print');
+      expect(result.args).toContain('--input-format');
+      // `--input-format` is followed by its value `stream-json`. The two
+      // appear as adjacent argv elements after the migration off `-p`/
+      // `--print` to the NDJSON stream-json protocol.
+      const idx = result.args.indexOf('--input-format');
+      expect(result.args[idx + 1]).toBe('stream-json');
+      expect(result.args).not.toContain('--print');
     });
 
     it('should include streaming args (--output-format stream-json --verbose)', async () => {
@@ -151,10 +157,17 @@ describe('CLI Provider Command Construction', () => {
       expect(result.args).not.toContain('--strict-mcp-config');
     });
 
-    it('should have a temp MCP config path when MCP is enabled', async () => {
+    it('should pass inline MCP JSON as --mcp-config value (not a temp file path)', async () => {
       const result = await buildCommand('claude', { mcpServers: ['playwright'] });
-      expect(result.tempMcpConfigPath).toBeDefined();
-      expect(typeof result.tempMcpConfigPath).toBe('string');
+      const idx = result.args.indexOf('--mcp-config');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const value = result.args[idx + 1];
+      // The argv value is the JSON-stringified config, not a filesystem
+      // path. Confirms the temp-file write was eliminated as part of the
+      // migration off `-p`/`--print`.
+      expect(typeof value).toBe('string');
+      expect(value).toContain('"mcpServers"');
+      expect(value.trim().startsWith('{')).toBe(true);
     });
 
     it('should set BRUTALIST_SUBPROCESS=1 in env', async () => {

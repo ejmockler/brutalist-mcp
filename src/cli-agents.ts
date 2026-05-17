@@ -6,9 +6,6 @@ import { logger } from './logger.js';
 import type { StructuredLogger } from './logger.js';
 import { CLIAgentResponse } from './types/brutalist.js';
 import { ModelResolver } from './model-resolver.js';
-import {
-  cleanupTempConfig,
-} from './mcp-registry.js';
 import { getProvider, parseNDJSON } from './cli-adapters/index.js';
 import type { CLIName } from './cli-adapters/index.js';
 import { GEMINI_FRONTIER_CHAIN } from './cli-adapters/gemini-adapter.js';
@@ -796,7 +793,7 @@ export class CLIAgentOrchestrator {
     userPrompt: string,
     systemPrompt: string,
     options: CLIAgentOptions
-  ): Promise<{ command: string; args: string[]; input: string; env: Record<string, string>; tempMcpConfigPath?: string }> {
+  ): Promise<{ command: string; args: string[]; input: string; env: Record<string, string> }> {
     const provider = getProvider(cli);
     const secureEnv = createSecureEnvironment();
 
@@ -901,12 +898,11 @@ export class CLIAgentOrchestrator {
     userPrompt: string,
     systemPromptSpec: string,
     options: CLIAgentOptions = {},
-    commandBuilder: (userPrompt: string, systemPromptSpec: string, options: CLIAgentOptions) => Promise<{ command: string; args: string[]; env?: Record<string, string>; input?: string; tempMcpConfigPath?: string; model?: string }>
+    commandBuilder: (userPrompt: string, systemPromptSpec: string, options: CLIAgentOptions) => Promise<{ command: string; args: string[]; env?: Record<string, string>; input?: string; model?: string }>
   ): Promise<CLIAgentResponse> {
     const startTime = Date.now();
     const workingDir = options.workingDirectory || this.defaultWorkingDir;
     const timeout = options.timeout || this.defaultTimeout;
-    let tempMcpConfigPath: string | undefined;
     // Hoisted so the catch branch can read `built?.model` for response
     // attribution. Undefined when commandBuilder itself threw before
     // resolving a model, which is the right semantics for the response.
@@ -945,7 +941,6 @@ export class CLIAgentOrchestrator {
 
       built = await commandBuilder(userPrompt, systemPromptSpec, options);
       const { command, args, env, input } = built;
-      tempMcpConfigPath = built.tempMcpConfigPath;
 
       // Cycle 4 Task T18 (F9 — security): do NOT log raw command +
       // joined args. The args array can contain caller-controlled
@@ -1232,11 +1227,6 @@ export class CLIAgentOrchestrator {
         exitCode,
         model: built?.model
       };
-    } finally {
-      // Clean up temp MCP config file (Claude flag-file method)
-      if (tempMcpConfigPath) {
-        await cleanupTempConfig(tempMcpConfigPath);
-      }
     }
   }
 

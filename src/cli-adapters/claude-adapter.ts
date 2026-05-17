@@ -20,7 +20,7 @@ import { parseNDJSON } from './shared.js';
 import {
   resolveServers,
   listRegisteredServers,
-  writeClaudeMCPConfig,
+  buildClaudeMcpConfigJson,
   ensurePlaywrightBrowsers,
 } from '../mcp-registry.js';
 
@@ -68,12 +68,17 @@ function sanitizeMcpServerNames(
 
 const CLAUDE_CONFIG: CLIBuilderConfig = {
   command: 'claude',
-  defaultArgs: ['--print'],
+  // The binary drives non-interactive runs via NDJSON `stream-json` mode
+  // rather than the deprecated `-p`/`--print` flag. The `--input-format`
+  // help text claims it "only works with --print", but that annotation
+  // is stale — verified empirically against v2.1.142 and confirmed by
+  // the Agent SDK source, which spawns the binary without --print.
+  defaultArgs: ['--input-format', 'stream-json'],
   modelArgName: '--model',
   mpcEnvCleanup: ['CLAUDE_MCP_CONFIG', 'MCP_ENABLED', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
   streamingArgs: () => ['--output-format', 'stream-json', '--verbose'],
   mcpSupport: {
-    configMethod: 'flag-file',
+    configMethod: 'flag-inline-json',
     configFlag: '--mcp-config',
     strictFlag: '--strict-mcp-config',
     writeProtection: {
@@ -112,7 +117,6 @@ export class ClaudeAdapter implements CLIProvider {
     args: string[];
     input: string;
     env: Record<string, string>;
-    tempMcpConfigPath?: string;
     model?: string;
   }> {
     const log = options.log ?? rootLogger;
@@ -130,21 +134,22 @@ export class ClaudeAdapter implements CLIProvider {
     }
 
     // Always enforce write-tool denial and permission bypass for non-interactive
-    // tool use. In --print mode, Claude Code silently skips tool calls that
-    // would otherwise require approval; for verification-oriented prompts
-    // (legal, research, security), this caused agents to fall back to
-    // training-data answers instead of invoking WebSearch/WebFetch. Lifting
-    // these two flags out of the MCP conditional ensures native web/search
-    // tools are usable in every run while preserving the Edit/Write/
-    // NotebookEdit barrier. MCP wiring below remains gated on mcpEnabled.
+    // tool use. In stream-json mode (as in the deprecated --print mode), Claude
+    // Code silently skips tool calls that would otherwise require approval;
+    // for verification-oriented prompts (legal, research, security), this
+    // caused agents to fall back to training-data answers instead of invoking
+    // WebSearch/WebFetch. Lifting these two flags out of the MCP conditional
+    // ensures native web/search tools are usable in every run while preserving
+    // the Edit/Write/NotebookEdit barrier. MCP wiring below remains gated on
+    // mcpEnabled.
     if (config.mcpSupport) {
       args.push(config.mcpSupport.writeProtection.flag, config.mcpSupport.writeProtection.value);
       args.push('--permission-mode', 'bypassPermissions');
     }
 
-    // MCP configuration
-    let tempMcpConfigPath: string | undefined;
-
+    // MCP configuration — inline JSON string, no temp file. The binary
+    // accepts `--mcp-config '<JSON>'` per `claude --help`: "Load MCP servers
+    // from JSON files or strings".
     if (mcpEnabled && config.mcpSupport) {
       // Pre-filter via sanitizeMcpServerNames — unknown names are
       // dropped before they reach `mcp-registry.ts:75`
@@ -160,19 +165,23 @@ export class ClaudeAdapter implements CLIProvider {
 
       if (serverNames.length > 0) {
         const mcp = config.mcpSupport;
-
-        // Claude: write temp JSON config, pass --mcp-config <path> --strict-mcp-config
-        const sessionId = options.sessionId || 'default';
-        tempMcpConfigPath = await writeClaudeMCPConfig(servers, sessionId);
-        args.push(mcp.configFlag!, tempMcpConfigPath);
+        args.push(mcp.configFlag!, buildClaudeMcpConfigJson(servers));
         args.push(mcp.strictFlag!);
 
         log.info(`\u{1F50C} MCP enabled for claude: [${serverNames.join(', ')}]`);
       }
     }
 
-    // Build prompt -- no promptWrapper for Claude
+    // Build prompt: wrap the combined system+user text as a single NDJSON
+    // `user` message — the wire shape the binary's `--input-format
+    // stream-json` reader accepts. Caller (cli-agents.spawnAsync) pipes
+    // this string to child stdin verbatim then closes stdin, which the
+    // binary treats as end-of-turn after the first user message.
     const combinedPrompt = `${systemPrompt}\n\n${userPrompt}`;
+    const stdinPayload = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: combinedPrompt },
+    }) + '\n';
 
     // Add CLI-specific env
     const env = { ...secureEnv };
@@ -196,7 +205,7 @@ export class ClaudeAdapter implements CLIProvider {
 
     env.BRUTALIST_SUBPROCESS = '1';
 
-    return { command: config.command, args, input: combinedPrompt, env, tempMcpConfigPath, model: resolvedModel };
+    return { command: config.command, args, input: stdinPayload, env, model: resolvedModel };
   }
 
   /**
@@ -248,7 +257,8 @@ export class ClaudeAdapter implements CLIProvider {
       const typedEvent = event as Record<string, any>;
 
       if (typedEvent.type === 'assistant' && typedEvent.message?.content) {
-        // Extract only text blocks from assistant messages (skip tool_use blocks)
+        // Extract only `text` blocks; skip `thinking`, `tool_use`,
+        // `tool_result`, image, and any future block types the binary adds.
         const content = typedEvent.message.content;
         if (Array.isArray(content)) {
           for (const item of content) {
@@ -258,20 +268,48 @@ export class ClaudeAdapter implements CLIProvider {
           }
         }
       } else if (typedEvent.type === 'result') {
-        if (typedEvent.subtype === 'error' || typedEvent.is_error) {
+        // Terminal sentinel. Treat as error when the subtype is exactly
+        // `error` or an `error_*` variant (SDK emits `error_max_turns`,
+        // `error_during_execution`, etc.) OR `is_error` flag is set.
+        // The `error_*` prefix is anchored by the underscore so a
+        // hypothetical forward-compat subtype like `errored_warning`
+        // or `errored_partial` does NOT trip the error path —
+        // unrecognized subtypes fall through to the resultText branch,
+        // preserving pre-migration characterization.
+        const subtype = typeof typedEvent.subtype === 'string' ? typedEvent.subtype : '';
+        const isError = subtype === 'error' || subtype.startsWith('error_') || !!typedEvent.is_error;
+        if (isError) {
           errorPresent = true;
           // errorClass captures only the shape of the error, not its
           // content: the event subtype (static enum) or a fallback
           // tag. Never the underlying `typedEvent.error` /
           // `typedEvent.result` string value.
-          errorClass = typeof typedEvent.subtype === 'string' && typedEvent.subtype.length > 0
-            ? typedEvent.subtype
+          errorClass = subtype.length > 0
+            ? subtype
             : (typedEvent.is_error ? 'is_error' : 'unknown');
         } else if (typedEvent.result) {
           resultText = typedEvent.result;
         }
+      } else if (typedEvent.type === 'control_request') {
+        // The binary should never send these in our flag set
+        // (`permission-mode bypassPermissions`, no SDK in-process MCP
+        // servers, no canUseTool callback). If we observe one, the run
+        // produced a hang or an unanswered request on the binary side
+        // — surface it for diagnosis. Replying with a `control_response`
+        // would require streaming-side stdin write (spawnAsync's
+        // onProgress path), which is out of scope here.
+        log.warn('decodeClaudeStreamJson: unexpected control_request from binary', {
+          subtype: typeof typedEvent.request?.subtype === 'string'
+            ? typedEvent.request.subtype
+            : 'unknown',
+        });
       }
-      // Skip: system, user (tool_result with raw file contents), hooks
+      // Silently skipped event types (informational, no decoder action
+      // needed): `system` (incl. `subtype:init`), `user`
+      // (tool_result/replay), `rate_limit_event`, `keep_alive`,
+      // `stream_event` (only with --include-partial-messages, which we
+      // never set), `control_response`, `control_cancel_request`,
+      // `transcript_mirror`, and any future top-level types.
     }
 
     // Handle error — emit metadata only (F8). The raw error string is

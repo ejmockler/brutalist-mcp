@@ -20,7 +20,7 @@ import { parseNDJSON } from './shared.js';
 import {
   resolveServers,
   listRegisteredServers,
-  buildClaudeMcpConfigJson,
+  writeClaudeMcpConfigSecure,
   ensurePlaywrightBrowsers,
 } from '../mcp-registry.js';
 
@@ -78,7 +78,7 @@ const CLAUDE_CONFIG: CLIBuilderConfig = {
   mpcEnvCleanup: ['CLAUDE_MCP_CONFIG', 'MCP_ENABLED', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
   streamingArgs: () => ['--output-format', 'stream-json', '--verbose'],
   mcpSupport: {
-    configMethod: 'flag-inline-json',
+    configMethod: 'flag-file',
     configFlag: '--mcp-config',
     strictFlag: '--strict-mcp-config',
     writeProtection: {
@@ -117,6 +117,10 @@ export class ClaudeAdapter implements CLIProvider {
     args: string[];
     input: string;
     env: Record<string, string>;
+    // Set only when an env-bearing MCP server spec routed the config
+    // through `writeClaudeMcpConfigSecure`. Caller must clean up via
+    // `cleanupTempConfig` after the spawn completes.
+    tempMcpConfigPath?: string;
     model?: string;
   }> {
     const log = options.log ?? rootLogger;
@@ -147,9 +151,19 @@ export class ClaudeAdapter implements CLIProvider {
       args.push('--permission-mode', 'bypassPermissions');
     }
 
-    // MCP configuration — inline JSON string, no temp file. The binary
-    // accepts `--mcp-config '<JSON>'` per `claude --help`: "Load MCP servers
-    // from JSON files or strings".
+    // MCP configuration — all configs route through the secure-file
+    // path. Inline JSON would put MCP server `command`, `args`, and
+    // `env` on argv where they're visible via `ps`/`/proc/<pid>/cmdline`/
+    // crash reports. Real MCP servers commonly take credentials in
+    // args (`--api-key`, `--token`, `--auth=Bearer`), not just env, so
+    // an env-only predicate would leak. One extra writeFile per spawn
+    // is rounding error against the spawn itself, and routing through
+    // a file is the only design that's robust against future MCP spec
+    // shapes we haven't anticipated.
+    //
+    // `claude --help`: `--mcp-config <configs...>  Load MCP servers
+    // from JSON files or strings`. We use the path form.
+    let tempMcpConfigPath: string | undefined;
     if (mcpEnabled && config.mcpSupport) {
       // Pre-filter via sanitizeMcpServerNames — unknown names are
       // dropped before they reach `mcp-registry.ts:75`
@@ -165,7 +179,8 @@ export class ClaudeAdapter implements CLIProvider {
 
       if (serverNames.length > 0) {
         const mcp = config.mcpSupport;
-        args.push(mcp.configFlag!, buildClaudeMcpConfigJson(servers));
+        tempMcpConfigPath = await writeClaudeMcpConfigSecure(servers);
+        args.push(mcp.configFlag!, tempMcpConfigPath);
         args.push(mcp.strictFlag!);
 
         log.info(`\u{1F50C} MCP enabled for claude: [${serverNames.join(', ')}]`);
@@ -205,7 +220,7 @@ export class ClaudeAdapter implements CLIProvider {
 
     env.BRUTALIST_SUBPROCESS = '1';
 
-    return { command: config.command, args, input: stdinPayload, env, model: resolvedModel };
+    return { command: config.command, args, input: stdinPayload, env, tempMcpConfigPath, model: resolvedModel };
   }
 
   /**

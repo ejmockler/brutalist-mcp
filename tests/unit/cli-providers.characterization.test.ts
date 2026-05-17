@@ -33,6 +33,8 @@ jest.mock('../../src/mcp-registry.js', () => ({
   resolveServers: jest.fn<() => Record<string, any>>().mockReturnValue({ playwright: { command: 'npx', args: ['playwright'] } }),
   listRegisteredServers: jest.fn<() => string[]>().mockReturnValue(['playwright']),
   buildClaudeMcpConfigJson: jest.fn<() => string>().mockReturnValue('{"mcpServers":{"playwright":{"command":"npx","args":["playwright"]}}}'),
+  writeClaudeMcpConfigSecure: jest.fn<() => Promise<string>>().mockResolvedValue('/tmp/mock-secure-mcp.json'),
+  cleanupTempConfig: jest.fn<() => Promise<void>>().mockResolvedValue(undefined as any),
   buildCodexMCPOverride: jest.fn<() => string>().mockReturnValue('{playwright={command="npx",args=["playwright"]}}'),
   ensureGeminiMCPServers: jest.fn<() => Promise<void>>().mockResolvedValue(undefined as any),
   ensurePlaywrightBrowsers: jest.fn<() => Promise<void>>().mockResolvedValue(undefined as any),
@@ -157,17 +159,16 @@ describe('CLI Provider Command Construction', () => {
       expect(result.args).not.toContain('--strict-mcp-config');
     });
 
-    it('should pass inline MCP JSON as --mcp-config value (not a temp file path)', async () => {
+    it('should pass --mcp-config as a temp-file path with tempMcpConfigPath set', async () => {
       const result = await buildCommand('claude', { mcpServers: ['playwright'] });
       const idx = result.args.indexOf('--mcp-config');
       expect(idx).toBeGreaterThanOrEqual(0);
       const value = result.args[idx + 1];
-      // The argv value is the JSON-stringified config, not a filesystem
-      // path. Confirms the temp-file write was eliminated as part of the
-      // migration off `-p`/`--print`.
-      expect(typeof value).toBe('string');
-      expect(value).toContain('"mcpServers"');
-      expect(value.trim().startsWith('{')).toBe(true);
+      // All MCP configs route through the secure-file path so that
+      // caller-controlled fields (env, args, command) never land on
+      // argv where `ps`/`/proc/<pid>/cmdline` would expose them.
+      expect(value).toBe(result.tempMcpConfigPath);
+      expect(typeof result.tempMcpConfigPath).toBe('string');
     });
 
     it('should set BRUTALIST_SUBPROCESS=1 in env', async () => {

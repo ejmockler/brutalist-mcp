@@ -6,6 +6,10 @@
  * analysis while remaining unable to modify the codebase.
  */
 
+import { promises as fs, constants as fsConstants } from 'fs';
+import path from 'path';
+import os from 'os';
+import { randomBytes } from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { logger } from './logger.js';
@@ -109,12 +113,16 @@ export function ensurePlaywrightBrowsers(): Promise<void> {
   return playwrightInstallPromise;
 }
 
-// ── Claude: inline MCP config JSON ─────────────────────────────────────────
+// ── Claude: secure-file MCP config ─────────────────────────────────────────
 
 /**
- * Build the Claude `--mcp-config` argument value: a single JSON string
- * the binary accepts directly (no temp file). `claude --help` documents
+ * Build the Claude `--mcp-config` JSON payload. `claude --help`:
  * `--mcp-config <configs...>  Load MCP servers from JSON files or strings`.
+ *
+ * Exported for unit-level construction tests. Production callers go
+ * through `writeClaudeMcpConfigSecure` so the JSON lands on disk with
+ * restrictive perms instead of on argv — `command`, `args`, and `env`
+ * are all caller-controlled and any of them may carry credentials.
  */
 export function buildClaudeMcpConfigJson(
   servers: Record<string, MCPServerSpec>,
@@ -128,6 +136,96 @@ export function buildClaudeMcpConfigJson(
     };
   }
   return JSON.stringify(config);
+}
+
+/**
+ * Write the Claude MCP config to a freshly-created temp file with
+ * mode 0600, returning the path for `--mcp-config <path>`. Caller
+ * must clean up via `cleanupTempConfig`.
+ *
+ * Filename uses 128 bits of `crypto.randomBytes` rather than
+ * `pid + Date.now()` — predictable names enabled both a symlink
+ * TOCTOU on shared `/tmp` and same-millisecond collisions between
+ * parallel critic spawns.
+ *
+ * Flags:
+ *   - `O_EXCL`: fail if the path already exists. A planted symlink
+ *     or pre-staged file aborts the open rather than redirecting it.
+ *   - `O_NOFOLLOW`: refuse to traverse a symlink at the final path
+ *     component. Note this is undefined on Windows (Node falls back
+ *     to `0`, which means no symlink protection — accept the
+ *     degradation on Windows since `/tmp` semantics differ there).
+ *     The flag does NOT guard intermediate path components; a
+ *     hostile `TMPDIR` env pointed at a symlink remains a residual
+ *     risk in shared-tenant CI runners.
+ *
+ * Mode `0o600` on `O_CREAT` is what the inode gets — umask can only
+ * strip bits, not add them, and `O_EXCL` guarantees the inode is
+ * fresh. No explicit chmod is needed.
+ *
+ * On any post-open failure (e.g. ENOSPC, EDQUOT during writeFile)
+ * we unlink the just-created file so partial credentials never leak
+ * to /tmp. The close() in finally is best-effort and ignores its
+ * own errors so the original cause is preserved.
+ *
+ * Same-user processes can still read 0600 files; true
+ * secret-safety needs OS keychain or short-lived tokens, which is
+ * out of scope here.
+ */
+export async function writeClaudeMcpConfigSecure(
+  servers: Record<string, MCPServerSpec>,
+): Promise<string> {
+  const json = buildClaudeMcpConfigJson(servers);
+  const tmpDir = os.tmpdir();
+  const suffix = randomBytes(16).toString('hex');
+  const filename = `brutalist-mcp-${suffix}.json`;
+  const filepath = path.join(tmpDir, filename);
+  // `fs.constants.O_NOFOLLOW` is undefined on Windows; coerce to 0
+  // so the bitwise expression doesn't silently flag this as the
+  // platform supporting symlink protection when it doesn't.
+  const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
+  const flags = fsConstants.O_WRONLY
+    | fsConstants.O_CREAT
+    | fsConstants.O_EXCL
+    | O_NOFOLLOW;
+  const handle = await fs.open(filepath, flags, 0o600);
+  try {
+    await handle.writeFile(json, { encoding: 'utf-8' });
+  } catch (e) {
+    // Best-effort unlink: the file was created by O_CREAT but we
+    // never finished writing it. Unlink failure is swallowed so the
+    // original write error reaches the caller.
+    await fs.unlink(filepath).catch(() => { /* best-effort */ });
+    throw e;
+  } finally {
+    // Ignore close errors: if the body of try succeeded the file is
+    // safe; if it threw, the catch already unlinked. Either way the
+    // close error is not the diagnostic we want to surface.
+    await handle.close().catch(() => { /* best-effort */ });
+  }
+  // Log without the path: the path is already on the spawned child's
+  // argv per `--mcp-config <path>`, so this log line would only widen
+  // disclosure to aggregators. Bounded metadata only.
+  logger.info('Wrote secure Claude MCP config', { sizeBytes: json.length });
+  return filepath;
+}
+
+/**
+ * Remove a temp config file. ENOENT (already gone) is silent; any
+ * other errno is logged at `warn` so silent credential leaks surface
+ * in operator telemetry instead of vanishing.
+ */
+export async function cleanupTempConfig(filepath: string): Promise<void> {
+  try {
+    await fs.unlink(filepath);
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err?.code !== 'ENOENT') {
+      logger.warn('Failed to clean up secure MCP config', {
+        code: err?.code ?? 'unknown',
+      });
+    }
+  }
 }
 
 // ── Codex: -c config override string ───────────────────────────────────────

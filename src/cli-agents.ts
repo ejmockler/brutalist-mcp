@@ -1031,8 +1031,19 @@ export class CLIAgentOrchestrator {
 
       // Detect CLI errors that exit 0 but contain fatal error output
       // (e.g., Gemini CLI returns exit code 0 on quota exhaustion,
-      //  Codex CLI may return usage limit errors in output)
-      const combinedOutput = `${finalOutput}\n${stderr}`;
+      //  Codex CLI may return usage limit errors in output).
+      //
+      // Scoped to stderr ONLY. The previous scope of `finalOutput + stderr`
+      // ran these patterns against the assistant's decoded text — which is
+      // free-form prose that legitimately contains substrings like
+      // "rate limit", "usage limit", and "plan ... limit" when the panelist
+      // is reviewing code that mentions those concepts. That produced
+      // false-positive refusal classifications (see 2026-05-21 19:22 in
+      // brutalist.log: a 54s claude completion reclassified as quota).
+      //
+      // CLIs that hit a real quota wall surface that condition on stderr
+      // (or on a structured error event handled by the adapter; Phase 2
+      // moves detection there entirely). Assistant prose is not a signal.
       const quotaPatterns = [
         /TerminalQuotaError/i,
         /exhausted your capacity/i,
@@ -1047,13 +1058,24 @@ export class CLIAgentOrchestrator {
         /spending.*limit/i,
         /plan.*limit/i,
       ];
-      const quotaMatch = quotaPatterns.find(p => p.test(combinedOutput));
+      const quotaMatch = quotaPatterns.find(p => p.test(stderr));
       if (quotaMatch) {
-        // Extract reset time if present
-        const resetMatch = combinedOutput.match(/reset(?:s)? (?:in|after) (\d+h\s*\d+m(?:\s*\d+s)?)/i);
+        // Extract reset time if present (only ever appears in stderr now)
+        const resetMatch = stderr.match(/reset(?:s)? (?:in|after) (\d+h\s*\d+m(?:\s*\d+s)?)/i);
         const resetInfo = resetMatch ? ` (resets in ${resetMatch[1]})` : '';
         const errorMsg = `${cliName.toUpperCase()} quota exhausted${resetInfo}. The CLI exited 0 but returned a quota error instead of analysis output.`;
-        this.emitLog().warn(`⏱️ ${errorMsg}`);
+        // Evidence: pattern source + match offset + stderr size. Raw stderr
+        // content is intentionally NOT logged — it crosses a trust boundary
+        // (CLI tool output, prompt echoes, MCP tool results) and the file
+        // logger may flush to an aggregator. The pattern source alone is
+        // enough to diagnose a recurring false positive: if the next quota
+        // warn shows `pattern: '/plan.*limit/i'` it's the loose pattern,
+        // not a real refusal.
+        this.emitLog().warn(`⏱️ ${errorMsg}`, {
+          pattern: quotaMatch.source,
+          matchOffset: stderr.search(quotaMatch),
+          stderrLength: stderr.length,
+        });
 
         if (options.onStreamingEvent) {
           options.onStreamingEvent({
@@ -1135,14 +1157,22 @@ export class CLIAgentOrchestrator {
       const execError: ChildProcessError = error as ChildProcessError;
       const exitCode = execError.code || -1;
 
-      // Detect rate limiting / usage limit errors across all CLIs
+      // Detect rate limiting / usage limit errors across all CLIs.
+      //
+      // Scoped to `message + stderr`. The previous scope of
+      // `message + stdout + stderr` ran these substrings against the
+      // child's captured stdout — which on a partial/aborted run is
+      // assistant prose that crossed the same trust boundary as the
+      // success path. `message` is the spawn-layer error string from
+      // Node (e.g., "Command failed with exit code 1"), not user
+      // content; safe to keep.
       const rateLimitPatterns = [
         '429', 'rate limit', 'rate_limit', 'rateLimitExceeded',
         'Too Many Requests', 'usage limit', 'usage_limit',
         'quota', 'exhausted', 'billing', 'spending limit',
         'token limit', 'plan limit',
       ];
-      const errorText = `${execError.message || ''} ${execError.stdout || ''} ${execError.stderr || ''}`.toLowerCase();
+      const errorText = `${execError.message || ''} ${execError.stderr || ''}`.toLowerCase();
       const isRateLimit = rateLimitPatterns.some(p => errorText.includes(p.toLowerCase()));
       const unsupportedCodexModel = cliName === 'codex'
         && isCodexUnsupportedChatGPTModelError(execError, options.models?.codex);

@@ -716,8 +716,9 @@ describe('CLI Provider Error Detection', () => {
       );
     }
 
-    it('should detect TerminalQuotaError in stdout', async () => {
+    it('should detect TerminalQuotaError in stderr', async () => {
       const result = await simulateSuccessfulOutputWithQuotaError(
+        '',
         'TerminalQuotaError: You have exhausted your capacity.'
       );
       expect(result.success).toBe(false);
@@ -725,32 +726,36 @@ describe('CLI Provider Error Detection', () => {
       expect(result.exitCode).toBe(0);
     });
 
-    it('should detect "rate limit" pattern in output', async () => {
+    it('should detect "rate limit" pattern in stderr', async () => {
       const result = await simulateSuccessfulOutputWithQuotaError(
+        '',
         'Error: rate limit exceeded, please try again later.'
       );
       expect(result.success).toBe(false);
       expect(result.error).toContain('quota exhausted');
     });
 
-    it('should detect 429 status code in output', async () => {
+    it('should detect 429 status code in stderr', async () => {
       const result = await simulateSuccessfulOutputWithQuotaError(
+        '',
         'HTTP 429 Too Many Requests'
       );
       expect(result.success).toBe(false);
       expect(result.error).toContain('quota exhausted');
     });
 
-    it('should detect "usage limit" in output', async () => {
+    it('should detect "usage limit" in stderr', async () => {
       const result = await simulateSuccessfulOutputWithQuotaError(
+        '',
         'You have reached your usage limit for this billing period.'
       );
       expect(result.success).toBe(false);
       expect(result.error).toContain('quota exhausted');
     });
 
-    it('should detect "billing limit" in output', async () => {
+    it('should detect "billing limit" in stderr', async () => {
       const result = await simulateSuccessfulOutputWithQuotaError(
+        '',
         'Your billing limit has been reached.'
       );
       expect(result.success).toBe(false);
@@ -768,6 +773,7 @@ describe('CLI Provider Error Detection', () => {
 
     it('should extract reset time from quota error', async () => {
       const result = await simulateSuccessfulOutputWithQuotaError(
+        '',
         'TerminalQuotaError: quota will reset in 1h 45m 30s'
       );
       expect(result.success).toBe(false);
@@ -780,6 +786,25 @@ describe('CLI Provider Error Detection', () => {
       );
       expect(result.success).toBe(true);
       expect(result.output).toContain('critical security vulnerabilities');
+    });
+
+    // Regression: assistant prose containing quota-adjacent words must NOT
+    // be classified as a quota refusal. This is the 2026-05-21 19:22
+    // false-positive class — claude returned a legitimate 54-second
+    // debate response mentioning "rate limit" and was reclassified as
+    // refused, with empty output returned to the user.
+    it('should NOT detect quota when patterns appear only in stdout (assistant prose)', async () => {
+      const result = await simulateSuccessfulOutputWithQuotaError(
+        'The codebase has a rate limit at src/lib/rate-limiter.ts. ' +
+        'Their usage limit logic also has a token limit exceeded check. ' +
+        'The billing plan limit is enforced server-side. HTTP 429 handling is fine.'
+      );
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('rate limit');
+      // On success result.error is undefined (or stderr when CLI wrote some).
+      // The critical assertion: never the "quota exhausted" marker that the
+      // refusal path constructs.
+      expect(result.error ?? '').not.toContain('quota exhausted');
     });
   });
 

@@ -1012,68 +1012,28 @@ export class CLIAgentOrchestrator {
       }
 
       // Post-process CLI output via provider adapter. Thread the scoped
-      // logger through decodeOutput so adapter warnings/errors carry
+      // logger through decode so adapter warnings/errors carry
       // module=cli-orchestrator + operation=<provider>_spawn context.
+      //
+      // Phase 2: consume the structured DecodeResult from `decode()`
+      // instead of grepping the returned string for refusal markers.
+      // Each adapter classifies refusal from its own protocol-level
+      // signals (Claude `result.subtype`, Codex error events / stderr
+      // markers, Gemini anchored stderr markers). The orchestrator
+      // does not inspect assistant prose to classify outcomes.
       let finalOutput = stdout;
       const providerAdapter = getProvider(cliName);
       const decodeLog = this.log?.forOperation(`${cliName}_spawn`);
-      const decodedText = providerAdapter.decodeOutput(stdout, args, decodeLog);
-      if (decodedText) {
-        finalOutput = decodedText;
-      }
+      const decoded = providerAdapter.decode(stdout, stderr, args, decodeLog);
 
-      // Fallback: If stdout is empty but stderr has content and exit was successful,
-      // Claude might have written to stderr (common in non-TTY environments)
-      if (!finalOutput.trim() && stderr && stderr.trim()) {
-        this.emitLog().info(`📝 Using stderr as output for ${cliName} (stdout was empty)`);
-        finalOutput = stderr;
-      }
-
-      // Detect CLI errors that exit 0 but contain fatal error output
-      // (e.g., Gemini CLI returns exit code 0 on quota exhaustion,
-      //  Codex CLI may return usage limit errors in output).
-      //
-      // Scoped to stderr ONLY. The previous scope of `finalOutput + stderr`
-      // ran these patterns against the assistant's decoded text — which is
-      // free-form prose that legitimately contains substrings like
-      // "rate limit", "usage limit", and "plan ... limit" when the panelist
-      // is reviewing code that mentions those concepts. That produced
-      // false-positive refusal classifications (see 2026-05-21 19:22 in
-      // brutalist.log: a 54s claude completion reclassified as quota).
-      //
-      // CLIs that hit a real quota wall surface that condition on stderr
-      // (or on a structured error event handled by the adapter; Phase 2
-      // moves detection there entirely). Assistant prose is not a signal.
-      const quotaPatterns = [
-        /TerminalQuotaError/i,
-        /exhausted your capacity/i,
-        /quota will reset/i,
-        /rateLimitExceeded/i,
-        /rate limit/i,
-        /usage limit/i,
-        /Too Many Requests/i,
-        /\b429\b/,
-        /token limit exceeded/i,
-        /billing.*limit/i,
-        /spending.*limit/i,
-        /plan.*limit/i,
-      ];
-      const quotaMatch = quotaPatterns.find(p => p.test(stderr));
-      if (quotaMatch) {
-        // Extract reset time if present (only ever appears in stderr now)
-        const resetMatch = stderr.match(/reset(?:s)? (?:in|after) (\d+h\s*\d+m(?:\s*\d+s)?)/i);
-        const resetInfo = resetMatch ? ` (resets in ${resetMatch[1]})` : '';
-        const errorMsg = `${cliName.toUpperCase()} quota exhausted${resetInfo}. The CLI exited 0 but returned a quota error instead of analysis output.`;
-        // Evidence: pattern source + match offset + stderr size. Raw stderr
-        // content is intentionally NOT logged — it crosses a trust boundary
-        // (CLI tool output, prompt echoes, MCP tool results) and the file
-        // logger may flush to an aggregator. The pattern source alone is
-        // enough to diagnose a recurring false positive: if the next quota
-        // warn shows `pattern: '/plan.*limit/i'` it's the loose pattern,
-        // not a real refusal.
+      if (decoded.kind === 'refused') {
+        // Structured refusal — the adapter saw the CLI's own
+        // protocol-level signal that this run hit a wall (quota / auth /
+        // policy). No prose matching.
+        const errorMsg = `${cliName.toUpperCase()} ${decoded.reason} refused. The CLI exited 0 but its own protocol returned a refusal instead of analysis output.`;
         this.emitLog().warn(`⏱️ ${errorMsg}`, {
-          pattern: quotaMatch.source,
-          matchOffset: stderr.search(quotaMatch),
+          reason: decoded.reason,
+          detail: decoded.detail,
           stderrLength: stderr.length,
         });
 
@@ -1087,19 +1047,12 @@ export class CLIAgentOrchestrator {
           });
         }
 
-        // Spawn counter: outcome=refused (quota exhaustion — CLI exited 0
-        // with a quota error in stdout/stderr). Labels annotated against
-        // CLI_SPAWN_LABELS so a future label-set change fails at compile
-        // time. Wrapped in `safeMetric` so a label-validation throw or
-        // other metric-layer exception cannot propagate into the outer
-        // spawn try/catch and be misclassified as a spawn failure
-        // (Cycle 3 Task CLI-B' — parity with debate's safeMetric).
-        const quotaLabels: Record<(typeof CLI_SPAWN_LABELS)[number], string> = {
+        const refusedLabels: Record<(typeof CLI_SPAWN_LABELS)[number], string> = {
           provider,
           outcome: 'refused',
         };
-        safeMetric(this.emitLog(), 'cliSpawnTotal.inc(refused:quota)', () => {
-          this.metrics?.cliSpawnTotal.inc(quotaLabels, 1);
+        safeMetric(this.emitLog(), `cliSpawnTotal.inc(refused:${decoded.reason})`, () => {
+          this.metrics?.cliSpawnTotal.inc(refusedLabels, 1);
         });
 
         return {
@@ -1108,17 +1061,27 @@ export class CLIAgentOrchestrator {
           output: '',
           error: errorMsg,
           executionTime: Date.now() - startTime,
-          // Cycle 4 Task T18 (F9): match the failure-path redaction
-          // parity — `command` is a diagnostic display field; the
-          // static placeholder preserves the response shape without
-          // leaking raw command + args (which may include Codex TOML
-          // MCP overrides, Claude temp config paths, or prompt
-          // fragments that crossed the trust boundary).
           command: `(redacted command for ${cliName})`,
           workingDirectory: workingDir,
           exitCode: 0,
           model: built?.model
         };
+      }
+
+      if (decoded.kind === 'ok') {
+        finalOutput = decoded.text;
+      }
+      // For `kind: 'error'` (empty/malformed/unknown) we fall through
+      // and keep finalOutput as the raw stdout — preserving the legacy
+      // "if decode returned nothing useful, pass raw stdout through"
+      // behavior. The success path below then surfaces the raw output
+      // and the caller can see what the CLI emitted.
+
+      // Fallback: If stdout is empty but stderr has content and exit was successful,
+      // Claude might have written to stderr (common in non-TTY environments)
+      if (!finalOutput.trim() && stderr && stderr.trim()) {
+        this.emitLog().info(`📝 Using stderr as output for ${cliName} (stdout was empty)`);
+        finalOutput = stderr;
       }
 
       // Spawn counter: outcome=success (normal completion path). Labels

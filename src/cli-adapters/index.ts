@@ -49,6 +49,30 @@ export interface CLIBuilderConfig {
   mcpSupport?: MCPSupportConfig;
 }
 
+// ── DecodeResult ───────────────────────────────────────────────────────────
+
+/**
+ * Structured outcome of decoding a CLI's raw output.
+ *
+ * Replaces the previous `decodeOutput(): string` shape, which collapsed
+ * three distinct states (success / refusal / error) into one string and
+ * forced the orchestrator to re-grep the assistant prose for refusal
+ * markers — a brittle layer that produced the 2026-05-21 false-positive
+ * class (see Phase 1 fix in cli-agents.ts).
+ *
+ * Each provider adapter populates this from its own protocol-level
+ * signals (Claude: `result.subtype` / `is_error`; Codex: error events;
+ * Gemini: anchored stderr markers). The orchestrator never inspects
+ * assistant prose to classify refusals.
+ */
+export type DecodeRefusalReason = 'quota' | 'auth' | 'policy';
+export type DecodeErrorReason = 'malformed' | 'empty' | 'unknown';
+
+export type DecodeResult =
+  | { kind: 'ok'; text: string }
+  | { kind: 'refused'; reason: DecodeRefusalReason; detail?: string }
+  | { kind: 'error'; reason: DecodeErrorReason; detail?: string };
+
 // ── CLIProvider Interface ──────────────────────────────────────────────────
 
 export interface CLIProvider {
@@ -85,16 +109,40 @@ export interface CLIProvider {
   }>;
 
   /**
-   * Decode raw CLI output into clean text.
-   * Claude decodes stream-json NDJSON, Codex extracts agent_messages,
-   * Gemini extracts the response field from JSON.
+   * Decode raw CLI output into a structured outcome (preferred API).
    *
-   * Pattern A: `log` is optional. When provided (passed from the
-   * orchestrator via `this.log?.forOperation('<cli>_spawn')`), adapter
-   * warnings/errors during decode emit with the scoped logger. When
-   * absent, adapters fall back to the root logger so the legacy test
-   * proxies (cli-agents.ts decodeClaudeStreamJson / extractCodexAgentMessage
-   * / extractGeminiResponse) keep working with no args.
+   * Each adapter inspects ITS OWN protocol-level signals to classify the
+   * run — refusal markers must come from the CLI's structured error
+   * channel (stream-json `result` events for Claude, error items for
+   * Codex, anchored stderr envelopes for Gemini) and never from the
+   * assistant text the CLI returned.
+   *
+   * The orchestrator consumes `DecodeResult.kind` directly; no caller
+   * grep the prose for "rate limit"-style strings (Phase 1 hot-fix
+   * scoped that pattern set to stderr; Phase 2 removes it entirely).
+   *
+   * stderr is passed in alongside stdout because two of the three CLIs
+   * (Codex error envelopes, Gemini quota errors) surface refusal state
+   * on stderr, not in the JSON event stream.
+   */
+  decode(
+    stdout: string,
+    stderr: string,
+    args: string[],
+    log?: StructuredLogger
+  ): DecodeResult;
+
+  /**
+   * Decode raw CLI output into clean text (legacy API).
+   *
+   * Delegates to `decode()` and returns the assistant text on success,
+   * empty string on refusal/error. Retained for the legacy test proxies
+   * at `cli-agents.ts:716-728` and any external consumers; new code
+   * should call `decode()` and switch on `kind`.
+   *
+   * Pattern A: `log` is optional. When provided, adapter warnings/errors
+   * during decode emit with the scoped logger. When absent, adapters
+   * fall back to the root logger.
    */
   decodeOutput(rawOutput: string, args: string[], log?: StructuredLogger): string;
 }

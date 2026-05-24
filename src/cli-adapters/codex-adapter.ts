@@ -13,7 +13,7 @@ import { logger as rootLogger } from '../logger.js';
 import type { StructuredLogger } from '../logger.js';
 import type { CLIAgentOptions } from '../cli-agents.js';
 import type { ModelResolver } from '../model-resolver.js';
-import type { CLIProvider, CLIBuilderConfig, CLIName } from './index.js';
+import type { CLIProvider, CLIBuilderConfig, CLIName, DecodeResult } from './index.js';
 import { parseNDJSON } from './shared.js';
 import {
   resolveServers,
@@ -181,11 +181,70 @@ export class CodexAdapter implements CLIProvider {
    * command_execution, and error events.
    */
   decodeOutput(rawOutput: string, args: string[], log?: StructuredLogger): string {
-    // Only decode if Codex was run with --json flag
+    // Legacy text-only API. Returns assistant text on success, empty
+    // string on refusal/error.
+    const result = this.decode(rawOutput, '', args, log);
+    return result.kind === 'ok' ? result.text : '';
+  }
+
+  decode(
+    stdout: string,
+    stderr: string,
+    args: string[],
+    log?: StructuredLogger
+  ): DecodeResult {
+    // Only structured-decode if Codex was run with --json
     if (!args.includes('--json')) {
-      return rawOutput;
+      return { kind: 'ok', text: stdout };
     }
-    return this.extractCodexAgentMessage(rawOutput, log ?? rootLogger);
+    return this.decodeStream(stdout, stderr, log ?? rootLogger);
+  }
+
+  /**
+   * Structured decode of Codex --json output.
+   *
+   * Codex emits NDJSON `item.completed` events. Agent text comes in
+   * `item.type === 'agent_message'`. Codex error/quota state is NOT in
+   * the JSON event stream — per the inline comment in extractCodexAgentMessage
+   * ("error: will be in stderr"), it lands on stderr. So:
+   *   - assistant text present → ok
+   *   - no text + stderr matches anchored Codex quota markers → refused
+   *   - no text + no markers → error (empty)
+   *
+   * Anchored markers operate only on stderr (the CLI's own error
+   * channel), never on assistant prose. Aligned with the discipline
+   * applied to Claude's error envelope.
+   */
+  private decodeStream(
+    jsonOutput: string,
+    stderr: string,
+    log: StructuredLogger
+  ): DecodeResult {
+    if (!jsonOutput || !jsonOutput.trim()) {
+      // No stdout at all — could be a refusal that printed only to
+      // stderr. Check anchored markers there before declaring empty.
+      const refusalFromStderr = classifyCodexStderrReason(stderr);
+      if (refusalFromStderr === 'quota') {
+        return { kind: 'refused', reason: 'quota' };
+      }
+      log.debug('extractCodexAgentMessage: empty input');
+      return { kind: 'error', reason: 'empty' };
+    }
+
+    const text = this.extractCodexAgentMessage(jsonOutput, log);
+
+    if (text.length > 0) {
+      return { kind: 'ok', text };
+    }
+
+    // No agent_message extracted. Examine stderr for anchored Codex
+    // refusal markers — the only place codex puts quota state.
+    const refusalFromStderr = classifyCodexStderrReason(stderr);
+    if (refusalFromStderr === 'quota') {
+      return { kind: 'refused', reason: 'quota' };
+    }
+
+    return { kind: 'error', reason: 'empty' };
   }
 
   private extractCodexAgentMessage(jsonOutput: string, log: StructuredLogger): string {
@@ -225,4 +284,42 @@ export class CodexAdapter implements CLIProvider {
     log.info(`extractCodexAgentMessage: extracted ${agentMessages.length} messages, total ${result.length} chars`);
     return result;
   }
+}
+
+/**
+ * Classify Codex stderr against anchored OpenAI/Codex quota markers.
+ * Operates only on stderr (the CLI's own error channel), never on
+ * assistant prose. Returns 'quota' on a positive match, 'unknown'
+ * otherwise.
+ *
+ * Anchored markers chosen against the literal strings Codex / the
+ * OpenAI API surface in error envelopes:
+ *   - "rate_limit_exceeded"          — API error code
+ *   - "insufficient_quota"           — API error code
+ *   - "quota_exceeded"               — alt error code
+ *   - "429"                          — HTTP status
+ *   - "Too Many Requests"            — HTTP reason phrase
+ *   - "usage cap"                    — ChatGPT plan cap phrasing
+ *   - "ChatGPT Plus" + "limit"       — paired marker for plan caps
+ *
+ * No loose `quota`/`limit`/`rate limit` patterns — those bit us in
+ * Phase 1. Stay anchored to literal vendor error strings.
+ */
+function classifyCodexStderrReason(stderr: string | undefined): 'quota' | 'unknown' {
+  if (!stderr) return 'unknown';
+  const markers = [
+    /rate_limit_exceeded/i,
+    /insufficient_quota/i,
+    /quota_exceeded/i,
+    /\b429\b/,
+    /Too Many Requests/i,
+    /usage cap/i,
+  ];
+  if (markers.some((p) => p.test(stderr))) return 'quota';
+  // Paired marker — "ChatGPT Plus" alongside "limit" indicates the plan
+  // cap. Required as a pair so the word "limit" alone never fires.
+  if (/ChatGPT (?:Plus|Pro|Team|Enterprise)/i.test(stderr) && /\blimit\b/i.test(stderr)) {
+    return 'quota';
+  }
+  return 'unknown';
 }

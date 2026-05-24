@@ -15,7 +15,7 @@ import { logger as rootLogger } from '../logger.js';
 import type { StructuredLogger } from '../logger.js';
 import type { CLIAgentOptions } from '../cli-agents.js';
 import type { ModelResolver } from '../model-resolver.js';
-import type { CLIProvider, CLIBuilderConfig, CLIName } from './index.js';
+import type { CLIProvider, CLIBuilderConfig, CLIName, DecodeResult } from './index.js';
 import { parseNDJSON } from './shared.js';
 import {
   resolveServers,
@@ -231,24 +231,63 @@ export class ClaudeAdapter implements CLIProvider {
    * Falls back to 'result' event if no assistant text was captured.
    */
   decodeOutput(rawOutput: string, args: string[], log?: StructuredLogger): string {
-    // Only decode if Claude was run with stream-json format
-    if (!(args.includes('--output-format') && args.includes('stream-json'))) {
-      return rawOutput;
+    // Legacy text-only API. Preserves the pre-Phase-2 behavior matrix:
+    //   - assistant text on `ok`
+    //   - the redacted F8 marker when the decoder saw a structured
+    //     error event (refusal, or `kind: 'error'` with reason
+    //     `'unknown'` — the case that maps to "we saw a Claude error
+    //     result event but couldn't classify it as quota")
+    //   - '' for benign empty/malformed inputs so the orchestrator's
+    //     legacy `if (decodedText) { finalOutput = decodedText }`
+    //     fall-through preserves the raw-stdout pass-through path
+    //
+    // The orchestrator (cli-agents.ts) consumes `decode()` directly
+    // post-Phase-2 and never sees this shim. Kept for the three
+    // legacy proxies at cli-agents.ts:716-728 and characterization
+    // tests that pin the marker shape.
+    const result = this.decode(rawOutput, '', args, log);
+    if (result.kind === 'ok') return result.text;
+    if (result.kind === 'refused') return '[Claude Error] <redacted>';
+    if (result.kind === 'error' && result.reason === 'unknown') {
+      return '[Claude Error] <redacted>';
     }
-    return this.decodeClaudeStreamJson(rawOutput, log ?? rootLogger);
+    return '';
   }
 
-  private decodeClaudeStreamJson(ndjsonOutput: string, log: StructuredLogger): string {
+  decode(
+    stdout: string,
+    _stderr: string,
+    args: string[],
+    log?: StructuredLogger
+  ): DecodeResult {
+    // Only structured-decode if Claude was run with stream-json format.
+    // Non-stream-json runs are pre-formatted text — pass through.
+    if (!(args.includes('--output-format') && args.includes('stream-json'))) {
+      return { kind: 'ok', text: stdout };
+    }
+    return this.decodeStream(stdout, log ?? rootLogger);
+  }
+
+  /**
+   * Structured decode of stream-json output.
+   *
+   * Refusal classification is keyed on `result.subtype` / `is_error` —
+   * the binary's own protocol-level signal. Quota classification looks
+   * at anchored Anthropic markers ONLY in the error-envelope `result`
+   * field (already scoped to a known-error pathway), never in the
+   * accumulated assistant text.
+   */
+  private decodeStream(ndjsonOutput: string, log: StructuredLogger): DecodeResult {
     if (!ndjsonOutput || !ndjsonOutput.trim()) {
       log.warn('decodeClaudeStreamJson: empty input');
-      return '';
+      return { kind: 'error', reason: 'empty' };
     }
 
     const events = parseNDJSON(ndjsonOutput, log);
 
     if (events.length === 0) {
       log.warn('decodeClaudeStreamJson: no valid JSON events found in output');
-      return '';
+      return { kind: 'error', reason: 'malformed' };
     }
 
     const textParts: string[] = [];
@@ -263,8 +302,16 @@ export class ClaudeAdapter implements CLIProvider {
     // `CLIAgentResponse.output` field). Instead, we only track
     // whether an error was present and classify its shape via the
     // event subtype / is_error flag for metadata-only emission.
+    //
+    // Phase 2: the raw `result` value is still NOT logged or returned
+    // verbatim, but we DO inspect it locally to match anchored
+    // Anthropic quota markers — that classification then drives the
+    // DecodeResult.reason. The captured value never leaves this
+    // function; only the resulting `reason` enum and the subtype
+    // (already a static SDK enum) reach the caller.
     let errorPresent = false;
     let errorClass: string | undefined;
+    let errorEnvelopeText: string | undefined;
 
     for (const event of events) {
       if (typeof event !== 'object' || event === null) continue;
@@ -302,6 +349,13 @@ export class ClaudeAdapter implements CLIProvider {
           errorClass = subtype.length > 0
             ? subtype
             : (typedEvent.is_error ? 'is_error' : 'unknown');
+          // Capture the envelope text for LOCAL anchored-marker matching
+          // only. This variable stays inside `decodeStream` — it is not
+          // returned, not logged, and not exposed via DecodeResult.
+          const envelopeRaw = typedEvent.error ?? typedEvent.result;
+          if (typeof envelopeRaw === 'string') {
+            errorEnvelopeText = envelopeRaw;
+          }
         } else if (typedEvent.result) {
           resultText = typedEvent.result;
         }
@@ -327,36 +381,70 @@ export class ClaudeAdapter implements CLIProvider {
       // `transcript_mirror`, and any future top-level types.
     }
 
-    // Handle error — emit metadata only (F8). The raw error string is
-    // intentionally never logged and never returned as decoded output.
+    // Structured refusal — the binary's own protocol-level signal said
+    // this turn errored. Classify quota vs. unknown using ONLY the
+    // error envelope (which never reaches the returned value), never
+    // the accumulated assistant text.
     if (errorPresent) {
+      const reason = classifyClaudeErrorReason(errorEnvelopeText);
       log.error('decodeClaudeStreamJson: Claude returned error result', {
         errorPresent: true,
         eventCount: events.length,
         errorClass: errorClass ?? 'unknown',
+        reason,
       });
-      // Return a content-free marker. Callers see that decodedText is
-      // truthy (non-empty) and propagate it to `finalOutput` — the
-      // marker itself carries no sensitive content. A future iteration
-      // can surface a structured adapter-error signal via a new
-      // return shape; for now the marker keeps the existing string
-      // return type intact with zero sensitive bytes.
-      return '[Claude Error] <redacted>';
+      if (reason === 'quota') {
+        return { kind: 'refused', reason: 'quota', detail: errorClass };
+      }
+      return { kind: 'error', reason: 'unknown', detail: errorClass };
     }
 
     // Use accumulated assistant text if available, fall back to result event
     if (textParts.length > 0) {
-      return textParts.join('\n\n');
+      return { kind: 'ok', text: textParts.join('\n\n') };
     }
 
     if (resultText) {
-      return resultText;
+      return { kind: 'ok', text: resultText };
     }
 
     log.warn('decodeClaudeStreamJson: no text content found in stream-json output', {
       eventCount: events.length,
       eventTypes: events.map(e => (e as any).type).filter(Boolean)
     });
-    return '';
+    return { kind: 'error', reason: 'empty' };
   }
+}
+
+/**
+ * Classify a Claude error-envelope string against anchored Anthropic
+ * quota markers. Operates only on the `result.result` / `result.error`
+ * field already known to be inside an error result event — never on
+ * assistant prose. Returns 'quota' for known quota markers, 'unknown'
+ * otherwise so the caller can decide between `refused` and `error` kinds.
+ *
+ * Anchored markers chosen against Anthropic's stable error vocabulary:
+ *   - "usage limit reached"      — Claude Pro/Max 5-hour cap
+ *   - "rate_limit_exceeded"      — API error type string
+ *   - "rate limit"               — only inside the known-error envelope
+ *   - "429"                      — HTTP status (envelope contains it on
+ *                                  API-layer 429 propagation)
+ *   - "5-hour limit"             — Anthropic subscription cap phrase
+ *   - "Limit reached"            — CLI direct-quote refusal line
+ *
+ * No fallthrough to loose substrings — if none of these match, return
+ * 'unknown' and let the orchestrator surface a structured error rather
+ * than fabricating a refusal classification.
+ */
+function classifyClaudeErrorReason(envelope: string | undefined): 'quota' | 'unknown' {
+  if (!envelope) return 'unknown';
+  const markers = [
+    /usage limit reached/i,
+    /rate_limit_exceeded/i,
+    /\brate limit\b/i,
+    /\b429\b/,
+    /5-hour limit/i,
+    /\blimit reached\b/i,
+  ];
+  return markers.some((p) => p.test(envelope)) ? 'quota' : 'unknown';
 }

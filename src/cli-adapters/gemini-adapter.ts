@@ -13,7 +13,7 @@ import { logger as rootLogger } from '../logger.js';
 import type { StructuredLogger } from '../logger.js';
 import type { CLIAgentOptions } from '../cli-agents.js';
 import type { ModelResolver } from '../model-resolver.js';
-import type { CLIProvider, CLIBuilderConfig, CLIName } from './index.js';
+import type { CLIProvider, CLIBuilderConfig, CLIName, DecodeResult } from './index.js';
 import {
   resolveServers,
   listRegisteredServers,
@@ -212,11 +212,86 @@ export class GeminiAdapter implements CLIProvider {
    * Parses a single JSON object and returns the `response` field.
    */
   decodeOutput(rawOutput: string, args: string[], log?: StructuredLogger): string {
-    // Only decode if Gemini was run with --output-format json
+    // Legacy text-only API.
+    const result = this.decode(rawOutput, '', args, log);
+    return result.kind === 'ok' ? result.text : '';
+  }
+
+  decode(
+    stdout: string,
+    stderr: string,
+    args: string[],
+    log?: StructuredLogger
+  ): DecodeResult {
+    // Only structured-decode if Gemini was run with --output-format json
     if (!(args.includes('--output-format') && args.includes('json'))) {
-      return rawOutput;
+      return { kind: 'ok', text: stdout };
     }
-    return this.extractGeminiResponse(rawOutput, log ?? rootLogger);
+    return this.decodeJson(stdout, stderr, log ?? rootLogger);
+  }
+
+  /**
+   * Structured decode of Gemini --output-format json output.
+   *
+   * Gemini exits 0 on quota and bakes the refusal text into the
+   * `response` field itself — there is no envelope-level signal in the
+   * stdout JSON to distinguish a real answer from a refusal. So:
+   *   - parse stdout; non-empty `response` → ok (best-effort; we can't
+   *     tell the difference here without prose matching, which we
+   *     explicitly refuse to do)
+   *   - empty/missing `response`, or unparseable stdout, AND stderr
+   *     matches anchored Google API quota markers → refused (quota)
+   *   - empty + no anchored markers → error (empty/malformed)
+   *
+   * Per the user direction for Phase 2: anchored stderr markers only.
+   * No fallback to loose patterns. The honest residual is that a
+   * gemini quota that prints ONLY to `response` (no stderr signal)
+   * passes through as a normal response — surfaced to the caller as
+   * agent output. That is documented and accepted.
+   */
+  private decodeJson(
+    jsonOutput: string,
+    stderr: string,
+    log: StructuredLogger
+  ): DecodeResult {
+    if (!jsonOutput || !jsonOutput.trim()) {
+      // Stdout empty — check stderr for anchored quota markers before
+      // declaring this an empty error.
+      if (classifyGeminiStderrReason(stderr) === 'quota') {
+        return { kind: 'refused', reason: 'quota' };
+      }
+      log.debug('extractGeminiResponse: empty input');
+      return { kind: 'error', reason: 'empty' };
+    }
+
+    try {
+      const parsed = JSON.parse(jsonOutput);
+      if (parsed.response && typeof parsed.response === 'string') {
+        log.info(`✅ extractGeminiResponse: extracted response with ${parsed.response.length} chars`);
+        return { kind: 'ok', text: parsed.response };
+      }
+      log.warn('extractGeminiResponse: no response field in JSON output', {
+        keys: Object.keys(parsed)
+      });
+      // No response field — check anchored stderr markers before
+      // treating as error.
+      if (classifyGeminiStderrReason(stderr) === 'quota') {
+        return { kind: 'refused', reason: 'quota' };
+      }
+      return { kind: 'error', reason: 'empty' };
+    } catch (e) {
+      // Redacted: raw jsonOutput is never emitted — only its length plus
+      // the parse error reason. Prevents prompt / response leakage
+      // through log aggregators.
+      log.warn('extractGeminiResponse: failed to parse JSON', {
+        error: e instanceof Error ? e.message : String(e),
+        length: jsonOutput.length
+      });
+      if (classifyGeminiStderrReason(stderr) === 'quota') {
+        return { kind: 'refused', reason: 'quota' };
+      }
+      return { kind: 'error', reason: 'malformed' };
+    }
   }
 
   private extractGeminiResponse(jsonOutput: string, log: StructuredLogger): string {
@@ -246,4 +321,37 @@ export class GeminiAdapter implements CLIProvider {
       return '';
     }
   }
+}
+
+/**
+ * Classify Gemini stderr against anchored Google API quota markers.
+ * Operates only on stderr, never on the `response` field or any other
+ * assistant-author surface.
+ *
+ * Anchored markers chosen against the literal strings Google's API and
+ * gemini-cli surface on quota:
+ *   - "RESOURCE_EXHAUSTED"           — gRPC / Google API status code
+ *   - "Quota exceeded for quota metric" — Google API canonical phrase
+ *   - "Quota exhausted"              — alt phrasing
+ *   - "rateLimitExceeded"            — Google API error reason
+ *   - "userRateLimitExceeded"        — per-user variant
+ *   - "429"                          — HTTP status
+ *
+ * No loose `rate limit` / `usage limit` / `plan.*limit` patterns. The
+ * known residual: a quota state that prints only to gemini's `response`
+ * field (no stderr signal) passes through as a normal answer. We
+ * document and accept that — gemini's protocol gives us no honest way
+ * to distinguish that case from a real reply.
+ */
+function classifyGeminiStderrReason(stderr: string | undefined): 'quota' | 'unknown' {
+  if (!stderr) return 'unknown';
+  const markers = [
+    /RESOURCE_EXHAUSTED/,
+    /Quota exceeded for quota metric/i,
+    /Quota exhausted/i,
+    /rateLimitExceeded/i,
+    /userRateLimitExceeded/i,
+    /\b429\b/,
+  ];
+  return markers.some((p) => p.test(stderr)) ? 'quota' : 'unknown';
 }

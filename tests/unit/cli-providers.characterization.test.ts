@@ -689,15 +689,18 @@ describe('CLI Provider Error Detection', () => {
     jest.clearAllTimers();
   });
 
-  // Test quota detection by exercising _executeCLI which runs the
-  // post-processing path (lines 1224-1270). We mock spawnAsync
-  // indirectly by controlling spawn.
+  // Phase 2 quota detection: each adapter classifies refusal from its
+  // own protocol-level signal — Claude via stream-json `result.subtype`
+  // / `is_error`, Codex via anchored stderr markers, Gemini likewise.
+  // The orchestrator never inspects assistant prose; loose substring
+  // patterns are gone. Tests assert per-adapter behavior against the
+  // real signal channel.
   describe('Quota / rate-limit detection on exit code 0', () => {
-    function simulateSuccessfulOutputWithQuotaError(
+    function simulate(
+      cli: 'claude' | 'codex' | 'gemini',
       stdout: string,
       stderr: string = ''
     ): Promise<any> {
-      // Set up spawn to simulate a process that exits 0 with the given output
       mockSpawn.mockImplementation(() => {
         const child = new MockChildProcess();
         setTimeout(() => {
@@ -709,102 +712,125 @@ describe('CLI Provider Error Detection', () => {
       });
 
       return orchestrator.executeSingleCLI(
-        'claude',
+        cli,
         'Analyze this',
         'System prompt',
         { workingDirectory: process.cwd() }
       );
     }
 
-    it('should detect TerminalQuotaError in stderr', async () => {
-      const result = await simulateSuccessfulOutputWithQuotaError(
-        '',
-        'TerminalQuotaError: You have exhausted your capacity.'
-      );
+    // Claude: refusal signal is the NDJSON `result` event with
+    // `subtype: 'error_*'` or `is_error: true` — never stderr text.
+    it('claude: detects structured refusal via result.subtype with anchored quota envelope', async () => {
+      const ndjson = JSON.stringify({
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: 'Claude AI usage limit reached. 5-hour limit resets at 14:00 UTC.',
+      });
+      const result = await simulate('claude', ndjson);
       expect(result.success).toBe(false);
-      expect(result.error).toContain('quota exhausted');
+      expect(result.error).toContain('quota refused');
       expect(result.exitCode).toBe(0);
     });
 
-    it('should detect "rate limit" pattern in stderr', async () => {
-      const result = await simulateSuccessfulOutputWithQuotaError(
-        '',
-        'Error: rate limit exceeded, please try again later.'
-      );
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('quota exhausted');
+    it('claude: structured error without quota markers surfaces as error, not refusal', async () => {
+      // is_error true but the envelope doesn't match any anchored quota
+      // marker — should NOT be classified as quota refusal. Falls
+      // through to the legacy raw-stdout pass-through path.
+      const ndjson = JSON.stringify({
+        type: 'result',
+        is_error: true,
+        result: 'Some internal binary failure unrelated to quota.',
+      });
+      const result = await simulate('claude', ndjson);
+      // Not a refusal — error envelope does not match quota markers
+      expect(result.error ?? '').not.toContain('quota refused');
     });
 
-    it('should detect 429 status code in stderr', async () => {
-      const result = await simulateSuccessfulOutputWithQuotaError(
-        '',
-        'HTTP 429 Too Many Requests'
-      );
+    // Codex: stderr is the only refusal channel. Anchored markers only —
+    // no loose patterns like "rate limit", "usage limit", "billing".
+    it('codex: detects anchored quota marker in stderr (rate_limit_exceeded)', async () => {
+      const result = await simulate('codex', '', 'Error: rate_limit_exceeded — try again later');
       expect(result.success).toBe(false);
-      expect(result.error).toContain('quota exhausted');
+      expect(result.error).toContain('quota refused');
     });
 
-    it('should detect "usage limit" in stderr', async () => {
-      const result = await simulateSuccessfulOutputWithQuotaError(
-        '',
-        'You have reached your usage limit for this billing period.'
-      );
+    it('codex: detects HTTP 429 in stderr', async () => {
+      const result = await simulate('codex', '', 'HTTP 429 Too Many Requests');
       expect(result.success).toBe(false);
-      expect(result.error).toContain('quota exhausted');
+      expect(result.error).toContain('quota refused');
     });
 
-    it('should detect "billing limit" in stderr', async () => {
-      const result = await simulateSuccessfulOutputWithQuotaError(
-        '',
-        'Your billing limit has been reached.'
-      );
+    it('codex: ChatGPT plan-cap pair (Plus + limit) in stderr triggers refusal', async () => {
+      const result = await simulate('codex', '', 'Your ChatGPT Plus plan has hit its weekly limit.');
       expect(result.success).toBe(false);
-      expect(result.error).toContain('quota exhausted');
+      expect(result.error).toContain('quota refused');
     });
 
-    it('should detect quota errors in stderr even when stdout is normal', async () => {
-      const result = await simulateSuccessfulOutputWithQuotaError(
-        'Some normal output',
-        'rateLimitExceeded: quota will reset in 2h 30m'
-      );
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('quota exhausted');
+    it('codex: unanchored "rate limit" prose alone in stderr does NOT trigger refusal', async () => {
+      // Per Phase 2 stance: anchored markers only. The word "rate limit"
+      // on its own (not the API error code `rate_limit_exceeded`) is
+      // not a vendor signal — could be operator-injected text.
+      const result = await simulate('codex', '', 'note: app has a rate limit configured');
+      expect(result.error ?? '').not.toContain('quota refused');
     });
 
-    it('should extract reset time from quota error', async () => {
-      const result = await simulateSuccessfulOutputWithQuotaError(
-        '',
-        'TerminalQuotaError: quota will reset in 1h 45m 30s'
-      );
+    // Gemini: stderr-only, anchored to Google API canonical strings.
+    it('gemini: detects RESOURCE_EXHAUSTED in stderr', async () => {
+      const result = await simulate('gemini', '', 'Error: 8 RESOURCE_EXHAUSTED: Quota exceeded for quota metric.');
       expect(result.success).toBe(false);
-      expect(result.error).toContain('resets in');
+      expect(result.error).toContain('quota refused');
     });
 
-    it('should return success for clean output without quota patterns', async () => {
-      const result = await simulateSuccessfulOutputWithQuotaError(
-        'This code has critical security vulnerabilities.'
-      );
+    it('gemini: detects userRateLimitExceeded in stderr', async () => {
+      const result = await simulate('gemini', '', '{"error": {"reason": "userRateLimitExceeded"}}');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('quota refused');
+    });
+
+    it('gemini: response field is returned even if it contains quota words', async () => {
+      // Documented Phase 2 residual — gemini bakes refusals into the
+      // response field with no envelope-level signal, so we surface
+      // whatever it returns. We refuse to grep prose to second-guess.
+      const json = JSON.stringify({ response: 'I cannot help; your usage limit has been reached.' });
+      const result = await simulate('gemini', json);
       expect(result.success).toBe(true);
-      expect(result.output).toContain('critical security vulnerabilities');
+      expect(result.output).toContain('usage limit');
     });
 
-    // Regression: assistant prose containing quota-adjacent words must NOT
-    // be classified as a quota refusal. This is the 2026-05-21 19:22
-    // false-positive class — claude returned a legitimate 54-second
-    // debate response mentioning "rate limit" and was reclassified as
-    // refused, with empty output returned to the user.
-    it('should NOT detect quota when patterns appear only in stdout (assistant prose)', async () => {
-      const result = await simulateSuccessfulOutputWithQuotaError(
-        'The codebase has a rate limit at src/lib/rate-limiter.ts. ' +
-        'Their usage limit logic also has a token limit exceeded check. ' +
-        'The billing plan limit is enforced server-side. HTTP 429 handling is fine.'
-      );
+    // Regression — the 2026-05-21 19:22 false-positive class. Assistant
+    // prose containing quota-adjacent words must NOT be reclassified
+    // as refusal. This is the bug that triggered the Phase 1/2 work.
+    it('claude: assistant prose mentioning rate limit / usage limit / 429 does NOT refuse', async () => {
+      const ndjson = JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'text',
+            text:
+              'The codebase has a rate limit at src/lib/rate-limiter.ts. ' +
+              'Their usage limit logic also has a token limit exceeded check. ' +
+              'The billing plan limit is enforced server-side. HTTP 429 handling is fine.',
+          }],
+        },
+      });
+      const result = await simulate('claude', ndjson);
       expect(result.success).toBe(true);
       expect(result.output).toContain('rate limit');
-      // On success result.error is undefined (or stderr when CLI wrote some).
-      // The critical assertion: never the "quota exhausted" marker that the
-      // refusal path constructs.
-      expect(result.error ?? '').not.toContain('quota exhausted');
+      expect(result.error ?? '').not.toContain('quota refused');
+    });
+
+    it('claude: clean assistant text returns as success', async () => {
+      const ndjson = JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'This code has critical security vulnerabilities.' }],
+        },
+      });
+      const result = await simulate('claude', ndjson);
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('critical security vulnerabilities');
     });
   });
 

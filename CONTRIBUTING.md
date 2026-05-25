@@ -31,21 +31,8 @@ await spawnAsync('codex', args, {
 });
 ```
 
-**Gemini CLI:**
-```javascript
-const args = [];
-args.push(combinedPrompt);  // Positional argument, NOT stdin
-await spawnAsync('gemini', args, {
-  cwd: workingDir,
-  detached: false,  // CRITICAL: Gemini hangs with detached:true on macOS
-  env: { TERM: 'dumb', NO_COLOR: '1', CI: 'true' }
-});
-```
-
 ### Known Failure Patterns
 
-- **Gemini + stdin**: Hangs after "loading credentials"
-- **Gemini + detached:true**: Hangs during macOS sandbox initialization
 - **Claude --append-system-prompt**: Times out in spawn context
 
 ## TypeScript Standards

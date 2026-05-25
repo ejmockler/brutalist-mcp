@@ -2,13 +2,13 @@
 
 Multi-perspective code analysis using Claude Code and Codex CLI agents.
 
-> **Gemini removed (May 2026).** Google sunsets `gemini-cli` for Pro/Ultra/free users on **2026-06-18**, and the Antigravity successor (`agy`) isn't subprocess-ready (no `--model`, no `--output-format`, [stdout-drop on non-TTY](https://github.com/google-antigravity/antigravity-cli/issues/76)). Gemini is dropped from the critic roster pending a fresh `agy` adapter once those gaps close. Older references to Gemini elsewhere in this README are stale.
+> **Gemini removed (May 2026).** Google sunsets `gemini-cli` for Pro/Ultra/free users on **2026-06-18**, and the Antigravity successor (`agy`) isn't subprocess-ready (no `--model`, no `--output-format`, [stdout-drop on non-TTY](https://github.com/google-antigravity/antigravity-cli/issues/76)). Brutalist now ships as a 2-critic system; an `agy` adapter will be added when those gaps close.
 
 Get direct, honest technical feedback on your code, architecture, and ideas before they reach production.
 
 ## What It Does
 
-The Brutalist MCP connects your AI coding assistant to three different CLI agents (Claude, Codex, Gemini), each providing independent analysis. This gives you multiple perspectives on:
+The Brutalist MCP connects your AI coding assistant to two different CLI agents (Claude, Codex), each providing independent analysis. This gives you multiple perspectives on:
 
 - Code quality and security vulnerabilities
 - Architecture decisions and scalability
@@ -29,9 +29,6 @@ npm install -g claude
 
 # Option 2: Codex
 # Install from https://github.com/openai/codex-cli
-
-# Option 3: Gemini
-npm install -g @google/gemini-cli
 ```
 
 ### Step 2: Install the MCP Server
@@ -163,7 +160,6 @@ roast_cli_debate "Microservices vs Monolith for our e-commerce platform"
 This MCP server coordinates analysis from locally installed CLI agents:
 - **Claude Code CLI** - Code review and architectural analysis
 - **Codex CLI** - Security and technical implementation review
-- **Gemini CLI** - System design and scalability analysis
 
 Each agent runs locally with direct file-system access, providing independent perspectives on your code and design decisions.
 
@@ -238,16 +234,16 @@ See [docs/pagination.md](docs/pagination.md) for detailed pagination documentati
 roast(domain="codebase", target="/src")
 
 # Restrict to a subset only when the user explicitly names which critics
-roast(domain="codebase", target="/src", clis=["codex", "gemini"])
+roast(domain="codebase", target="/src", clis=["codex"])
 ```
 
 ### Agent Strengths
 
 Different agents have different strengths:
-- **Code review**: Claude, Codex, Gemini
-- **Architecture**: Gemini, Claude, Codex
-- **Security**: Codex, Claude, Gemini
-- **Research**: Claude, Gemini, Codex
+- **Code review**: Claude, Codex
+- **Architecture**: Claude, Codex
+- **Security**: Codex, Claude
+- **Research**: Claude, Codex
 
 ### Verification-Heavy Domains
 
@@ -258,28 +254,6 @@ Different agents have different strengths:
 - `[UNVERIFIED: <reason>]` — verification failed; no quote
 
 Untagged citations are a protocol violation. The "state doctrine without a cite" fallback is conditional on a failed web lookup, not a parallel option. Consumers of the critique can spot-check citations by fetching the URL and grepping for the quoted string.
-
-### Gemini Frontier Model Rotation
-
-For Gemini, the server pins `gemini-3.1-pro-preview` as the default to prevent the CLI's Auto router from downselecting to `gemini-2.5-flash-lite` under verification load. The orchestrator automatically rotates through the frontier chain when the current tier is unavailable:
-
-1. `gemini-3.1-pro-preview` (newest pro frontier, preview-tier access)
-2. `gemini-3-pro-preview` (previous pro frontier, preview-tier access)
-3. `gemini-3-flash-preview` (3-series flash — Pro-grade reasoning at Flash-level speed and cost; the floor of the rotation chain)
-
-**Rotation fires on both capacity and access failures.** Users without preview-tier access to the pro variants fall through to `gemini-3-flash-preview` — which is materially better than the Auto router's `gemini-2.5-flash-lite` downselect because Gemini 3 Flash carries Pro-grade reasoning. Users *with* preview access get the newest pro model when capacity is available, with graceful fallback when it isn't.
-
-If you need the last-generation pro model as your pin (e.g. your account has no 3.x preview access at all), use the env override below — `gemini-2.5-pro` is no longer in the rotation chain by default.
-
-Rotatable failure patterns:
-- Capacity: `429`, `"No capacity available"`, `quota`, `rate limit`, `too many requests`
-- Access: `ModelNotFoundError`, `"Requested entity was not found"`, `403`, `permission denied`
-
-Rotation aborts immediately on unrelated failures (auth, subprocess crash, prompt rejection) — a different model won't fix those.
-
-Overrides:
-- Per-call: `roast(..., models={gemini: "gemini-2.5-flash"})` — caller chooses, no rotation.
-- Per-environment: `BRUTALIST_GEMINI_MODEL=<model>` — operator chooses, no rotation. Common picks: `gemini-3-flash-preview` to skip the pro-preview probe cost; `gemini-2.5-pro` if you want the previous-generation pro pin (no longer in the rotation default).
 
 ### Codex Model Selection
 

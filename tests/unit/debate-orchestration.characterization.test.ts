@@ -58,7 +58,7 @@ describe('Debate Orchestration Characterization', () => {
   describe('Happy-path orchestration flow', () => {
     beforeEach(() => {
       mockOrchestrator.detectCLIContext.mockResolvedValue({
-        availableCLIs: ['claude', 'codex', 'gemini'],
+        availableCLIs: ['claude', 'codex'],
       });
     });
 
@@ -78,7 +78,7 @@ describe('Debate Orchestration Characterization', () => {
 
       expect(agentsSeen.size).toBe(2);
       for (const a of agentsSeen) {
-        expect(['claude', 'codex', 'gemini']).toContain(a);
+        expect(['claude', 'codex']).toContain(a);
       }
     });
 
@@ -93,11 +93,11 @@ describe('Debate Orchestration Characterization', () => {
         topic: 'Specified agents',
         proPosition: 'Pro',
         conPosition: 'Con',
-        agents: ['codex', 'gemini'],
+        agents: ['codex', 'claude'],
         rounds: 1,
       });
 
-      expect(agentsSeen).toEqual(new Set(['codex', 'gemini']));
+      expect(agentsSeen).toEqual(new Set(['codex', 'claude']));
     });
 
     it('throws when fewer than 2 CLIs are available (even if agents specified)', async () => {

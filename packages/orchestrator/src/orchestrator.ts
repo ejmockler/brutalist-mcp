@@ -76,7 +76,7 @@ export class OrchestratorTimeoutError extends Error {
   constructor(public readonly timeoutMs: number, public readonly messageCount: number) {
     super(
       `Orchestrator exceeded wall-clock budget of ${timeoutMs}ms after ${messageCount} agent message(s). ` +
-        `Most likely a child CLI subprocess (claude/codex/gemini) stalled. ` +
+        `Most likely a child CLI subprocess (claude/codex) stalled. ` +
         `Raise timeoutMs, split the diff, or investigate the stalled critic.`,
     );
     this.name = 'OrchestratorTimeoutError';
@@ -168,7 +168,7 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
   });
 
   // Inherit the parent's full environment so spawned subprocesses keep
-  // PATH (to locate `claude`/`codex`/`gemini`/`node`), HOME (for CLI
+  // PATH (to locate `claude`/`codex`/`node`), HOME (for CLI
   // config dirs), and the rest of the toolchain. We then layer
   // brutalist-specific keys on top — this is the only correct
   // composition; partial env objects are not "additive" with most
@@ -190,8 +190,6 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
       // overwrite any pre-existing value with `undefined`.
       ...(process.env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY } : {}),
       ...(process.env.OPENAI_API_KEY ? { OPENAI_API_KEY: process.env.OPENAI_API_KEY } : {}),
-      ...(process.env.GEMINI_API_KEY ? { GEMINI_API_KEY: process.env.GEMINI_API_KEY } : {}),
-      ...(process.env.GOOGLE_API_KEY ? { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY } : {}),
     },
   };
 

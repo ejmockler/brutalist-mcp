@@ -157,16 +157,14 @@ describe('groupInlineFindingsWithSubThreshold', () => {
     // lone summary entry.
     const findings: ResolvedFinding[] = [
       fixture({ cli: 'codex', severity: 'critical', resolvedLine: 42 }),
-      fixture({ cli: 'claude', severity: 'high', resolvedLine: 42 }),
-      fixture({ cli: 'gemini', severity: 'nit', resolvedLine: 42 }),
+      fixture({ cli: 'claude', severity: 'nit', resolvedLine: 42 }),
     ];
     const result = groupInlineFindingsWithSubThreshold(findings, 'medium');
     expect(result.groups).toHaveLength(1);
-    expect(result.groups[0].findings).toHaveLength(3);
+    expect(result.groups[0].findings).toHaveLength(2);
     expect(result.groups[0].findings.map((f) => f.cli).sort()).toEqual([
       'claude',
       'codex',
-      'gemini',
     ]);
     // Nothing demoted to subThreshold — the nit is INSIDE the inline
     // group, not separated from its agreement signal.

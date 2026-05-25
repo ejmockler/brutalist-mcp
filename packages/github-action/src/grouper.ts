@@ -1,12 +1,12 @@
 /**
  * Cross-CLI grouping.
  *
- * Brutalist's value prop is that 3 CLIs critiquing the same line is the
- * signal — *especially* when they disagree. So when multiple findings
- * land on the same `(path, resolvedLine, side)`, we collapse them into
- * a single PR comment with stacked CLI badges and a severity rollup.
- * The orchestrator emits one Finding per CLI per issue; the grouping
- * happens here.
+ * Brutalist's value prop is that multiple CLIs critiquing the same line
+ * is the signal — *especially* when they disagree. So when multiple
+ * findings land on the same `(path, resolvedLine, side)`, we collapse
+ * them into a single PR comment with stacked CLI badges and a severity
+ * rollup. The orchestrator emits one Finding per CLI per issue; the
+ * grouping happens here.
  *
  * Out-of-diff findings get rendered separately (as a section in the
  * review summary), since GitHub rejects inline comments on lines that
@@ -63,7 +63,6 @@ const SEVERITY_BADGES: Record<SeverityFilter, string> = {
 const CLI_BADGE: Record<string, string> = {
   claude: 'Claude',
   codex: 'Codex',
-  gemini: 'Gemini',
 };
 
 export interface GroupingOutcome {

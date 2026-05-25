@@ -17,12 +17,12 @@ export const mockSuccessfulResponse: CLIAgentResponse = {
 };
 
 export const mockFailedResponse: CLIAgentResponse = {
-  agent: 'gemini',
+  agent: 'codex',
   success: false,
   output: '',
   error: 'Command timed out after 30000ms',
   executionTime: 30000,
-  command: 'gemini --model gemini-2.5-flash --yolo',
+  command: 'codex exec --sandbox read-only',
   workingDirectory: '/test',
   exitCode: 124
 };
@@ -38,17 +38,6 @@ export const mockClaudeResponse: CLIAgentResponse = {
   model: 'opus'
 };
 
-export const mockGeminiResponse: CLIAgentResponse = {
-  agent: 'gemini',
-  success: true,
-  output: 'Your dependency management is a security nightmare. You have 47 packages with known CVEs including critical RCE vulnerabilities.',
-  executionTime: 3200,
-  command: 'gemini --model gemini-2.5-flash --yolo',
-  workingDirectory: '/test',
-  exitCode: 0,
-  model: 'gemini-3.1-pro-preview'
-};
-
 export const mockMixedResponses: CLIAgentResponse[] = [
   mockSuccessfulResponse,
   mockFailedResponse,
@@ -57,8 +46,7 @@ export const mockMixedResponses: CLIAgentResponse[] = [
 
 export const mockAllSuccessfulResponses: CLIAgentResponse[] = [
   mockSuccessfulResponse,
-  mockClaudeResponse,
-  mockGeminiResponse
+  mockClaudeResponse
 ];
 
 export const mockPartialFailureResponses: CLIAgentResponse[] = [

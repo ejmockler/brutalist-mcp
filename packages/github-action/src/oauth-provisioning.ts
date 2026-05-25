@@ -1,14 +1,14 @@
 /**
- * OAuth credential provisioning for the Codex and Gemini CLIs.
+ * OAuth credential provisioning for the Codex CLI.
  *
- * Both CLIs persist their OAuth state as JSON files in $HOME, not as env
- * vars. To run them under OAuth in CI we capture each file once locally
- * (via `codex login` / first `gemini` run), store the contents as
- * GitHub secrets, and write the secrets back to the runner's $HOME on
- * each spinup before invoking the CLIs.
+ * Codex persists OAuth state as a JSON file in $HOME, not as an env var.
+ * To run it under OAuth in CI we capture the file once locally (via
+ * `codex login`), store the contents as a GitHub secret, and write the
+ * secret back to the runner's $HOME on each spinup before invoking the
+ * CLI.
  *
- * Lifecycle caveat (real but bounded): both CLIs rotate access tokens
- * during use and rewrite the file. In ephemeral CI runners those writes
+ * Lifecycle caveat (real but bounded): Codex rotates access tokens
+ * during use and rewrites the file. In ephemeral CI runners those writes
  * vanish with the VM. Each subsequent run starts from the secret's
  * original refresh_token. This works fine as long as the provider
  * treats refresh_tokens as long-lived (typical for installed-app OAuth).
@@ -26,8 +26,6 @@ import * as core from '@actions/core';
 export interface ProvisionedCredentials {
   /** True if codex's auth.json was written and parses as JSON. */
   codexOauth: boolean;
-  /** True if BOTH gemini files were written (the CLI needs both together). */
-  geminiOauth: boolean;
   /**
    * Map of secret label → SHA-256 prefix of the refresh_token at write
    * time. Used by detectRefreshRotation to spot mid-run rotation.
@@ -58,8 +56,6 @@ interface CredentialSlot {
  */
 export async function provisionCredentials(opts: {
   codexAuth?: string;
-  geminiOauthCreds?: string;
-  geminiGoogleAccounts?: string;
   homeDir?: string;
 }): Promise<ProvisionedCredentials> {
   const home = opts.homeDir ?? os.homedir();
@@ -76,43 +72,7 @@ export async function provisionCredentials(opts: {
     fingerprints,
   );
 
-  const geminiCredsWritten = await writeSlot(
-    {
-      label: 'GEMINI_OAUTH_CREDS',
-      contents: opts.geminiOauthCreds,
-      relPath: path.join('.gemini', 'oauth_creds.json'),
-      refreshTokenAccessor: (j) => (j as any)?.refresh_token,
-    },
-    home,
-    fingerprints,
-  );
-
-  const geminiAccountsWritten = await writeSlot(
-    {
-      label: 'GEMINI_GOOGLE_ACCOUNTS',
-      contents: opts.geminiGoogleAccounts,
-      relPath: path.join('.gemini', 'google_accounts.json'),
-      // No refresh_token in this file — just the account binding.
-    },
-    home,
-    fingerprints,
-  );
-
-  // Gemini needs BOTH files. If only one was supplied, the CLI may
-  // prompt or fail unpredictably — warn and treat as un-provisioned so
-  // the env-var fallback path can take over (if a Google API key was
-  // also supplied).
-  let geminiOauth = false;
-  if (geminiCredsWritten && geminiAccountsWritten) {
-    geminiOauth = true;
-  } else if (geminiCredsWritten || geminiAccountsWritten) {
-    core.warning(
-      'Gemini OAuth requires BOTH gemini-oauth-creds AND gemini-google-accounts. ' +
-        'Only one was supplied; falling back to GEMINI_API_KEY env if present.',
-    );
-  }
-
-  return { codexOauth: codexWritten, geminiOauth, initialFingerprints: fingerprints };
+  return { codexOauth: codexWritten, initialFingerprints: fingerprints };
 }
 
 /**
@@ -132,7 +92,6 @@ export async function detectRefreshRotation(
 ): Promise<void> {
   const slots: Array<[string, string, (j: unknown) => string | undefined]> = [
     ['CODEX_AUTH', path.join(homeDir, '.codex', 'auth.json'), (j) => (j as any)?.tokens?.refresh_token],
-    ['GEMINI_OAUTH_CREDS', path.join(homeDir, '.gemini', 'oauth_creds.json'), (j) => (j as any)?.refresh_token],
   ];
 
   for (const [label, file, accessor] of slots) {
@@ -143,7 +102,7 @@ export async function detectRefreshRotation(
       if (after && after !== before) {
         core.warning(
           `${label}: refresh_token rotated during this run (${before} → ${after}). ` +
-            `The stored secret is now stale. Regenerate locally (codex login / gemini "hi") ` +
+            `The stored secret is now stale. Regenerate locally (codex login) ` +
             `and update the GitHub secret before the prior refresh_token expires.`,
         );
       }
@@ -256,10 +215,6 @@ export function extractOauthSecrets(jsonContents: string | undefined): string[] 
     collect(tokens.refresh_token);
     collect(tokens.id_token);
   }
-  // Gemini shape: top-level { access_token, refresh_token, id_token }
-  collect(obj.access_token);
-  collect(obj.refresh_token);
-  collect(obj.id_token);
   return out;
 }
 

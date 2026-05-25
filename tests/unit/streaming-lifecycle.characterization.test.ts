@@ -435,14 +435,6 @@ describe('Streaming Lifecycle Characterization', () => {
       expect(session().analysis.activeAgents.has('claude')).toBe(true);
       expect(session().analysis.activeAgents.has('codex')).toBe(true);
 
-      // Agent starts
-      await manager.emitToSession('agent-lifecycle', makeEvent({
-        sessionId: 'agent-lifecycle',
-        type: 'agent_start',
-        agent: 'gemini'
-      }));
-      expect(session().analysis.activeAgents.has('gemini')).toBe(true);
-
       // Agent completes
       await manager.emitToSession('agent-lifecycle', makeEvent({
         sessionId: 'agent-lifecycle',
@@ -716,7 +708,7 @@ describe('Streaming Lifecycle Characterization', () => {
       manager.createSession('agents-B');
 
       manager.startAnalysis('agents-A', ['claude', 'codex']);
-      manager.startAnalysis('agents-B', ['gemini']);
+      manager.startAnalysis('agents-B', ['codex']);
 
       // Complete claude in session A
       await manager.emitToSession('agents-A', makeEvent({
@@ -725,11 +717,11 @@ describe('Streaming Lifecycle Characterization', () => {
         agent: 'claude'
       }));
 
-      // Error gemini in session B
+      // Error codex in session B
       await manager.emitToSession('agents-B', makeEvent({
         sessionId: 'agents-B',
         type: 'agent_error',
-        agent: 'gemini'
+        agent: 'codex'
       }));
 
       const sessionA = manager.getSession('agents-A')!;
@@ -738,7 +730,7 @@ describe('Streaming Lifecycle Characterization', () => {
       expect(sessionA.analysis.completedAgents.has('claude')).toBe(true);
       expect(sessionA.analysis.failedAgents.size).toBe(0);
 
-      expect(sessionB.analysis.failedAgents.has('gemini')).toBe(true);
+      expect(sessionB.analysis.failedAgents.has('codex')).toBe(true);
       expect(sessionB.analysis.completedAgents.size).toBe(0);
     });
 

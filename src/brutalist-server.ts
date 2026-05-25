@@ -451,13 +451,12 @@ export class BrutalistServer {
         target: z.string().describe("Filesystem path to analyze (e.g., '/path/to/project' or '.'). Directs agents to the relevant part of the codebase."),
         // Common optional fields
         context: z.string().optional().describe("Essential context for the critique. For abstract domains (idea, architecture, security, etc.), this is the primary input describing what to evaluate. For filesystem domains, provides supplementary background (e.g., goals, constraints, team context)."),
-        clis: z.array(z.enum(["codex", "gemini", "claude"])).min(1).max(3).optional().describe("Subset of critics to run."),
+        clis: z.array(z.enum(["codex", "claude"])).min(1).max(2).optional().describe("Subset of critics to run."),
         verbose: z.boolean().optional().describe("Detailed output"),
         models: z.object({
           claude: z.string().optional(),
-          codex: z.string().optional(),
-          gemini: z.string().optional()
-        }).optional().describe("Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model by default; set BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true to allow a codex override. Omit to use each CLI's configured default. (Gemini field accepted but ignored — gemini critic removed pending agy successor.)"),
+          codex: z.string().optional()
+        }).optional().describe("Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model by default; set BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true to allow a codex override. Omit to use each CLI's configured default."),
         // Pagination
         offset: z.number().min(0).optional().describe("Pagination offset"),
         limit: z.number().min(1000).max(100000).optional().describe("Max chars/chunk"),
@@ -507,15 +506,14 @@ export class BrutalistServer {
         proPosition: z.string().describe("The PRO thesis to defend (extracted by calling agent)"),
         conPosition: z.string().describe("The CON thesis to defend (extracted by calling agent)"),
         target: z.string().optional().describe("Filesystem path to analyze (e.g., '/path/to/project' or '.'). Directs agents to the relevant part of the codebase."),
-        agents: z.array(z.enum(["codex", "gemini", "claude"])).length(2).optional()
+        agents: z.array(z.enum(["codex", "claude"])).length(2).optional()
           .describe("Two specific debaters to use."),
         rounds: z.number().min(1).max(3).default(3).optional()
           .describe("Number of debate rounds (default: 3)"),
         context: z.string().optional().describe("Essential context for the debate — the substantive background, constraints, and details that shape the argument."),
         models: z.object({
           claude: z.string().optional(),
-          codex: z.string().optional(),
-          gemini: z.string().optional()
+          codex: z.string().optional()
         }).optional().describe("Model overrides for specific agents. Codex uses the Codex CLI configured/default model by default unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true."),
         // Pagination and conversation continuation
         context_id: z.string().optional().describe("Context ID for cached pagination or debate continuation"),
@@ -679,9 +677,9 @@ export class BrutalistServer {
       target: string;
       context?: string;
       workingDirectory?: string;
-      clis?: ('claude' | 'codex' | 'gemini')[];
+      clis?: ('claude' | 'codex')[];
       verbose?: boolean;
-      models?: { claude?: string; codex?: string; gemini?: string };
+      models?: { claude?: string; codex?: string };
       offset?: number;
       limit?: number;
       cursor?: string;

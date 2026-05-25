@@ -11,10 +11,10 @@
  *     start.
  *
  * Soft requirements (warn but proceed):
- *   - At least one of {`claude`, `codex`, `gemini`} for the brutalist
- *     critic side. `claude` doubles as a critic so the hard requirement
- *     above already covers the minimum, but absence of `codex` and
- *     `gemini` means a single-perspective review.
+ *   - At least one of {`claude`, `codex`} for the brutalist critic side.
+ *     `claude` doubles as a critic so the hard requirement above already
+ *     covers the minimum, but absence of `codex` means a
+ *     single-perspective review.
  */
 
 import { exec } from 'node:child_process';
@@ -27,7 +27,6 @@ export interface PreflightResult {
   brutalistMcp: BinaryStatus;
   claude: BinaryStatus;
   codex: BinaryStatus;
-  gemini: BinaryStatus;
 }
 
 export interface BinaryStatus {
@@ -43,13 +42,12 @@ export interface BinaryStatus {
  * is enough to distinguish "installed" from "not installed".
  */
 export async function runPreflight(): Promise<PreflightResult> {
-  const [brutalistMcp, claude, codex, gemini] = await Promise.all([
+  const [brutalistMcp, claude, codex] = await Promise.all([
     probeBinary('brutalist-mcp'),
     probeBinary('claude'),
     probeBinary('codex'),
-    probeBinary('gemini'),
   ]);
-  return { brutalistMcp, claude, codex, gemini };
+  return { brutalistMcp, claude, codex };
 }
 
 /**
@@ -74,16 +72,16 @@ export function assertPreflight(result: PreflightResult): void {
 
   // Soft warnings — having only one critic is functional but loses the
   // multi-perspective value prop.
-  const critics = [result.claude, result.codex, result.gemini].filter((b) => b.available);
+  const critics = [result.claude, result.codex].filter((b) => b.available);
   if (critics.length === 1) {
     core.warning(
-      `Only one CLI critic available (${critics[0].binary}). Multi-perspective review requires installing additional critics: ${
-        result.codex.available ? '' : 'codex '
-      }${result.gemini.available ? '' : 'gemini'}.`.trim(),
+      `Only one CLI critic available (${critics[0].binary}). Multi-perspective review requires installing the missing critic: ${
+        result.codex.available ? 'claude' : 'codex'
+      }.`,
     );
   }
 
-  for (const status of [result.claude, result.codex, result.gemini]) {
+  for (const status of [result.claude, result.codex]) {
     if (status.available && status.resolvedPath) {
       core.info(`✓ ${status.binary}: ${status.resolvedPath}`);
     }

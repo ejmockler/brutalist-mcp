@@ -123,7 +123,7 @@ const ORCHESTRATOR_FIXTURE: OrchestratorResult = {
     },
     // Fabricated quote — should be dropped.
     {
-      cli: 'gemini',
+      cli: 'claude',
       path: 'src/auth.ts',
       side: 'RIGHT',
       severity: 'high',
@@ -136,7 +136,6 @@ const ORCHESTRATOR_FIXTURE: OrchestratorResult = {
   perCli: [
     { cli: 'codex', success: true, executionTimeMs: 2400, summary: 'Found JWT issue.' },
     { cli: 'claude', success: true, model: 'opus', executionTimeMs: 1800, summary: 'Same.' },
-    { cli: 'gemini', success: true, model: 'gemini-3.1-pro-preview', executionTimeMs: 3200, summary: 'Verified deps.' },
   ],
   synthesis:
     'All three critics agree the new localStorage token storage is the headline risk; rotation is unset.',
@@ -166,7 +165,7 @@ describe('Pipeline smoke', () => {
     const resolution = await resolveFindings(all, octokit, context);
 
     expect(resolution.dropped).toHaveLength(1);
-    expect(resolution.dropped[0].finding.cli).toBe('gemini');
+    expect(resolution.dropped[0].finding.cli).toBe('claude');
     expect(resolution.dropped[0].reason).toMatch(/not found/);
 
     // The 2 valid in-diff findings resolve to line 11 (localStorage call).
@@ -281,7 +280,7 @@ describe('Pipeline smoke', () => {
       },
       // Fabricated FILE-side finding: quote isn't anywhere in the file.
       {
-        cli: 'gemini' as const,
+        cli: 'claude' as const,
         path: 'src/auth.ts',
         side: 'FILE' as const,
         severity: 'high' as const,
@@ -299,7 +298,7 @@ describe('Pipeline smoke', () => {
     expect(resolution.outOfDiff[0].cli).toBe('codex');
     expect(resolution.outOfDiff[0].provenance).toBe('unanchored');
     expect(resolution.dropped).toHaveLength(1);
-    expect(resolution.dropped[0].finding.cli).toBe('gemini');
+    expect(resolution.dropped[0].finding.cli).toBe('claude');
     expect(resolution.dropped[0].reason).toMatch(/FILE-side.*not found/);
   });
 

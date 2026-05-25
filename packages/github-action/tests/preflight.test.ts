@@ -15,7 +15,6 @@ describe('assertPreflight', () => {
         brutalistMcp: ok('brutalist-mcp'),
         claude: ok('claude'),
         codex: ok('codex'),
-        gemini: ok('gemini'),
       }),
     ).not.toThrow();
   });
@@ -26,7 +25,6 @@ describe('assertPreflight', () => {
         brutalistMcp: missing('brutalist-mcp'),
         claude: ok('claude'),
         codex: ok('codex'),
-        gemini: ok('gemini'),
       }),
     ).toThrow(/brutalist-mcp/);
   });
@@ -37,7 +35,6 @@ describe('assertPreflight', () => {
         brutalistMcp: ok('brutalist-mcp'),
         claude: missing('claude'),
         codex: ok('codex'),
-        gemini: ok('gemini'),
       }),
     ).toThrow(/claude/);
   });
@@ -48,7 +45,6 @@ describe('assertPreflight', () => {
         brutalistMcp: missing('brutalist-mcp'),
         claude: missing('claude'),
         codex: ok('codex'),
-        gemini: ok('gemini'),
       }),
     ).toThrow(/brutalist-mcp.*claude/s);
   });
@@ -59,7 +55,6 @@ describe('assertPreflight', () => {
         brutalistMcp: ok('brutalist-mcp'),
         claude: ok('claude'),
         codex: missing('codex'),
-        gemini: missing('gemini'),
       }),
     ).not.toThrow();
   });

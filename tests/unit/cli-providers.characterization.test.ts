@@ -2,8 +2,8 @@
  * Characterization tests for CLI provider command construction,
  * output decoding, and error handling.
  *
- * These tests capture the ACTUAL current behavior of the three CLI
- * provider paths (Claude, Codex, Gemini) so that module extraction
+ * These tests capture the ACTUAL current behavior of the two CLI
+ * provider paths (Claude, Codex) so that module extraction
  * can proceed without regressions.
  *
  * Scope: cli-agents.ts lines 561-612 (command construction),
@@ -36,7 +36,6 @@ jest.mock('../../src/mcp-registry.js', () => ({
   writeClaudeMcpConfigSecure: jest.fn<() => Promise<string>>().mockResolvedValue('/tmp/mock-secure-mcp.json'),
   cleanupTempConfig: jest.fn<() => Promise<void>>().mockResolvedValue(undefined as any),
   buildCodexMCPOverride: jest.fn<() => string>().mockReturnValue('{playwright={command="npx",args=["playwright"]}}'),
-  ensureGeminiMCPServers: jest.fn<() => Promise<void>>().mockResolvedValue(undefined as any),
   ensurePlaywrightBrowsers: jest.fn<() => Promise<void>>().mockResolvedValue(undefined as any),
 }));
 
@@ -58,7 +57,7 @@ class MockChildProcess extends EventEmitter {
 function createOrchestrator(): CLIAgentOrchestrator {
   const orch = new CLIAgentOrchestrator();
   // Pre-set CLI context so it does not try to spawn version checks
-  (orch as any).cliContext = { availableCLIs: ['claude', 'codex', 'gemini'] };
+  (orch as any).cliContext = { availableCLIs: ['claude', 'codex'] };
   (orch as any).cliContextCached = true;
   return orch;
 }
@@ -89,7 +88,7 @@ describe('CLI Provider Command Construction', () => {
 
   // Expose the private buildCLICommand for direct characterization
   async function buildCommand(
-    cli: 'claude' | 'codex' | 'gemini',
+    cli: 'claude' | 'codex',
     opts: CLIAgentOptions = {}
   ) {
     return (orchestrator as any).buildCLICommand(
@@ -264,52 +263,6 @@ describe('CLI Provider Command Construction', () => {
     });
   });
 
-  // ---- Gemini ----------------------------------------------------------
-  describe('Gemini CLI', () => {
-    it('should use "gemini" command with --output-format json', async () => {
-      const result = await buildCommand('gemini');
-      expect(result.command).toBe('gemini');
-      expect(result.args).toContain('--output-format');
-      expect(result.args).toContain('json');
-    });
-
-    it('should include --model when a model is specified', async () => {
-      const result = await buildCommand('gemini', { models: { gemini: 'gemini-2.5-pro' } });
-      expect(result.args).toContain('--model');
-      const modelIdx = result.args.indexOf('--model');
-      expect(result.args[modelIdx + 1]).toBe('gemini-2.5-pro');
-    });
-
-    it('should pin frontier model (gemini-3.1-pro-preview) when no model is specified', async () => {
-      // Default prevents Gemini CLI's Auto router from downselecting to
-      // flash-lite under verification-heavy prompts. Overridable via
-      // BRUTALIST_GEMINI_MODEL env var (tested separately in integration).
-      const result = await buildCommand('gemini');
-      expect(result.args).toContain('--model');
-      const modelIdx = result.args.indexOf('--model');
-      expect(result.args[modelIdx + 1]).toBe('gemini-3.1-pro-preview');
-    });
-
-    it('should set TERM=dumb, NO_COLOR=1, CI=true in env', async () => {
-      const result = await buildCommand('gemini');
-      expect(result.env.TERM).toBe('dumb');
-      expect(result.env.NO_COLOR).toBe('1');
-      expect(result.env.CI).toBe('true');
-    });
-
-    it('should include MCP whitelist flags when mcpServers is provided', async () => {
-      const result = await buildCommand('gemini', { mcpServers: ['playwright'] });
-      expect(result.args).toContain('--allowed-mcp-server-names');
-      expect(result.args).toContain('--approval-mode');
-      expect(result.args).toContain('plan');
-    });
-
-    it('should deliver prompt via stdin', async () => {
-      const result = await buildCommand('gemini');
-      expect(typeof result.input).toBe('string');
-      expect(result.input.length).toBeGreaterThan(0);
-    });
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -623,47 +576,6 @@ describe('CLI Provider Output Decoders', () => {
     });
   });
 
-  // ---- extractGeminiResponse -------------------------------------------
-  describe('extractGeminiResponse', () => {
-    function extract(input: string): string {
-      return (orchestrator as any).extractGeminiResponse(input);
-    }
-
-    it('should return empty string for empty input', () => {
-      expect(extract('')).toBe('');
-      expect(extract('  ')).toBe('');
-    });
-
-    it('should extract the response field from JSON', () => {
-      const input = JSON.stringify({
-        response: 'The architecture has fundamental scaling issues.'
-      });
-      expect(extract(input)).toBe('The architecture has fundamental scaling issues.');
-    });
-
-    it('should return empty string when response field is missing', () => {
-      const input = JSON.stringify({ data: 'something', status: 'ok' });
-      expect(extract(input)).toBe('');
-    });
-
-    it('should return empty string for non-string response field', () => {
-      const input = JSON.stringify({ response: 42 });
-      expect(extract(input)).toBe('');
-    });
-
-    it('should return empty string for invalid JSON', () => {
-      expect(extract('not valid json at all')).toBe('');
-    });
-
-    it('should handle response with special characters', () => {
-      const input = JSON.stringify({
-        response: 'Issues:\n1. SQL injection in `query()`\n2. XSS in <input>'
-      });
-      const result = extract(input);
-      expect(result).toContain('SQL injection');
-      expect(result).toContain('XSS');
-    });
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -691,13 +603,12 @@ describe('CLI Provider Error Detection', () => {
 
   // Phase 2 quota detection: each adapter classifies refusal from its
   // own protocol-level signal — Claude via stream-json `result.subtype`
-  // / `is_error`, Codex via anchored stderr markers, Gemini likewise.
-  // The orchestrator never inspects assistant prose; loose substring
-  // patterns are gone. Tests assert per-adapter behavior against the
-  // real signal channel.
+  // / `is_error`, Codex via anchored stderr markers. The orchestrator
+  // never inspects assistant prose; loose substring patterns are gone.
+  // Tests assert per-adapter behavior against the real signal channel.
   describe('Quota / rate-limit detection on exit code 0', () => {
     function simulate(
-      cli: 'claude' | 'codex' | 'gemini',
+      cli: 'claude' | 'codex',
       stdout: string,
       stderr: string = ''
     ): Promise<any> {
@@ -774,29 +685,6 @@ describe('CLI Provider Error Detection', () => {
       // not a vendor signal — could be operator-injected text.
       const result = await simulate('codex', '', 'note: app has a rate limit configured');
       expect(result.error ?? '').not.toContain('quota refused');
-    });
-
-    // Gemini: stderr-only, anchored to Google API canonical strings.
-    it('gemini: detects RESOURCE_EXHAUSTED in stderr', async () => {
-      const result = await simulate('gemini', '', 'Error: 8 RESOURCE_EXHAUSTED: Quota exceeded for quota metric.');
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('quota refused');
-    });
-
-    it('gemini: detects userRateLimitExceeded in stderr', async () => {
-      const result = await simulate('gemini', '', '{"error": {"reason": "userRateLimitExceeded"}}');
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('quota refused');
-    });
-
-    it('gemini: response field is returned even if it contains quota words', async () => {
-      // Documented Phase 2 residual — gemini bakes refusals into the
-      // response field with no envelope-level signal, so we surface
-      // whatever it returns. We refuse to grep prose to second-guess.
-      const json = JSON.stringify({ response: 'I cannot help; your usage limit has been reached.' });
-      const result = await simulate('gemini', json);
-      expect(result.success).toBe(true);
-      expect(result.output).toContain('usage limit');
     });
 
     // Regression — the 2026-05-21 19:22 false-positive class. Assistant
@@ -981,7 +869,7 @@ describe('CLI Provider Timeout Handling', () => {
     mockSpawn.mockReturnValue(child as any);
 
     const result = await orchestrator.executeSingleCLI(
-      'gemini',
+      'codex',
       'Analyze this',
       'System prompt',
       { timeout: 100, workingDirectory: process.cwd() }

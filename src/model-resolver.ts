@@ -3,7 +3,7 @@ import path from 'path';
 import os from 'os';
 import { logger } from './logger.js';
 
-type CLIName = 'claude' | 'codex' | 'gemini';
+type CLIName = 'claude' | 'codex';
 
 interface CLIModelInfo {
   defaultModel?: string;
@@ -26,7 +26,6 @@ export class ModelResolver {
   private cliModels: Record<CLIName, CLIModelInfo> = {
     claude: { migrations: new Map() },
     codex: { migrations: new Map() },
-    gemini: { migrations: new Map() },
   };
 
   private initialized = false;
@@ -50,7 +49,6 @@ export class ModelResolver {
     logger.info('🔍 ModelResolver initialized', {
       claude: this.cliModels.claude.defaultModel || '(cli default)',
       codex: this.cliModels.codex.defaultModel || '(cli default)',
-      gemini: '(cli default)',
       codexMigrations: this.cliModels.codex.migrations.size,
     });
   }
@@ -81,7 +79,6 @@ export class ModelResolver {
     return {
       claude: this.cliModels.claude.defaultModel,
       codex: this.cliModels.codex.defaultModel,
-      gemini: this.cliModels.gemini.defaultModel,
     };
   }
 

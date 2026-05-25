@@ -34,29 +34,21 @@ async function main(): Promise<void> {
   const preflight = await runPreflight();
   assertPreflight(preflight);
 
-  // Provision OAuth credential files for Codex + Gemini. The CLIs read
-  // their OAuth state from disk (~/.codex/auth.json /
-  // ~/.gemini/oauth_creds.json + google_accounts.json), so we write the
-  // GitHub secrets back to those paths before invoking the orchestrator.
-  // Files are mode 0600.
+  // Provision OAuth credential files for Codex. The CLI reads its OAuth
+  // state from disk (~/.codex/auth.json), so we write the GitHub secret
+  // back to that path before invoking the orchestrator. File is mode 0600.
   const provisioned = await provisionCredentials({
     codexAuth: inputs.codexAuth,
-    geminiOauthCreds: inputs.geminiOauthCreds,
-    geminiGoogleAccounts: inputs.geminiGoogleAccounts,
   });
 
   // Forward provider keys into process.env ONLY when OAuth wasn't
-  // provisioned for that provider. The CLIs prefer env-based API keys
+  // provisioned for that provider. The CLI prefers env-based API keys
   // over file-based OAuth, so setting both would override the OAuth
   // path we just wrote to disk.
   if (!provisioned.codexOauth && inputs.openaiApiKey) {
     process.env.OPENAI_API_KEY = inputs.openaiApiKey;
   }
-  if (!provisioned.geminiOauth && inputs.googleApiKey) {
-    process.env.GEMINI_API_KEY = inputs.googleApiKey;
-  }
   if (provisioned.codexOauth) core.info('Codex critic will authenticate via OAuth.');
-  if (provisioned.geminiOauth) core.info('Gemini critic will authenticate via OAuth.');
 
   const pull = getPullRequestRef();
   if (!pull) {
@@ -207,7 +199,7 @@ main().catch((err) => {
   let secrets: string[] = [];
   try {
     const i = readInputs();
-    secrets = [i.anthropicOauthToken, i.openaiApiKey, i.googleApiKey].filter(
+    secrets = [i.anthropicOauthToken, i.openaiApiKey].filter(
       (s): s is string => typeof s === 'string' && s.length >= 8,
     );
     // Extract individual token fields from each OAuth credential blob
@@ -215,12 +207,10 @@ main().catch((err) => {
     // masked even when the whole-blob match doesn't fire. Defense in
     // depth on top of the blob-level mask.
     secrets.push(...extractOauthSecrets(i.codexAuth));
-    secrets.push(...extractOauthSecrets(i.geminiOauthCreds));
     // Also register the whole blob — covers full-payload echoes that
     // the field-level extractor wouldn't reach (e.g. an error dump that
     // serialized the input dict).
     if (i.codexAuth && i.codexAuth.length >= 16) secrets.push(i.codexAuth);
-    if (i.geminiOauthCreds && i.geminiOauthCreds.length >= 16) secrets.push(i.geminiOauthCreds);
   } catch {
     // readInputs may itself throw (e.g. missing required input) — in
     // that case there's nothing input-side to redact; fall through to
@@ -228,7 +218,7 @@ main().catch((err) => {
   }
   // Add any provider-key process.env values too — orchestrator forwards
   // them into spawn env, the SDK could echo them in errors.
-  for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY']) {
+  for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
     const v = process.env[key];
     if (v && v.length >= 8) secrets.push(v);
   }

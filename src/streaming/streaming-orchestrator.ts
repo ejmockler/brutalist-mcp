@@ -391,7 +391,7 @@ export class StreamingCLIOrchestrator extends EventEmitter {
         
         // Circuit breaker handled the error, continue with other agents
         responses.push({
-          agent: agent as 'claude' | 'codex' | 'gemini',
+          agent: agent as 'claude' | 'codex',
           success: false,
           output: '',
           error: `Circuit breaker: ${error instanceof Error ? error.message : String(error)}`,
@@ -439,7 +439,7 @@ export class StreamingCLIOrchestrator extends EventEmitter {
    * Setup circuit breakers for each CLI agent
    */
   private setupCircuitBreakers(): void {
-    const agents = ['claude', 'codex', 'gemini'];
+    const agents = ['claude', 'codex'];
     
     for (const agent of agents) {
       const circuitBreaker = new CircuitBreaker(this.config.circuitBreakerConfig, `${agent}_breaker`);

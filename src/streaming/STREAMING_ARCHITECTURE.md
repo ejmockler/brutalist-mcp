@@ -50,7 +50,7 @@ CLI Agent (spawnAsync)
   to `CLIAgentOrchestrator` via `CLIAgentOptions`.
 
 **CLI adapters** (`src/cli-adapters/`):
-- CLI adapters (`ClaudeAdapter`, `CodexAdapter`, `GeminiAdapter`) handle
+- CLI adapters (`ClaudeAdapter`, `CodexAdapter`) handle
   command construction and output decoding only. They do not interact with
   streaming infrastructure directly.
 - Streaming events are emitted by `CLIAgentOrchestrator` in `cli-agents.ts`
@@ -639,7 +639,7 @@ private emitThrottledStreamingEvent(
     return;
   }
 
-  // Buffer events per agent+type (for Codex/Gemini)
+  // Buffer events per agent+type (for Codex)
   const key = `${agent}-${type}`;
   const buffer = this.streamingBuffers.get(key);
 
@@ -693,12 +693,6 @@ private extractCodexAgentMessage(jsonOutput: string): string {
 
   return agentMessages.join('\\n\\n');
 }
-```
-
-**Gemini** (plain text):
-```typescript
-// No special processing needed
-return stdout;
 ```
 
 ### 4.4 Buffering and Timeout Management
@@ -1324,15 +1318,13 @@ class IntelligentBuffer {
 **CLI Output Characteristics**:
 - **Codex**: Bursty, large JSON chunks (KB-MB per event)
 - **Claude**: Steady stream, small deltas (bytes per event)
-- **Gemini**: Variable, plain text (lines per event)
 
 **Buffering Strategy**:
 ```typescript
 // Adaptive throttling based on CLI type
 const BUFFERING_RULES = {
   claude: { delay: 50, maxBatch: 50 },   // High frequency, small chunks
-  codex: { delay: 200, maxBatch: 5 },    // Low frequency, large chunks
-  gemini: { delay: 100, maxBatch: 10 }   // Medium
+  codex: { delay: 200, maxBatch: 5 }     // Low frequency, large chunks
 };
 ```
 

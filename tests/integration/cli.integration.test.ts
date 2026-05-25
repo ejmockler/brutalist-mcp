@@ -211,36 +211,6 @@ describe('CLI Integration Tests', () => {
       });
     });
 
-    describe('Gemini CLI', () => {
-      it('should execute Gemini with YOLO mode', async () => {
-        if (!availableCLIs.includes('gemini')) {
-          console.log('Skipping Gemini test - CLI not available');
-          return;
-        }
-
-        const result = await orchestrator.executeGemini(
-          testPrompts.simple,
-          'You are a technical analyst',
-          { 
-            timeout: 45000, // Gemini can be slower
-            workingDirectory: await testIsolation.createWorkspace()
-          }
-        );
-
-        // Validate CLI response structure
-        expect(result).toBeDefined();
-        expect(typeof result.agent).toBe('string');
-        expect(typeof result.success).toBe('boolean');
-        expect(typeof result.executionTime).toBe('number');
-        expect(result.agent).toBe('gemini');
-        
-        if (result.success) {
-          expect(result.output).toBeTruthy();
-        } else {
-          console.log('Gemini execution failed:', result.error);
-        }
-      });
-    });
   });
 
   describe('Process Management & Security', () => {

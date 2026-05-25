@@ -285,7 +285,7 @@ describe('Streaming Path Resolution', () => {
 
       const event: StreamingEvent = {
         type: 'agent_progress',
-        agent: 'gemini',
+        agent: 'codex',
         content: 'Working...',
         timestamp: Date.now(),
         sessionId,
@@ -310,13 +310,12 @@ describe('Streaming Path Resolution', () => {
       const names = adapterModule.getProviderNames();
       expect(names).toContain('claude');
       expect(names).toContain('codex');
-      expect(names).toContain('gemini');
     });
 
     it('each adapter exposes decodeOutput and buildCommand functions', async () => {
       const { getProvider } = await import('../../src/cli-adapters/index.js');
 
-      for (const name of ['claude', 'codex', 'gemini'] as const) {
+      for (const name of ['claude', 'codex'] as const) {
         const provider = getProvider(name);
         expect(typeof provider.decodeOutput).toBe('function');
         expect(typeof provider.buildCommand).toBe('function');

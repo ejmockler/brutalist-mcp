@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 
-export const CliNameSchema = z.enum(['claude', 'codex', 'gemini']);
+export const CliNameSchema = z.enum(['claude', 'codex']);
 export type CliName = z.infer<typeof CliNameSchema>;
 
 export const SeveritySchema = z.enum(['critical', 'high', 'medium', 'low', 'nit']);
@@ -81,7 +81,7 @@ export const CliBreakdownSchema = z.object({
   model: z
     .string()
     .optional()
-    .describe('Resolved model name (e.g. "opus", "gemini-3.1-pro-preview").'),
+    .describe('Resolved model name (e.g. "opus", "gpt-5").'),
   executionTimeMs: z.number().int().nonnegative(),
   summary: z
     .string()

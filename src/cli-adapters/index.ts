@@ -13,11 +13,11 @@ export { parseNDJSON } from './shared.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export type CLIName = 'claude' | 'codex' | 'gemini';
+export type CLIName = 'claude' | 'codex';
 
 export interface MCPSupportConfig {
   /** How this CLI receives MCP server configuration */
-  configMethod: 'flag-file' | 'config-override' | 'server-whitelist';
+  configMethod: 'flag-file' | 'config-override';
 
   // Claude: --mcp-config <path> --strict-mcp-config
   configFlag?: string;
@@ -26,12 +26,9 @@ export interface MCPSupportConfig {
   // Codex: -c 'mcp_servers={...}'
   configOverrideKey?: string;
 
-  // Gemini: --allowed-mcp-server-names <names>
-  whitelistFlag?: string;
-
   /** Hard write-prevention mechanism native to this CLI */
   writeProtection: {
-    method: 'disallowed-tools' | 'sandbox' | 'approval-mode';
+    method: 'disallowed-tools' | 'sandbox';
     flag: string;
     value: string;
   };
@@ -61,9 +58,8 @@ export interface CLIBuilderConfig {
  * class (see Phase 1 fix in cli-agents.ts).
  *
  * Each provider adapter populates this from its own protocol-level
- * signals (Claude: `result.subtype` / `is_error`; Codex: error events;
- * Gemini: anchored stderr markers). The orchestrator never inspects
- * assistant prose to classify refusals.
+ * signals (Claude: `result.subtype` / `is_error`; Codex: error events).
+ * The orchestrator never inspects assistant prose to classify refusals.
  */
 export type DecodeRefusalReason = 'quota' | 'auth' | 'policy';
 export type DecodeErrorReason = 'malformed' | 'empty' | 'unknown';
@@ -114,16 +110,14 @@ export interface CLIProvider {
    * Each adapter inspects ITS OWN protocol-level signals to classify the
    * run — refusal markers must come from the CLI's structured error
    * channel (stream-json `result` events for Claude, error items for
-   * Codex, anchored stderr envelopes for Gemini) and never from the
-   * assistant text the CLI returned.
+   * Codex) and never from the assistant text the CLI returned.
    *
    * The orchestrator consumes `DecodeResult.kind` directly; no caller
    * grep the prose for "rate limit"-style strings (Phase 1 hot-fix
    * scoped that pattern set to stderr; Phase 2 removes it entirely).
    *
-   * stderr is passed in alongside stdout because two of the three CLIs
-   * (Codex error envelopes, Gemini quota errors) surface refusal state
-   * on stderr, not in the JSON event stream.
+   * stderr is passed in alongside stdout because Codex error envelopes
+   * surface refusal state on stderr, not in the JSON event stream.
    */
   decode(
     stdout: string,
@@ -151,12 +145,10 @@ export interface CLIProvider {
 
 import { ClaudeAdapter } from './claude-adapter.js';
 import { CodexAdapter } from './codex-adapter.js';
-import { GeminiAdapter } from './gemini-adapter.js';
 
 const providers: Record<CLIName, CLIProvider> = {
   claude: new ClaudeAdapter(),
   codex: new CodexAdapter(),
-  gemini: new GeminiAdapter(),
 };
 
 /**

@@ -9,36 +9,8 @@ import { ModelResolver } from './model-resolver.js';
 import { cleanupTempConfig } from './mcp-registry.js';
 import { getProvider, parseNDJSON } from './cli-adapters/index.js';
 import type { CLIName } from './cli-adapters/index.js';
-import { GEMINI_FRONTIER_CHAIN } from './cli-adapters/gemini-adapter.js';
 import type { MetricsRegistry } from './metrics/index.js';
 import { CLI_SPAWN_LABELS, safeMetric } from './metrics/index.js';
-
-/**
- * Detect errors where rotating to the next Gemini frontier tier is likely
- * to succeed. Covers two failure families:
- *
- *   1. Capacity saturation on the current tier
- *      (429 / "No capacity available" / quota / rate-limit).
- *
- *   2. Access denial on the current tier — the model exists but the
- *      user's account lacks preview-tier access. Appears as
- *      ModelNotFoundError / "Requested entity was not found" / 403 /
- *      "permission denied". In production the frontier chain is
- *      probe-tested (not user-typos), so these errors mean "this tier
- *      is unavailable to THIS caller" — which is exactly when rotation
- *      to the next tier should fire. Dropping from a pro preview down
- *      to `gemini-3-flash-preview` (the chain floor) trades pro-tier
- *      reasoning for flash-tier latency/cost while still keeping
- *      Pro-grade quality per Google's 3-Flash positioning.
- *
- * Does NOT match: auth failures (missing/invalid API key), prompt-safety
- * rejections, or subprocess crashes — these will not differ between
- * frontier tiers.
- */
-function isGeminiRotatableError(error?: string): boolean {
-  if (!error) return false;
-  return /no capacity available|\b429\b|overloaded|rateLimitExceeded|rate limit|quota|too many requests|ModelNotFoundError|Requested entity was not found|\b403\b|permission denied|access denied/i.test(error);
-}
 
 function sanitizeModelNameForMessage(model?: string): string {
   if (!model) return 'requested model';
@@ -357,7 +329,7 @@ async function spawnAsync(
     // Use secure environment
     const secureEnv = options.env || createSecureEnvironment();
 
-    // On Windows, npm-installed CLIs (gemini, codex) are .cmd batch shims that
+    // On Windows, npm-installed CLIs (codex) are .cmd batch shims that
     // require shell:true for spawn() to execute them. Native .exe CLIs (claude)
     // work either way. On Unix, shell remains false to prevent injection.
     //
@@ -558,7 +530,7 @@ async function spawnAsync(
       if (command === 'claude') {
         child.stdin?.end();
       }
-      // Other CLIs (Codex, Gemini) work fine with stdin left open
+      // Codex works fine with stdin left open
     }
   });
 }
@@ -566,12 +538,11 @@ async function spawnAsync(
 export interface CLIAgentOptions {
   workingDirectory?: string;
   timeout?: number;
-  clis?: ('claude' | 'codex' | 'gemini')[];
+  clis?: ('claude' | 'codex')[];
   analysisType?: BrutalistPromptType;
   models?: {
     claude?: string;
     codex?: string;
-    gemini?: string;
   };
   onStreamingEvent?: (event: StreamingEvent) => void;
   progressToken?: string | number;
@@ -606,7 +577,7 @@ export interface CLIAgentOrchestratorDeps {
 
 export interface StreamingEvent {
   type: 'agent_start' | 'agent_progress' | 'agent_complete' | 'agent_error';
-  agent: 'claude' | 'codex' | 'gemini' | 'system';
+  agent: 'claude' | 'codex' | 'system';
   content?: string;
   timestamp: number;
   sessionId?: string;
@@ -614,7 +585,7 @@ export interface StreamingEvent {
 }
 
 export interface CLIContext {
-  availableCLIs: ('claude' | 'codex' | 'gemini')[];
+  availableCLIs: ('claude' | 'codex')[];
 }
 
 export class CLIAgentOrchestrator {
@@ -723,13 +694,8 @@ export class CLIAgentOrchestrator {
     return provider.decodeOutput(jsonOutput, ['--json']);
   }
 
-  private extractGeminiResponse(jsonOutput: string): string {
-    const provider = getProvider('gemini');
-    return provider.decodeOutput(jsonOutput, ['--output-format', 'json']);
-  }
-
   private emitThrottledStreamingEvent(
-    agent: 'claude' | 'codex' | 'gemini',
+    agent: 'claude' | 'codex',
     type: 'agent_progress' | 'agent_error',
     content: string,
     onStreamingEvent?: (event: StreamingEvent) => void,
@@ -817,14 +783,8 @@ export class CLIAgentOrchestrator {
       return this.cliContext;
     }
 
-    const availableCLIs: ('claude' | 'codex' | 'gemini')[] = [];
+    const availableCLIs: ('claude' | 'codex')[] = [];
 
-    // Check for available CLIs.
-    // Gemini intentionally omitted: gemini-cli sunsets 2026-06-18 for Pro/Ultra/free
-    // tiers and the agy successor isn't subprocess-ready (no --model, no
-    // --output-format, stdout-drop on non-TTY per agy issue #76). Excision in a
-    // follow-up; for now the critic is dropped from discovery so it never reaches
-    // the roster or auto-selection.
     const cliChecks = [
       { name: 'claude' as const, command: 'claude --version' },
       { name: 'codex' as const, command: 'codex --version' }
@@ -856,9 +816,9 @@ export class CLIAgentOrchestrator {
   }
 
   selectSingleCLI(
-    preferredCLI?: 'claude' | 'codex' | 'gemini',
+    preferredCLI?: 'claude' | 'codex',
     analysisType?: BrutalistPromptType
-  ): 'claude' | 'codex' | 'gemini' {
+  ): 'claude' | 'codex' {
     // 1. Honor explicit preference if available
     if (preferredCLI && this.cliContext.availableCLIs.includes(preferredCLI)) {
       this.emitLog().info(`✅ Using preferred CLI: ${preferredCLI}`);
@@ -866,17 +826,17 @@ export class CLIAgentOrchestrator {
     }
 
     // 2. Smart selection based on analysis type
-    const selectionRules: Record<string, ('claude' | 'codex' | 'gemini')[]> = {
-      'code': ['claude', 'codex', 'gemini'],
-      'architecture': ['gemini', 'claude', 'codex'],
-      'research': ['claude', 'gemini', 'codex'],
-      'security': ['codex', 'claude', 'gemini'],
-      'data': ['gemini', 'claude', 'codex'],
-      'product': ['claude', 'gemini', 'codex'],
-      'infrastructure': ['gemini', 'codex', 'claude'],
-      'idea': ['claude', 'gemini', 'codex'],
-      'debate': ['claude', 'gemini', 'codex'],
-      'default': ['claude', 'gemini', 'codex']
+    const selectionRules: Record<string, ('claude' | 'codex')[]> = {
+      'code': ['claude', 'codex'],
+      'architecture': ['claude', 'codex'],
+      'research': ['claude', 'codex'],
+      'security': ['codex', 'claude'],
+      'data': ['claude', 'codex'],
+      'product': ['claude', 'codex'],
+      'infrastructure': ['codex', 'claude'],
+      'idea': ['claude', 'codex'],
+      'debate': ['claude', 'codex'],
+      'default': ['claude', 'codex']
     };
 
     const priority = selectionRules[analysisType || 'default'] || selectionRules.default;
@@ -899,7 +859,7 @@ export class CLIAgentOrchestrator {
   }
 
   private async _executeCLI(
-    cliName: 'claude' | 'codex' | 'gemini',
+    cliName: 'claude' | 'codex',
     userPrompt: string,
     systemPromptSpec: string,
     options: CLIAgentOptions = {},
@@ -915,7 +875,7 @@ export class CLIAgentOrchestrator {
     let built: Awaited<ReturnType<typeof commandBuilder>> | undefined;
 
     // Provider label for the spawn counter. Derived from cliName so the
-    // label set stays in sync with the 'claude' | 'codex' | 'gemini' union
+    // label set stays in sync with the 'claude' | 'codex' union
     // instead of reading adapter.name.
     const provider = cliName;
 
@@ -1023,8 +983,8 @@ export class CLIAgentOrchestrator {
       // instead of grepping the returned string for refusal markers.
       // Each adapter classifies refusal from its own protocol-level
       // signals (Claude `result.subtype`, Codex error events / stderr
-      // markers, Gemini anchored stderr markers). The orchestrator
-      // does not inspect assistant prose to classify outcomes.
+      // markers). The orchestrator does not inspect assistant prose to
+      // classify outcomes.
       let finalOutput = stdout;
       const providerAdapter = getProvider(cliName);
       const decodeLog = this.log?.forOperation(`${cliName}_spawn`);
@@ -1270,22 +1230,8 @@ export class CLIAgentOrchestrator {
     );
   }
 
-  async executeGemini(
-    userPrompt: string,
-    systemPromptSpec: string,
-    options: CLIAgentOptions = {}
-  ): Promise<CLIAgentResponse> {
-    return this._executeCLI(
-      'gemini',
-      userPrompt,
-      systemPromptSpec,
-      options,
-      (user, sys, opts) => this.buildCLICommand('gemini', user, sys, opts)
-    );
-  }
-
   async executeSingleCLI(
-    cli: 'claude' | 'codex' | 'gemini',
+    cli: 'claude' | 'codex',
     userPrompt: string,
     systemPromptSpec: string,
     options: CLIAgentOptions = {}
@@ -1297,26 +1243,6 @@ export class CLIAgentOrchestrator {
     this.emitLog().info(`\u{1F3AF} Executing ${cli} (${this.runningCLIs}/${this.MAX_CONCURRENT_CLIS} slots used)`);
 
     try {
-      // Gemini frontier rotation: when using the default frontier chain
-      // (no caller-specified model, no env-var override), rotate through
-      // GEMINI_FRONTIER_CHAIN on saturation OR access-denied failures.
-      // The chain (see src/cli-adapters/gemini-adapter.ts) is two pro
-      // previews followed by `gemini-3-flash-preview` as the floor. The
-      // 2.5-pro fallback was removed because 3-flash ships with
-      // pro-grade reasoning and is universally available; falling to it
-      // beats dropping a generation back. Access-denied rotation is the
-      // typical user path: pro preview tiers aren't granted to every
-      // account, so the chain falls through to 3-flash. Rotation is
-      // disabled when the caller or operator has explicitly chosen a
-      // model (BRUTALIST_GEMINI_MODEL=... or models.gemini=...).
-      const geminiRotationActive = cli === 'gemini'
-        && !options.models?.gemini
-        && !process.env.BRUTALIST_GEMINI_MODEL;
-
-      if (geminiRotationActive) {
-        return await this._executeGeminiWithRotation(userPrompt, systemPromptSpec, options);
-      }
-
       // Dispatch to adapter via buildCLICommand (which delegates to provider)
       const response = await this._executeCLI(
         cli,
@@ -1363,77 +1289,6 @@ export class CLIAgentOrchestrator {
     }
   }
 
-  /**
-   * Gemini frontier rotation - iterate through GEMINI_FRONTIER_CHAIN on
-   * rotatable failures (capacity saturation OR tier access denial).
-   *
-   * Only active when neither caller nor operator has chosen a model. Each
-   * attempt injects the model via options.models.gemini. Per-attempt
-   * failures are classified by isGeminiRotatableError(): capacity errors
-   * (quota/429) AND access errors (ModelNotFoundError / permission denied)
-   * both trigger rotation. On unrelated failures (auth, prompt rejection,
-   * subprocess crashes) rotation stops immediately — a different model
-   * will not fix those. On chain exhaustion, the last failing response
-   * is returned.
-   *
-   * In practice the typical non-preview user trajectory is:
-   *   gemini-3.1-pro-preview  -> access denied (rotate)
-   *   gemini-3-pro-preview    -> access denied (rotate)
-   *   gemini-3-flash-preview  -> success (3-series flash, pro-grade
-   *                              reasoning, universally available as
-   *                              of the model launch)
-   */
-  private async _executeGeminiWithRotation(
-    userPrompt: string,
-    systemPromptSpec: string,
-    options: CLIAgentOptions,
-  ): Promise<CLIAgentResponse> {
-    const chain = GEMINI_FRONTIER_CHAIN;
-    let lastResponse: CLIAgentResponse | null = null;
-
-    for (let i = 0; i < chain.length; i++) {
-      const model = chain[i];
-      const attemptOptions: CLIAgentOptions = {
-        ...options,
-        models: { ...(options.models || {}), gemini: model },
-      };
-
-      if (i > 0) {
-        this.emitLog().info(`Gemini rotation: attempting tier ${i + 1}/${chain.length} (${model})`);
-      }
-
-      const response = await this._executeCLI(
-        'gemini',
-        userPrompt,
-        systemPromptSpec,
-        attemptOptions,
-        (user, sys, opts) => this.buildCLICommand('gemini', user, sys, opts),
-      );
-
-      if (response.success) {
-        if (i > 0) {
-          this.emitLog().warn(`Gemini served by ${model} after ${i} rotation${i === 1 ? '' : 's'} (tier ${i + 1}/${chain.length})`);
-        } else {
-          this.emitLog().debug(`Gemini served by frontier ${model}`);
-        }
-        return response;
-      }
-
-      if (!isGeminiRotatableError(response.error)) {
-        this.emitLog().debug(`Gemini ${model} failed with non-rotatable error; aborting rotation`, {
-          errorPreview: response.error?.slice(0, 120),
-        });
-        return response;
-      }
-
-      this.emitLog().warn(`Gemini ${model} unavailable (capacity or access); rotating to next frontier tier`);
-      lastResponse = response;
-    }
-
-    this.emitLog().error(`Gemini frontier chain exhausted (${chain.length} tiers); no tier available to this account`);
-    return lastResponse!;
-  }
-
   private async waitForAvailableSlot(): Promise<void> {
     let waitTime = 100; // Start with 100ms wait time
     while (this.runningCLIs >= this.MAX_CONCURRENT_CLIS) {
@@ -1449,11 +1304,9 @@ export class CLIAgentOrchestrator {
     userPrompt: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse[]> {
-    // Filter to valid CLI agents. Gemini dropped pre-excision — explicit
-    // clis:['gemini'] becomes a no-op (empty result).
     const validAgents = cliAgents.filter(agent =>
       ['claude', 'codex'].includes(agent)
-    ) as ('claude' | 'codex' | 'gemini')[];
+    ) as ('claude' | 'codex')[];
 
     if (validAgents.length === 0) {
       return [];
@@ -1495,7 +1348,7 @@ export class CLIAgentOrchestrator {
       throw new Error(`Unsupported CLI agent: ${agent}`);
     }
 
-    return await this.executeSingleCLI(agent as 'claude' | 'codex' | 'gemini', userPrompt, systemPrompt, options);
+    return await this.executeSingleCLI(agent as 'claude' | 'codex', userPrompt, systemPrompt, options);
   }
 
   async executeBrutalistAnalysis(
@@ -1533,7 +1386,7 @@ export class CLIAgentOrchestrator {
     const userPrompt = this.constructUserPrompt(analysisType, primaryContent, context);
 
     // Determine which CLIs to use
-    let clisToUse: ('claude' | 'codex' | 'gemini')[];
+    let clisToUse: ('claude' | 'codex')[];
 
     if (options.clis && options.clis.length > 0) {
       // User specified which CLIs to use - validate they're available

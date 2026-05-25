@@ -9,7 +9,7 @@ export interface BrutalistServerConfig {
 }
 
 export interface CLIAgentResponse {
-  agent: 'claude' | 'codex' | 'gemini';
+  agent: 'claude' | 'codex';
   success: boolean;
   output?: string;
   error?: string;
@@ -30,7 +30,7 @@ export interface RoastOptions {
   analysisType: string;
   context?: string;
   workingDirectory?: string;
-  agents?: ('claude' | 'codex' | 'gemini')[];
+  agents?: ('claude' | 'codex')[];
 }
 
 export interface ChildProcessError extends Error {
@@ -75,7 +75,7 @@ export interface ResponseChunk {
 
 // Debate behavioral metadata — tracks position-dependent alignment asymmetries
 export interface DebateTurnMetadata {
-  agent: 'claude' | 'codex' | 'gemini';
+  agent: 'claude' | 'codex';
   position: 'PRO' | 'CON';
   round: number;
   engaged: boolean;

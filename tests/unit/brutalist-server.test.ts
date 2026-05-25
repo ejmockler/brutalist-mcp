@@ -15,12 +15,11 @@ interface RoastCodebaseParams {
   targetPath: string;
   context?: string;
   workingDirectory?: string;
-  clis?: ("claude" | "codex" | "gemini")[];
+  clis?: ("claude" | "codex")[];
   verbose?: boolean;
   models?: {
     claude?: string;
     codex?: string;
-    gemini?: string;
   };
 }
 
@@ -138,19 +137,18 @@ describe('BrutalistServer', () => {
     // Mock CLI Orchestrator with proper types
     mockCLIOrchestrator = {
       detectCLIContext: jest.fn(() => Promise.resolve({
-        availableCLIs: ['claude', 'codex', 'gemini'] as const
+        availableCLIs: ['claude', 'codex'] as const
       })),
       executeBrutalistAnalysis: jest.fn(() => Promise.resolve(mockAllSuccessfulResponses)),
-      synthesizeBrutalistFeedback: jest.fn().mockReturnValue('## BRUTAL ANALYSIS\n\n3 AI critics have demolished your work.'),
+      synthesizeBrutalistFeedback: jest.fn().mockReturnValue('## BRUTAL ANALYSIS\n\n2 AI critics have demolished your work.'),
       selectSingleCLI: jest.fn().mockReturnValue('claude' as const),
       executeClaudeCode: jest.fn(),
-      executeCodex: jest.fn(), 
-      executeGemini: jest.fn(),
+      executeCodex: jest.fn(),
       executeSingleCLI: jest.fn(),
       // Add missing properties to satisfy the interface
       defaultTimeout: 300000,
       defaultWorkingDir: '/tmp/test',
-      cliContext: { availableCLIs: ['claude', 'codex', 'gemini'] },
+      cliContext: { availableCLIs: ['claude', 'codex'] },
       cliContextCached: true,
       constructSystemPrompt: jest.fn(),
       extractCLIResponseFromOutput: jest.fn(),
@@ -379,14 +377,14 @@ describe('BrutalistServer', () => {
           '/tmp/test',
           ['codex'],
           false,
-          { codex: 'gpt-5.5', gemini: 'gemini-3-pro-preview' },
+          { codex: 'gpt-5.5', claude: 'opus' },
           undefined
         );
 
         const callArgs = mockCLIOrchestrator.executeBrutalistAnalysis.mock.calls[0];
         expect(callArgs[4]).toMatchObject({
           clis: ['codex'],
-          models: { codex: 'gpt-5.5', gemini: 'gemini-3-pro-preview' }
+          models: { codex: 'gpt-5.5', claude: 'opus' }
         });
       });
     });

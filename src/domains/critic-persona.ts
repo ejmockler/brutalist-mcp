@@ -14,7 +14,6 @@ export type ExpertiseLevel = 'junior' | 'mid' | 'senior' | 'principal' | 'archit
 export interface ModelPreferences {
   claude?: string;
   codex?: string;
-  gemini?: string;
 }
 
 /**

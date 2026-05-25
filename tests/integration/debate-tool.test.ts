@@ -95,42 +95,6 @@ Quote: "Implementation costs will spiral"
 Their "historical evidence" cherry-picks failures while ignoring successes.
 
 **Truth**: Cautious incrementalism leads to obsolescence.`
-  },
-
-  gemini: {
-    proPosition: `# GEMINI: DECISIVE ACTION IS REQUIRED
-
-The opposition's position reflects OUTDATED THINKING.
-
-## Market Reality Check
-
-1. **Competitive Pressure**: Competitors are already implementing similar solutions
-2. **User Expectations**: Modern users demand this functionality
-3. **Technology Maturity**: Required technologies are now stable and proven
-
-## Opposition's Blind Spots
-
-Their focus on hypothetical risks ignores REAL market threats.
-
-**Conclusion**: Hesitation is the greater risk.`,
-
-    contraResponse: `# GEMINI: EXPOSING MARKET-DRIVEN FALLACIES
-
-The pro position demonstrates DANGEROUS MARKET MYOPIA.
-
-## Flawed Market Analysis
-
-Quote: "Competitors are already implementing similar solutions"
-**Reality**: Most competitors are struggling with these implementations.
-
-Quote: "Users demand this functionality"
-**Counter**: Users demand reliable systems, not bleeding-edge complexity.
-
-## Strategic Wisdom
-
-True competitive advantage comes from SUSTAINABLE solutions, not rushed implementations.
-
-**Verdict**: Following market hype leads to technical disasters.`
   }
 };
 
@@ -178,7 +142,7 @@ describe('Debate Tool Tests', () => {
 
     it('should use exactly 2 agents with constitutional position anchoring', async () => {
       mockOrchestrator.detectCLIContext.mockResolvedValue({
-        availableCLIs: ['claude', 'codex', 'gemini'],
+        availableCLIs: ['claude', 'codex'],
       });
 
       let capturedPrompts: string[] = [];
@@ -259,7 +223,7 @@ describe('Debate Tool Tests', () => {
 
     it('should allow user to specify exactly 2 agents', async () => {
       mockOrchestrator.detectCLIContext.mockResolvedValue({
-        availableCLIs: ['claude', 'codex', 'gemini'],
+        availableCLIs: ['claude', 'codex'],
       });
 
       let agentsCalled: string[] = [];
@@ -277,14 +241,13 @@ describe('Debate Tool Tests', () => {
         topic: 'User-specified agents test',
         proPosition: 'Pro position',
         conPosition: 'Con position',
-        agents: ['codex', 'gemini'], // Explicitly specify 2 agents
+        agents: ['codex', 'claude'], // Explicitly specify 2 agents
         rounds: 1
       });
 
-      // Should only call the specified agents
+      // Should call both specified agents
       expect(agentsCalled).toContain('codex');
-      expect(agentsCalled).toContain('gemini');
-      expect(agentsCalled).not.toContain('claude');
+      expect(agentsCalled).toContain('claude');
     });
   });
 

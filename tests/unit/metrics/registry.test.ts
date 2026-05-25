@@ -163,13 +163,13 @@ describe('Counter emission — cliSpawnTotal + debateEscalationTierTotal', () =>
     metrics.cliSpawnTotal.inc({ provider: 'claude', outcome: 'success' });
     metrics.cliSpawnTotal.inc({ provider: 'claude', outcome: 'failure' });
     metrics.cliSpawnTotal.inc({ provider: 'codex', outcome: 'success' });
-    metrics.cliSpawnTotal.inc({ provider: 'gemini', outcome: 'timeout' });
+    metrics.cliSpawnTotal.inc({ provider: 'codex', outcome: 'timeout' });
 
     const snap = metrics.cliSpawnTotal.snapshot();
     expect(snap.get('provider="claude",outcome="success"')).toBe(2);
     expect(snap.get('provider="claude",outcome="failure"')).toBe(1);
     expect(snap.get('provider="codex",outcome="success"')).toBe(1);
-    expect(snap.get('provider="gemini",outcome="timeout"')).toBe(1);
+    expect(snap.get('provider="codex",outcome="timeout"')).toBe(1);
     expect(snap.size).toBe(4);
   });
 

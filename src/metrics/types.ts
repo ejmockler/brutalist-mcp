@@ -84,7 +84,7 @@ export function serializeLabels<TLabels extends readonly string[]>(
  * Other control characters (C0 range 0x00-0x1F, DEL 0x7F, NUL) are passed
  * through as-is. Rationale: (a) none of them can terminate a label value
  * or inject a line break in the 0.0.4 grammar; (b) metric callers in this
- * codebase build label values from closed sets (`claude`/`codex`/`gemini`,
+ * codebase build label values from closed sets (`claude`/`codex`,
  * `success`/`failure`, etc.) so there is no realistic path for a NUL or
  * bell character to reach this function; (c) stripping/rejecting them is
  * policy, not encoding correctness — the integrate_observability phase can

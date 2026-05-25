@@ -37,7 +37,6 @@ describe('StreamingCLIOrchestrator', () => {
       expect(stats.circuitBreakers).toBeDefined();
       expect(stats.circuitBreakers.claude).toBeDefined();
       expect(stats.circuitBreakers.codex).toBeDefined();
-      expect(stats.circuitBreakers.gemini).toBeDefined();
     });
 
     it('should accept custom configuration', () => {
@@ -55,7 +54,6 @@ describe('StreamingCLIOrchestrator', () => {
 
       expect(stats.circuitBreakers.claude.state).toBe('closed');
       expect(stats.circuitBreakers.codex.state).toBe('closed');
-      expect(stats.circuitBreakers.gemini.state).toBe('closed');
     });
   });
 
@@ -257,7 +255,6 @@ describe('StreamingCLIOrchestrator', () => {
 
       expect(stats.circuitBreakers.claude.failures).toBe(0);
       expect(stats.circuitBreakers.codex.failures).toBe(0);
-      expect(stats.circuitBreakers.gemini.failures).toBe(0);
     });
   });
 });

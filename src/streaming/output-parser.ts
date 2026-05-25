@@ -290,7 +290,7 @@ export class SemanticOutputParser implements StreamingParser {
     
     return {
       type: eventType,
-      agent: agent as 'claude' | 'codex' | 'gemini',
+      agent: agent as 'claude' | 'codex',
       content: trimmed,
       timestamp: Date.now(),
       sessionId: this.state.sessionId,
@@ -351,14 +351,12 @@ export class ParserFactory {
   /**
    * Create parser optimized for specific CLI agent
    */
-  static createParser(agent: 'claude' | 'codex' | 'gemini', sessionId?: string): StreamingParser {
+  static createParser(agent: 'claude' | 'codex', sessionId?: string): StreamingParser {
     switch (agent) {
       case 'claude':
         return new ClaudeOptimizedParser(agent, sessionId);
       case 'codex':
         return new CodexOptimizedParser(agent, sessionId);
-      case 'gemini':
-        return new GeminiOptimizedParser(agent, sessionId);
       default:
         return new SemanticOutputParser(agent, sessionId);
     }
@@ -429,20 +427,3 @@ class CodexOptimizedParser extends SemanticOutputParser {
   }
 }
 
-/**
- * Gemini-optimized parser (handles markdown and structured output)
- */
-class GeminiOptimizedParser extends SemanticOutputParser {
-  private readonly GEMINI_PATTERNS = {
-    metadata: /^(\*\*|##|\s*-\s*)/gm,
-    thinking: /\[THINKING:[\s\S]*?\]/g
-  };
-  
-  parse(chunk: string, agent: string): StreamingEvent[] {
-    // Remove Gemini's thinking annotations
-    let processedChunk = chunk.replace(this.GEMINI_PATTERNS.thinking, '');
-    
-    // Gemini often uses markdown formatting, preserve structure
-    return super.parse(processedChunk, agent);
-  }
-}

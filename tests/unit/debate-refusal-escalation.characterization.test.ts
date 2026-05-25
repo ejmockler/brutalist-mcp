@@ -78,7 +78,7 @@ The evidence overwhelmingly supports this analytical position.`;
 // Helper: build a mock CLIAgentResponse
 function mockResponse(agent: string, output: string, success = true): CLIAgentResponse {
   return {
-    agent: agent as 'claude' | 'codex' | 'gemini',
+    agent: agent as 'claude' | 'codex',
     success,
     output,
     executionTime: 100,
@@ -730,7 +730,7 @@ describe('3-Tier Escalation — Characterization', () => {
           if (callCount === 1) {
             // PRO: fails (success=false)
             return {
-              agent: agent as 'claude' | 'codex' | 'gemini',
+              agent: agent as 'claude' | 'codex',
               success: false,
               output: 'I decline to participate', // has refusal text, but success=false
               error: 'CLI process failed',

@@ -35,11 +35,10 @@ export const BASE_ARGUMENTS = z.object({
 
   models: z.object({
     claude: z.string().optional(),
-    codex: z.string().optional(),
-    gemini: z.string().optional()
+    codex: z.string().optional()
   }).optional().describe("Specific models per agent"),
 
-  clis: z.array(z.enum(['codex', 'gemini', 'claude'])).min(1).max(3).optional()
+  clis: z.array(z.enum(['codex', 'claude'])).min(1).max(2).optional()
     .describe("Subset of critics to run."),
 
   force_refresh: z.boolean().optional()

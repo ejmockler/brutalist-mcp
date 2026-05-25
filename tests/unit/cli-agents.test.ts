@@ -55,7 +55,7 @@ describe('CLIAgentOrchestrator', () => {
     
     // Mock CLI context with available CLIs for most tests
     (orchestrator as any).cliContext = {
-      availableCLIs: ['claude', 'codex', 'gemini'],
+      availableCLIs: ['claude', 'codex'],
     };
     (orchestrator as any).cliContextCached = true;
   });
@@ -70,22 +70,21 @@ describe('CLIAgentOrchestrator', () => {
       // Mock successful version checks for all CLIs
       const responses = [
         { stdout: 'claude 1.0.0', exitCode: 0 },
-        { stdout: 'codex 2.0.0', exitCode: 0 },
-        { stdout: 'gemini 2.5.0', exitCode: 0 }
+        { stdout: 'codex 2.0.0', exitCode: 0 }
       ];
 
       let callIndex = 0;
       mockSpawn.mockImplementation(() => {
         const child = new MockChildProcess();
         const response = responses[callIndex++];
-        
+
         setTimeout(() => {
           if (response) {
             child.stdout.emit('data', response.stdout);
             child.emit('close', response.exitCode);
           }
         }, 10);
-        
+
         return child as any;
       });
 
@@ -93,10 +92,8 @@ describe('CLIAgentOrchestrator', () => {
 
       expect(context.availableCLIs).toContain('claude');
       expect(context.availableCLIs).toContain('codex');
-      expect(context.availableCLIs).toContain('gemini');
       expect(mockSpawn).toHaveBeenCalledWith('claude', ['--version'], expect.any(Object));
       expect(mockSpawn).toHaveBeenCalledWith('codex', ['--version'], expect.any(Object));
-      expect(mockSpawn).toHaveBeenCalledWith('gemini', ['--version'], expect.any(Object));
     });
 
     it('should detect current CLI from environment variables', async () => {
@@ -131,8 +128,7 @@ describe('CLIAgentOrchestrator', () => {
         CLAUDE_CONFIG_DIR: undefined,
         CLAUDE_CODE_ENTRYPOINT: undefined,
         CLAUDECODE: undefined,
-        CODEX_SESSION: undefined,
-        GEMINI_SESSION: undefined
+        CODEX_SESSION: undefined
       };
 
       // Mock all CLIs failing
@@ -153,15 +149,13 @@ describe('CLIAgentOrchestrator', () => {
     });
 
     it('should cache CLI context for performance', async () => {
-      // Mock all three CLI checks for first call
+      // Mock CLI checks for first call
       const child1 = new MockChildProcess();
-      const child2 = new MockChildProcess();  
-      const child3 = new MockChildProcess();
-      
+      const child2 = new MockChildProcess();
+
       mockSpawn
         .mockReturnValueOnce(child1 as any) // claude check
-        .mockReturnValueOnce(child2 as any) // codex check  
-        .mockReturnValueOnce(child3 as any); // gemini check
+        .mockReturnValueOnce(child2 as any); // codex check
 
       // Simulate successful responses
       setTimeout(() => {
@@ -169,8 +163,6 @@ describe('CLIAgentOrchestrator', () => {
         child1.emit('close', 0);
         child2.stdout.emit('data', 'codex 1.0.0');
         child2.emit('close', 0);
-        child3.stdout.emit('data', 'gemini 1.0.0');
-        child3.emit('close', 0);
       }, 10);
 
       const context1 = await orchestrator.detectCLIContext();
@@ -189,7 +181,7 @@ describe('CLIAgentOrchestrator', () => {
     beforeEach(async () => {
       // Setup context with all CLIs available
       const mockContext = {
-        availableCLIs: ['claude', 'codex', 'gemini'],
+        availableCLIs: ['claude', 'codex'],
       };
       
       // Mock the private cliContext property
@@ -204,7 +196,7 @@ describe('CLIAgentOrchestrator', () => {
 
     it('should auto-select when no preference given', () => {
       const selected = orchestrator.selectSingleCLI();
-      expect(['claude', 'codex', 'gemini']).toContain(selected);
+      expect(['claude', 'codex']).toContain(selected);
     });
 
     it('should fallback to available CLI when preferred CLI unavailable', () => {
@@ -212,9 +204,9 @@ describe('CLIAgentOrchestrator', () => {
       (orchestrator as any).cliContext = {
         availableCLIs: ['claude'], // Only claude available
       };
-      
-      // When gemini is requested but not available, should fallback to claude
-      const selected = orchestrator.selectSingleCLI('gemini' as any);
+
+      // When codex is requested but not available, should fallback to claude
+      const selected = orchestrator.selectSingleCLI('codex' as any);
       expect(selected).toBe('claude');
     });
 
@@ -278,7 +270,6 @@ describe('CLIAgentOrchestrator', () => {
       expect(synthesis).toContain('AI critics have systematically demolished');
       expect(synthesis).toContain('CODEX');
       expect(synthesis).toContain('CLAUDE');
-      expect(synthesis).toContain('GEMINI');
       expect(synthesis.toLowerCase()).toMatch(/systematically|demolished|vulnerabilities|disaster|nightmare/i);
     });
 
@@ -296,7 +287,7 @@ describe('CLIAgentOrchestrator', () => {
     it('should handle all-failure responses appropriately', () => {
       const allFailedResponses = [
         { ...mockPartialFailureResponses[1], agent: 'codex' as const },
-        { ...mockPartialFailureResponses[1], agent: 'gemini' as const }
+        { ...mockPartialFailureResponses[1], agent: 'claude' as const }
       ];
 
       const synthesis = orchestrator.synthesizeBrutalistFeedback(
@@ -385,7 +376,7 @@ describe('CLIAgentOrchestrator', () => {
           ...synthesis.matchAll(/<!-- BRUTALIST_CLI_BEGIN cli="(\w+)"[^>]*success="false" -->/g),
         ];
         expect(failedMatches.length).toBe(1);
-        expect(failedMatches[0][1]).toBe('gemini');
+        expect(failedMatches[0][1]).toBe('codex');
       });
 
       it('handles missing model gracefully — header reads "default"', () => {
@@ -559,8 +550,8 @@ describe('CLIAgentOrchestrator', () => {
       }, 10);
 
       await (orchestrator as any)._executeCLI(
-        'gemini',
-        'gemini',
+        'codex',
+        'codex',
         ['test'],
         { 
           timeout: 1000,

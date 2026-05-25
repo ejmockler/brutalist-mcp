@@ -36,7 +36,7 @@ export const ESCALATION_TIER_LABELS = ['tier'] as const;
 
 /**
  * Labels for CLI spawn outcomes.
- *   - provider: `claude` | `codex` | `gemini`.
+ *   - provider: `claude` | `codex`.
  *   - outcome: `success` | `failure` | `timeout` | `refused`.
  *     (Integration phase chooses the exact outcome; the metric accepts any
  *     string but conventions SHOULD stick to the four above for consistent
@@ -56,7 +56,7 @@ export const STREAMING_EVENT_LABELS = ['transport', 'event_type'] as const;
 /**
  * Histogram buckets for debate durations, in seconds.
  *
- * Debates spawn multiple CLI agents (Claude/Codex/Gemini) and run 2-3 rounds;
+ * Debates spawn multiple CLI agents (Claude/Codex) and run 2-3 rounds;
  * total latency ranges from ~seconds (cached path) to minutes (full 3-tier
  * escalation with a cold start). These buckets give sensible resolution across
  * that full range while keeping cardinality low enough for Prometheus storage.

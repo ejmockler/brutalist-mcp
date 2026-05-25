@@ -273,7 +273,7 @@ describe('EnhancedSSETransport', () => {
 
       const event: StreamingEvent = {
         type: 'agent_progress',
-        agent: 'gemini',
+        agent: 'codex',
         content: 'test output',
         sessionId: undefined as any,
         timestamp: Date.now()

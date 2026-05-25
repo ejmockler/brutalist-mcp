@@ -36,39 +36,12 @@ describe('provisionCredentials', () => {
     expect(mode).toBe(0o600);
   });
 
-  it('writes both gemini files when both supplied', async () => {
-    const oauthCreds = JSON.stringify({ refresh_token: 'rt-g', expiry_date: 0 });
-    const googleAccounts = JSON.stringify({ active: 'user@example.com', old: [] });
-
-    const result = await provisionCredentials({
-      geminiOauthCreds: oauthCreds,
-      geminiGoogleAccounts: googleAccounts,
-      homeDir: fakeHome,
-    });
-
-    expect(result.geminiOauth).toBe(true);
-    expect(readFileSync(join(fakeHome, '.gemini', 'oauth_creds.json'), 'utf8')).toBe(oauthCreds);
-    expect(readFileSync(join(fakeHome, '.gemini', 'google_accounts.json'), 'utf8')).toBe(googleAccounts);
-  });
-
-  it('rejects gemini OAuth when only one of the two files is supplied', async () => {
-    // Without google_accounts.json the CLI can't bind to an account.
-    // Better to refuse than half-provision and let it fail opaquely later.
-    const result = await provisionCredentials({
-      geminiOauthCreds: JSON.stringify({ refresh_token: 'rt-only' }),
-      homeDir: fakeHome,
-    });
-    expect(result.geminiOauth).toBe(false);
-  });
-
   it('does not write empty or whitespace-only inputs', async () => {
     const result = await provisionCredentials({
       codexAuth: '   \n  ',
-      geminiOauthCreds: '',
       homeDir: fakeHome,
     });
     expect(result.codexOauth).toBe(false);
-    expect(result.geminiOauth).toBe(false);
     expect(() => readFileSync(join(fakeHome, '.codex', 'auth.json'), 'utf8')).toThrow();
   });
 
@@ -82,26 +55,16 @@ describe('provisionCredentials', () => {
     expect(() => readFileSync(join(fakeHome, '.codex', 'auth.json'), 'utf8')).toThrow();
   });
 
-  it('captures refresh_token fingerprints for later drift detection', async () => {
+  it('captures refresh_token fingerprint for later drift detection', async () => {
     const codexAuth = JSON.stringify({ tokens: { refresh_token: 'rt-codex' } });
-    const oauthCreds = JSON.stringify({ refresh_token: 'rt-gemini' });
-    const googleAccounts = JSON.stringify({ active: 'a@b.com' });
 
     const result = await provisionCredentials({
       codexAuth,
-      geminiOauthCreds: oauthCreds,
-      geminiGoogleAccounts: googleAccounts,
       homeDir: fakeHome,
     });
 
     expect(result.initialFingerprints.get('CODEX_AUTH')).toBeDefined();
-    expect(result.initialFingerprints.get('GEMINI_OAUTH_CREDS')).toBeDefined();
-    // google_accounts.json has no refresh_token, so no fingerprint.
-    expect(result.initialFingerprints.has('GEMINI_GOOGLE_ACCOUNTS')).toBe(false);
-    // Different refresh_tokens → different fingerprints.
-    expect(result.initialFingerprints.get('CODEX_AUTH')).not.toBe(
-      result.initialFingerprints.get('GEMINI_OAUTH_CREDS'),
-    );
+    expect(result.initialFingerprints.get('CODEX_AUTH')).toMatch(/^[0-9a-f]{12}$/);
   });
 });
 
@@ -159,23 +122,6 @@ describe('extractOauthSecrets', () => {
     expect(secrets.some((s) => s.includes('acc-42'))).toBe(false);
   });
 
-  it('pulls all three token fields from a Gemini-shape blob', () => {
-    const geminiCreds = JSON.stringify({
-      access_token: 'ya29-gemini-access-token-1234567890',
-      refresh_token: '1//gemini-refresh-token-1234567890',
-      id_token: 'eyJ-gemini-id-jwt-1234567890',
-      scope: 'https://www.googleapis.com/auth/cloud-platform',
-      token_type: 'Bearer',
-      expiry_date: 1747094400000,
-    });
-    const secrets = extractOauthSecrets(geminiCreds);
-    expect(secrets).toContain('ya29-gemini-access-token-1234567890');
-    expect(secrets).toContain('1//gemini-refresh-token-1234567890');
-    expect(secrets).toContain('eyJ-gemini-id-jwt-1234567890');
-    // Non-token short fields (token_type="Bearer") excluded.
-    expect(secrets.some((s) => s === 'Bearer')).toBe(false);
-  });
-
   it('returns empty for undefined / empty / whitespace input', () => {
     expect(extractOauthSecrets(undefined)).toEqual([]);
     expect(extractOauthSecrets('')).toEqual([]);
@@ -192,8 +138,10 @@ describe('extractOauthSecrets', () => {
     // Real OAuth tokens are always much longer than 16; a 4-byte field
     // like a numeric ID matching token-field-name is excluded.
     const blob = JSON.stringify({
-      access_token: 'short', // 5 chars — excluded
-      refresh_token: 'this-one-is-long-enough-to-pass-the-floor', // included
+      tokens: {
+        access_token: 'short', // 5 chars — excluded
+        refresh_token: 'this-one-is-long-enough-to-pass-the-floor', // included
+      },
     });
     const secrets = extractOauthSecrets(blob);
     expect(secrets).toEqual(['this-one-is-long-enough-to-pass-the-floor']);
@@ -202,7 +150,7 @@ describe('extractOauthSecrets', () => {
   it('returns empty when token fields are missing or non-string', () => {
     expect(extractOauthSecrets(JSON.stringify({}))).toEqual([]);
     expect(extractOauthSecrets(JSON.stringify({ tokens: {} }))).toEqual([]);
-    expect(extractOauthSecrets(JSON.stringify({ refresh_token: 12345 }))).toEqual([]);
+    expect(extractOauthSecrets(JSON.stringify({ tokens: { refresh_token: 12345 } }))).toEqual([]);
     expect(extractOauthSecrets(JSON.stringify({ tokens: { refresh_token: null } }))).toEqual([]);
   });
 });

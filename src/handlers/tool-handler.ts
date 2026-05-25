@@ -350,12 +350,11 @@ export class ToolHandler {
     systemPromptSpec: string,
     context?: string,
     workingDirectory?: string,
-    clis?: ('claude' | 'codex' | 'gemini')[],
+    clis?: ('claude' | 'codex')[],
     verbose?: boolean,
     models?: {
       claude?: string;
       codex?: string;
-      gemini?: string;
     },
     progressToken?: string | number,
     sessionId?: string,

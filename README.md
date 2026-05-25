@@ -1,6 +1,8 @@
 # Brutalist MCP
 
-Multi-perspective code analysis using Claude Code, Codex, and Gemini CLI agents.
+Multi-perspective code analysis using Claude Code and Codex CLI agents.
+
+> **Gemini removed (May 2026).** Google sunsets `gemini-cli` for Pro/Ultra/free users on **2026-06-18**, and the Antigravity successor (`agy`) isn't subprocess-ready (no `--model`, no `--output-format`, [stdout-drop on non-TTY](https://github.com/google-antigravity/antigravity-cli/issues/76)). Gemini is dropped from the critic roster pending a fresh `agy` adapter once those gaps close. Older references to Gemini elsewhere in this README are stale.
 
 Get direct, honest technical feedback on your code, architecture, and ideas before they reach production.
 

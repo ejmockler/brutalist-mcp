@@ -819,11 +819,15 @@ export class CLIAgentOrchestrator {
 
     const availableCLIs: ('claude' | 'codex' | 'gemini')[] = [];
 
-    // Check for available CLIs
+    // Check for available CLIs.
+    // Gemini intentionally omitted: gemini-cli sunsets 2026-06-18 for Pro/Ultra/free
+    // tiers and the agy successor isn't subprocess-ready (no --model, no
+    // --output-format, stdout-drop on non-TTY per agy issue #76). Excision in a
+    // follow-up; for now the critic is dropped from discovery so it never reaches
+    // the roster or auto-selection.
     const cliChecks = [
       { name: 'claude' as const, command: 'claude --version' },
-      { name: 'codex' as const, command: 'codex --version' },
-      { name: 'gemini' as const, command: 'gemini --version' }
+      { name: 'codex' as const, command: 'codex --version' }
     ];
 
     // NOTE: These `--version` probes are NOT spawn attempts — they must not
@@ -1445,9 +1449,10 @@ export class CLIAgentOrchestrator {
     userPrompt: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse[]> {
-    // Filter to valid CLI agents
+    // Filter to valid CLI agents. Gemini dropped pre-excision — explicit
+    // clis:['gemini'] becomes a no-op (empty result).
     const validAgents = cliAgents.filter(agent =>
-      ['claude', 'codex', 'gemini'].includes(agent)
+      ['claude', 'codex'].includes(agent)
     ) as ('claude' | 'codex' | 'gemini')[];
 
     if (validAgents.length === 0) {
@@ -1486,10 +1491,10 @@ export class CLIAgentOrchestrator {
     userPrompt: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse> {
-    if (!['claude', 'codex', 'gemini'].includes(agent)) {
+    if (!['claude', 'codex'].includes(agent)) {
       throw new Error(`Unsupported CLI agent: ${agent}`);
     }
-    
+
     return await this.executeSingleCLI(agent as 'claude' | 'codex' | 'gemini', userPrompt, systemPrompt, options);
   }
 

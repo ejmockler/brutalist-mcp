@@ -457,7 +457,7 @@ export class BrutalistServer {
           claude: z.string().optional(),
           codex: z.string().optional(),
           gemini: z.string().optional()
-        }).optional().describe("Per-CLI model override. Claude/Gemini honor overrides. Codex uses the Codex CLI configured/default model by default; set BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true to allow a codex override. Omit to use each CLI's configured default."),
+        }).optional().describe("Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model by default; set BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true to allow a codex override. Omit to use each CLI's configured default. (Gemini field accepted but ignored — gemini critic removed pending agy successor.)"),
         // Pagination
         offset: z.number().min(0).optional().describe("Pagination offset"),
         limit: z.number().min(1000).max(100000).optional().describe("Max chars/chunk"),
@@ -581,7 +581,7 @@ export class BrutalistServer {
     // CLI_AGENT_ROSTER: Show available brutalist critics
     this.server.tool(
       "cli_agent_roster",
-      "Know your weapons. Display the available CLI agent critics (Claude Code, Codex, Gemini CLI) ready to demolish your work, their capabilities, and how to deploy them for systematic destruction.",
+      "Know your weapons. Display the available CLI agent critics (Claude Code, Codex) ready to demolish your work, their capabilities, and how to deploy them for systematic destruction.",
       {},
       async (args) => {
         try {
@@ -618,8 +618,7 @@ export class BrutalistServer {
 
           roster += "## CLI Agent Capabilities\n";
           roster += "**Claude Code** - Advanced analysis with direct system prompt injection\n";
-          roster += "**Codex** - Secure execution with embedded brutal prompts\n";
-          roster += "**Gemini CLI** - Workspace context with environment variable system prompts\n\n";
+          roster += "**Codex** - Secure execution with embedded brutal prompts\n\n";
 
           // Add CLI context information
           const cliContext = await this.cliOrchestrator.detectCLIContext();

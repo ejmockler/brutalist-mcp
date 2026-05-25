@@ -88,11 +88,11 @@ export class ModelResolver {
   /** Build a dynamic schema description for the models parameter. */
   getModelsDescription(): string {
     const parts: string[] = [];
-    for (const cli of ['claude', 'codex', 'gemini'] as CLIName[]) {
+    for (const cli of ['claude', 'codex'] as CLIName[]) {
       const def = this.cliModels[cli].defaultModel;
       parts.push(`${cli}: ${def ? `default ${def}` : 'uses CLI default'}`);
     }
-    return `Per-CLI model override. Claude/Gemini honor overrides. Codex uses the Codex CLI configured/default model unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Omit to use each CLI's configured default. Current defaults — ${parts.join(', ')}`;
+    return `Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Omit to use each CLI's configured default. Current defaults — ${parts.join(', ')}`;
   }
 
   /** Build roster text for cli_agent_roster. */
@@ -106,9 +106,8 @@ export class ModelResolver {
     if (migrations.size > 0) {
       info += ` — ${migrations.size} migration(s) tracked`;
     }
-    info += '\n';
-    info += `**Gemini:** ${defaults.gemini || '(CLI default)'}\n\n`;
-    info += '*Claude/Gemini model overrides are passed through. Codex uses the Codex CLI configured/default model unless `BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true` is set; deprecated codex names are auto-resolved only when that opt-in is enabled.*\n';
+    info += '\n\n';
+    info += '*Claude model overrides are passed through. Codex uses the Codex CLI configured/default model unless `BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true` is set; deprecated codex names are auto-resolved only when that opt-in is enabled.*\n';
     return info;
   }
 

@@ -73,9 +73,46 @@ function resolveAgyBin(): string {
 
 export const AGY_BINARY = resolveAgyBin();
 
+/**
+ * Inline Python pty wrapper. agy issue #76 (stdout silently dropped
+ * when stdout is not a TTY) hits macOS and Windows but NOT Linux.
+ * Validated empirically: on darwin a plain `child_process.spawn` of
+ * `agy --print "..."` returns 0 bytes and hangs until SIGTERM; the
+ * same call inside a PTY returns the response cleanly.
+ *
+ * Why Python and not node-pty:
+ *   - node-pty is a native module: prebuilt binaries per platform,
+ *     `spawn-helper` chmod gotchas during npm install, install-time
+ *     failure modes on unusual setups (Apple Silicon Node 24 had
+ *     intermittent issues this session). Adds 140KB of native code
+ *     to the dep tree.
+ *   - Python 3 is preinstalled on macOS (12+ ships /usr/bin/python3
+ *     stub that triggers Xcode CLT install on first run; users
+ *     running agy locally already have CLT for `agy` itself to
+ *     install).
+ *   - `pty.spawn` is stdlib (Lib/pty.py). Zero install cost.
+ *
+ * The wrapper creates a pty pair, forks, child sees the slave TTY
+ * (bypassing agy's isatty check), parent reads from the master and
+ * writes to its own stdout (which can be a pipe — that part works
+ * regardless of #76).
+ */
+const PTY_WRAPPER_PY = `
+import pty, sys, os
+status = pty.spawn(sys.argv[1:])
+sys.exit(os.waitstatus_to_exitcode(status))
+`.trim();
+
+const PTY_WRAP_NEEDED = process.platform === 'darwin' || process.platform === 'win32';
+
 const AGY_CONFIG: CLIBuilderConfig = {
-  command: AGY_BINARY,
-  defaultArgs: ['--print'],
+  // On macOS/Windows we route through python3 -c <wrapper> <agy> ...
+  // so agy's stdout doesn't silently drop on non-TTY parent. Linux runs
+  // agy directly. The command field surfaces the entrypoint binary
+  // (the wrapper on macOS, agy on Linux); buildCommand() constructs
+  // the full argv below to match.
+  command: PTY_WRAP_NEEDED ? 'python3' : AGY_BINARY,
+  defaultArgs: PTY_WRAP_NEEDED ? ['-c', PTY_WRAPPER_PY, AGY_BINARY, '--print'] : ['--print'],
   // No --model flag exists; this slot is unused for agy. Kept for
   // CLIBuilderConfig conformance.
   modelArgName: '',

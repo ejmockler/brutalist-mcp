@@ -355,6 +355,7 @@ export class ToolHandler {
     models?: {
       claude?: string;
       codex?: string;
+      agy?: string;
     },
     progressToken?: string | number,
     sessionId?: string,

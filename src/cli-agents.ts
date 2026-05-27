@@ -544,6 +544,7 @@ export interface CLIAgentOptions {
   models?: {
     claude?: string;
     codex?: string;
+    agy?: string;
   };
   onStreamingEvent?: (event: StreamingEvent) => void;
   progressToken?: string | number;

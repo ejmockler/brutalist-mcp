@@ -1,7 +1,7 @@
 name: Brutalist Review
 
 # Dogfood: the brutalist-mcp repo runs its own action on incoming PRs.
-# Pinned to v1.10.2 so this workflow doesn't trail mainline changes
+# Pinned to v1.14.0 so this workflow doesn't trail mainline changes
 # silently — bump the tag manually when shipping a new release.
 
 on:
@@ -16,7 +16,7 @@ jobs:
   brutalist:
     runs-on: ubuntu-latest
     # Skip on draft PRs and on PRs from forks (forks don't have access
-    # to the OAUTH secret, so the preflight would fail noisily).
+    # to the OAUTH secrets, so the preflight would fail noisily).
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
@@ -28,22 +28,26 @@ jobs:
           node-version: '20'
 
       - name: Install CLI critics
-        # claude + brutalist-mcp are hard preflight requirements. gemini
-        # + codex are soft critics (warn if missing).
+        # claude + brutalist-mcp are hard preflight requirements. codex
+        # and agy are soft critics (warn if missing). gemini-cli was
+        # removed in v1.14.0 ahead of Google's 2026-06-18 sunset — agy
+        # is its successor.
         run: |
-          npm install -g @brutalist/mcp@1.11.2 \
+          npm install -g @brutalist/mcp@1.14.0 \
                          @anthropic-ai/claude-code \
-                         @google/gemini-cli \
                          @openai/codex
+          curl -fsSL https://antigravity.google/cli/install.sh | bash
+          # Antigravity install.sh drops the binary at ~/.local/bin/agy;
+          # ensure it's on PATH for the action's spawn.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Brutalist review
-        uses: ejmockler/brutalist-mcp/packages/github-action@v1.11.2
+        uses: ejmockler/brutalist-mcp/packages/github-action@v1.14.0
         with:
           # github.token is a workflow context — not available inside
           # action.yml's `default:` field — so the workflow must pass it.
           github-token: ${{ github.token }}
           anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
           codex-auth: ${{ secrets.CODEX_AUTH }}
-          gemini-oauth-creds: ${{ secrets.GEMINI_OAUTH_CREDS }}
-          gemini-google-accounts: ${{ secrets.GEMINI_GOOGLE_ACCOUNTS }}
+          agy-oauth-token: ${{ secrets.AGY_OAUTH_TOKEN }}
           minimum-severity: medium

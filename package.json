@@ -1,7 +1,7 @@
 {
   "name": "@brutalist/mcp",
-  "version": "1.13.0",
-  "description": "Deploy Claude, Codex & Gemini CLI agents to demolish your work before users do. Real file analysis. Brutal honesty. Now with conversation continuation & intelligent pagination.",
+  "version": "1.14.0",
+  "description": "Deploy Claude Code, Codex & Antigravity (agy) CLI agents to demolish your work before users do. Real file analysis. Brutal honesty. Per-call model pinning, conversation continuation & intelligent pagination.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -63,7 +63,8 @@
     "ai",
     "claude",
     "codex",
-    "gemini",
+    "antigravity",
+    "agy",
     "openai",
     "anthropic",
     "google-ai",

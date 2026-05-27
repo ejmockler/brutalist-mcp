@@ -271,7 +271,29 @@ security find-generic-password -s gemini -a antigravity -w \
 ```
 The Brutalist GitHub Action writes the secret to `~/.gemini/antigravity-cli/antigravity-oauth-token` (mode 0600) before invoking the orchestrator; agy auto-detects the container environment and reads tokens from there. Agy issue [#78](https://github.com/google-antigravity/antigravity-cli/issues/78) (env-var auth) is still open — until it closes, the file-provisioning path is the only way agy authenticates in CI.
 
-If you have BOTH the Antigravity desktop IDE and the CLI agent installed on macOS, the IDE wrapper at `~/.antigravity/antigravity/bin/agy` may shadow the CLI agent at `~/.local/bin/agy` on PATH. Set `AGY_BIN=$HOME/.local/bin/agy` to disambiguate.
+If you have BOTH the Antigravity desktop IDE and the CLI agent installed on macOS, the IDE wrapper at `~/.antigravity/antigravity/bin/agy` may shadow the CLI agent at `~/.local/bin/agy` on PATH. Brutalist auto-prefers `~/.local/bin/agy` when it exists, so no manual override is usually needed. If your install is in a non-standard location, set `AGY_BIN=$HOME/.local/bin/agy` (or wherever) to override.
+
+### Per-Call Model Pinning (Agy)
+
+agy `--print` has no `--model` flag, but its `settings.json` accepts a human-readable label. Brutalist exploits this transparently: pass `models.agy` and brutalist writes the requested label under `flock(2)` for the duration of the call, then restores.
+
+```python
+roast(
+  domain="codebase",
+  target="/src",
+  clis=["agy"],
+  models={"agy": "Gemini 3.1 Pro (High)"}
+)
+```
+
+Supported labels (Pro / Claude / GPT-OSS tiers require Antigravity entitlement; Flash is always available):
+- `Gemini 3.5 Flash (High)` / `Gemini 3.5 Flash (Medium)`
+- `Gemini 3.1 Pro (High)` / `Gemini 3.1 Pro (Low)`
+- `Claude Sonnet 4.6 (Thinking)`
+- `Claude Opus 4.6 (Thinking)`
+- `GPT-OSS 120B (Medium)`
+
+Invalid labels silently downselect to Flash Medium (agy's behavior, not ours).
 
 ### Verification-Heavy Domains
 

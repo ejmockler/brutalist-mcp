@@ -34,20 +34,47 @@
  * agy auto-fires (cgroup-based, see affordance map) and switches to the
  * file-token-storage path on its own — no env var needed on our side.
  */
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
 import { logger as rootLogger } from '../logger.js';
 import type { StructuredLogger } from '../logger.js';
 import type { CLIAgentOptions } from '../cli-agents.js';
 import type { ModelResolver } from '../model-resolver.js';
 import type { CLIProvider, CLIBuilderConfig, CLIName, DecodeResult } from './index.js';
 
+/**
+ * Resolve which binary to invoke as `agy`. Three-step priority:
+ *
+ *   1. `AGY_BIN` env var (explicit user override). Wins unconditionally.
+ *   2. `~/.local/bin/agy` (canonical CLI-agent install path per
+ *      `curl ... antigravity.google/cli/install.sh | bash`). Preferred
+ *      because on macOS the Antigravity desktop IDE installs a wrapper
+ *      at `~/.antigravity/antigravity/bin/agy` that is a SYMLINK into
+ *      the .app bundle (an Electron/VS Code fork — NOT the Go CLI
+ *      agent). That wrapper resolves first on PATH for many users
+ *      because the IDE's installer prepends its bin dir. Bypassing
+ *      PATH for the canonical location avoids invoking the IDE binary
+ *      with the agent CLI's flags (`--print`, etc.) — which the IDE
+ *      politely passes through to Electron with warnings rather than
+ *      running as the agent.
+ *   3. Bare `'agy'` (PATH lookup). Last-resort for non-standard
+ *      installs.
+ *
+ * Resolved at module load — the user's environment shouldn't change
+ * mid-process, and the MCP server is restarted when paths change.
+ */
+function resolveAgyBin(): string {
+  if (process.env.AGY_BIN) return process.env.AGY_BIN;
+  const homeLocal = path.join(homedir(), '.local', 'bin', 'agy');
+  if (existsSync(homeLocal)) return homeLocal;
+  return 'agy';
+}
+
+export const AGY_BINARY = resolveAgyBin();
+
 const AGY_CONFIG: CLIBuilderConfig = {
-  // AGY_BIN env hook resolves the macOS PATH-shadowing gotcha: the
-  // Antigravity desktop IDE installs a wrapper at
-  // ~/.antigravity/antigravity/bin/agy that shadows the CLI agent at
-  // ~/.local/bin/agy on PATH. Users with both can set AGY_BIN to the
-  // absolute path of the agent binary. Linux/CI installs only the
-  // agent, so the default 'agy' on PATH is correct.
-  command: process.env.AGY_BIN || 'agy',
+  command: AGY_BINARY,
   defaultArgs: ['--print'],
   // No --model flag exists; this slot is unused for agy. Kept for
   // CLIBuilderConfig conformance.

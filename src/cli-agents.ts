@@ -9,6 +9,7 @@ import { ModelResolver } from './model-resolver.js';
 import { cleanupTempConfig } from './mcp-registry.js';
 import { getProvider, parseNDJSON } from './cli-adapters/index.js';
 import type { CLIName } from './cli-adapters/index.js';
+import { AGY_BINARY } from './cli-adapters/agy-adapter.js';
 import type { MetricsRegistry } from './metrics/index.js';
 import { CLI_SPAWN_LABELS, safeMetric } from './metrics/index.js';
 
@@ -785,27 +786,20 @@ export class CLIAgentOrchestrator {
 
     const availableCLIs: ('claude' | 'codex' | 'agy')[] = [];
 
+    // Detection probes. For agy, AGY_BINARY (resolved in the agy adapter
+    // at module load) prefers ~/.local/bin/agy over PATH to avoid the
+    // macOS Antigravity-desktop-IDE wrapper that otherwise shadows the
+    // CLI agent. See the adapter's resolveAgyBin() for the full rationale.
     const cliChecks = [
       { name: 'claude' as const, command: 'claude --version' },
       { name: 'codex' as const, command: 'codex --version' },
-      // agy --version exits 0 with "1.0.x"; uses the AGY_BIN env hook for
-      // the macOS PATH-shadowing case where the desktop IDE wrapper at
-      // ~/.antigravity/antigravity/bin/agy shadows the CLI agent at
-      // ~/.local/bin/agy. Linux/CI only has the CLI agent, so the bare
-      // 'agy' name resolves correctly.
-      { name: 'agy' as const, command: `${process.env.AGY_BIN || 'agy'} --version` }
+      { name: 'agy' as const, command: `${AGY_BINARY} --version` }
     ];
 
     // NOTE: These `--version` probes are NOT spawn attempts — they must not
     // increment `cliSpawnTotal`. Only _executeCLI counts spawns.
-    //
-    // For agy, the actual binary path may be AGY_BIN (resolves the macOS
-    // PATH-shadowing gotcha). We probe whatever AGY_BIN points to, falling
-    // back to bare 'agy' on PATH.
     const results = await Promise.allSettled(cliChecks.map(async (check) => {
-      const probeCmd = check.name === 'agy'
-        ? (process.env.AGY_BIN || 'agy')
-        : check.name;
+      const probeCmd = check.name === 'agy' ? AGY_BINARY : check.name;
       try {
         await spawnAsync(probeCmd, ['--version'], { timeout: CLI_CHECK_TIMEOUT });
         this.emitLog().debug(`CLI available: ${check.name}`);

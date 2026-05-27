@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 
-export const CliNameSchema = z.enum(['claude', 'codex']);
+export const CliNameSchema = z.enum(['claude', 'codex', 'agy']);
 export type CliName = z.infer<typeof CliNameSchema>;
 
 export const SeveritySchema = z.enum(['critical', 'high', 'medium', 'low', 'nit']);

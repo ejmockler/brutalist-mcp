@@ -21,6 +21,20 @@ export interface ActionInputs {
   openaiApiKey?: string;
   /** Contents of ~/.codex/auth.json for OAuth-based Codex auth. */
   codexAuth?: string;
+  /**
+   * Raw JSON contents of the macOS keychain "gemini/antigravity" entry
+   * (after stripping the `go-keyring-base64:` prefix and base64-decoding).
+   * Capture once locally: `agy "hi"` interactive flow, then
+   * `security find-generic-password -s gemini -a antigravity -w
+   * | sed 's/^go-keyring-base64://' | base64 -d`. Store the resulting
+   * ~500-byte JSON as the AGY_OAUTH_TOKEN secret.
+   *
+   * The Action writes this to
+   * ~/.gemini/antigravity-cli/antigravity-oauth-token (mode 0600) before
+   * invoking the orchestrator. agy auto-detects the container environment
+   * and reads tokens from that file.
+   */
+  agyOauthToken?: string;
   workingDirectory: string;
   minimumSeverity: SeverityFilter;
   /** Soft cap on diff size passed to the orchestrator. */
@@ -67,6 +81,7 @@ export function readInputs(): ActionInputs {
     githubToken,
     openaiApiKey: core.getInput('openai-api-key') || undefined,
     codexAuth: core.getInput('codex-auth') || undefined,
+    agyOauthToken: core.getInput('agy-oauth-token') || undefined,
     workingDirectory: core.getInput('working-directory') || '.',
     minimumSeverity: minimumSeverityRaw as SeverityFilter,
     maxDiffChars,

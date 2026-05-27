@@ -13,7 +13,7 @@ export { parseNDJSON } from './shared.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export type CLIName = 'claude' | 'codex';
+export type CLIName = 'claude' | 'codex' | 'agy';
 
 export interface MCPSupportConfig {
   /** How this CLI receives MCP server configuration */
@@ -145,10 +145,12 @@ export interface CLIProvider {
 
 import { ClaudeAdapter } from './claude-adapter.js';
 import { CodexAdapter } from './codex-adapter.js';
+import { AgyAdapter } from './agy-adapter.js';
 
 const providers: Record<CLIName, CLIProvider> = {
   claude: new ClaudeAdapter(),
   codex: new CodexAdapter(),
+  agy: new AgyAdapter(),
 };
 
 /**

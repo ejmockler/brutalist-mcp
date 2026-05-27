@@ -451,12 +451,13 @@ export class BrutalistServer {
         target: z.string().describe("Filesystem path to analyze (e.g., '/path/to/project' or '.'). Directs agents to the relevant part of the codebase."),
         // Common optional fields
         context: z.string().optional().describe("Essential context for the critique. For abstract domains (idea, architecture, security, etc.), this is the primary input describing what to evaluate. For filesystem domains, provides supplementary background (e.g., goals, constraints, team context)."),
-        clis: z.array(z.enum(["codex", "claude"])).min(1).max(2).optional().describe("Subset of critics to run."),
+        clis: z.array(z.enum(["codex", "claude", "agy"])).min(1).max(3).optional().describe("Subset of critics to run."),
         verbose: z.boolean().optional().describe("Detailed output"),
         models: z.object({
           claude: z.string().optional(),
-          codex: z.string().optional()
-        }).optional().describe("Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model by default; set BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true to allow a codex override. Omit to use each CLI's configured default."),
+          codex: z.string().optional(),
+          agy: z.string().optional()
+        }).optional().describe("Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model by default; set BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true to allow a codex override. Agy field accepted but ignored — agy --print is hard-pinned to Gemini 3.5 Flash (Medium) (no --model flag at runtime). Omit to use each CLI's configured default."),
         // Pagination
         offset: z.number().min(0).optional().describe("Pagination offset"),
         limit: z.number().min(1000).max(100000).optional().describe("Max chars/chunk"),
@@ -506,15 +507,16 @@ export class BrutalistServer {
         proPosition: z.string().describe("The PRO thesis to defend (extracted by calling agent)"),
         conPosition: z.string().describe("The CON thesis to defend (extracted by calling agent)"),
         target: z.string().optional().describe("Filesystem path to analyze (e.g., '/path/to/project' or '.'). Directs agents to the relevant part of the codebase."),
-        agents: z.array(z.enum(["codex", "claude"])).length(2).optional()
+        agents: z.array(z.enum(["codex", "claude", "agy"])).length(2).optional()
           .describe("Two specific debaters to use."),
         rounds: z.number().min(1).max(3).default(3).optional()
           .describe("Number of debate rounds (default: 3)"),
         context: z.string().optional().describe("Essential context for the debate — the substantive background, constraints, and details that shape the argument."),
         models: z.object({
           claude: z.string().optional(),
-          codex: z.string().optional()
-        }).optional().describe("Model overrides for specific agents. Codex uses the Codex CLI configured/default model by default unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true."),
+          codex: z.string().optional(),
+          agy: z.string().optional()
+        }).optional().describe("Model overrides for specific agents. Codex uses the Codex CLI configured/default model by default unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Agy is Flash-pinned (no --model flag); field ignored."),
         // Pagination and conversation continuation
         context_id: z.string().optional().describe("Context ID for cached pagination or debate continuation"),
         resume: z.boolean().optional().describe("Continue debate with a new prompt; omit for pagination/page reads"),
@@ -579,7 +581,7 @@ export class BrutalistServer {
     // CLI_AGENT_ROSTER: Show available brutalist critics
     this.server.tool(
       "cli_agent_roster",
-      "Know your weapons. Display the available CLI agent critics (Claude Code, Codex) ready to demolish your work, their capabilities, and how to deploy them for systematic destruction.",
+      "Know your weapons. Display the available CLI agent critics (Claude Code, Codex, Antigravity/Agy) ready to demolish your work, their capabilities, and how to deploy them for systematic destruction.",
       {},
       async (args) => {
         try {
@@ -616,7 +618,8 @@ export class BrutalistServer {
 
           roster += "## CLI Agent Capabilities\n";
           roster += "**Claude Code** - Advanced analysis with direct system prompt injection\n";
-          roster += "**Codex** - Secure execution with embedded brutal prompts\n\n";
+          roster += "**Codex** - Secure execution with embedded brutal prompts\n";
+          roster += "**Antigravity (agy)** - Gemini 3.5 Flash-tier critic via Google's gemini-cli successor (one-time interactive `agy \"hi\"` auth required locally; AGY_OAUTH_TOKEN GH secret in CI). Slower per call (~30-60s); use as the rapid-pattern-scan voice alongside claude+codex.\n\n";
 
           // Add CLI context information
           const cliContext = await this.cliOrchestrator.detectCLIContext();
@@ -677,7 +680,7 @@ export class BrutalistServer {
       target: string;
       context?: string;
       workingDirectory?: string;
-      clis?: ('claude' | 'codex')[];
+      clis?: ('claude' | 'codex' | 'agy')[];
       verbose?: boolean;
       models?: { claude?: string; codex?: string };
       offset?: number;

@@ -290,7 +290,7 @@ export class SemanticOutputParser implements StreamingParser {
     
     return {
       type: eventType,
-      agent: agent as 'claude' | 'codex',
+      agent: agent as 'claude' | 'codex' | 'agy',
       content: trimmed,
       timestamp: Date.now(),
       sessionId: this.state.sessionId,
@@ -351,7 +351,7 @@ export class ParserFactory {
   /**
    * Create parser optimized for specific CLI agent
    */
-  static createParser(agent: 'claude' | 'codex', sessionId?: string): StreamingParser {
+  static createParser(agent: 'claude' | 'codex' | 'agy', sessionId?: string): StreamingParser {
     switch (agent) {
       case 'claude':
         return new ClaudeOptimizedParser(agent, sessionId);

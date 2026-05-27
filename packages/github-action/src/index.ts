@@ -34,21 +34,26 @@ async function main(): Promise<void> {
   const preflight = await runPreflight();
   assertPreflight(preflight);
 
-  // Provision OAuth credential files for Codex. The CLI reads its OAuth
-  // state from disk (~/.codex/auth.json), so we write the GitHub secret
-  // back to that path before invoking the orchestrator. File is mode 0600.
+  // Provision OAuth credential files for Codex and Agy. Both CLIs read
+  // their OAuth state from disk (~/.codex/auth.json and
+  // ~/.gemini/antigravity-cli/antigravity-oauth-token), so we write the
+  // GitHub secrets to those paths before invoking the orchestrator.
+  // Files are mode 0600.
   const provisioned = await provisionCredentials({
     codexAuth: inputs.codexAuth,
+    agyOauthToken: inputs.agyOauthToken,
   });
 
   // Forward provider keys into process.env ONLY when OAuth wasn't
   // provisioned for that provider. The CLI prefers env-based API keys
   // over file-based OAuth, so setting both would override the OAuth
-  // path we just wrote to disk.
+  // path we just wrote to disk. Agy has no env-var auth path (#78 still
+  // open), so the file provisioning is the only viable CI auth.
   if (!provisioned.codexOauth && inputs.openaiApiKey) {
     process.env.OPENAI_API_KEY = inputs.openaiApiKey;
   }
   if (provisioned.codexOauth) core.info('Codex critic will authenticate via OAuth.');
+  if (provisioned.agyOauth) core.info('Agy critic will authenticate via file-based OAuth.');
 
   const pull = getPullRequestRef();
   if (!pull) {
@@ -207,10 +212,12 @@ main().catch((err) => {
     // masked even when the whole-blob match doesn't fire. Defense in
     // depth on top of the blob-level mask.
     secrets.push(...extractOauthSecrets(i.codexAuth));
+    secrets.push(...extractOauthSecrets(i.agyOauthToken));
     // Also register the whole blob — covers full-payload echoes that
     // the field-level extractor wouldn't reach (e.g. an error dump that
     // serialized the input dict).
     if (i.codexAuth && i.codexAuth.length >= 16) secrets.push(i.codexAuth);
+    if (i.agyOauthToken && i.agyOauthToken.length >= 16) secrets.push(i.agyOauthToken);
   } catch {
     // readInputs may itself throw (e.g. missing required input) — in
     // that case there's nothing input-side to redact; fall through to

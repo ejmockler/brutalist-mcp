@@ -1,20 +1,29 @@
 /**
- * OAuth credential provisioning for the Codex CLI.
+ * OAuth credential provisioning for the Codex and Antigravity (`agy`) CLIs.
  *
- * Codex persists OAuth state as a JSON file in $HOME, not as an env var.
- * To run it under OAuth in CI we capture the file once locally (via
- * `codex login`), store the contents as a GitHub secret, and write the
- * secret back to the runner's $HOME on each spinup before invoking the
- * CLI.
+ * Both persist OAuth state as a JSON file in $HOME (agy under
+ * `~/.gemini/antigravity-cli/`, Codex under `~/.codex/`), not as env
+ * vars. To run them under OAuth in CI we capture the file once locally
+ * (via `codex login` / one-time `agy "hi"`), store the contents as a
+ * GitHub secret, and write the secret back to the runner's $HOME on
+ * each spinup before invoking the CLI.
  *
- * Lifecycle caveat (real but bounded): Codex rotates access tokens
- * during use and rewrites the file. In ephemeral CI runners those writes
+ * Lifecycle caveat (real but bounded): both CLIs rotate access_tokens
+ * during use and rewrite the file. In ephemeral CI runners those writes
  * vanish with the VM. Each subsequent run starts from the secret's
  * original refresh_token. This works fine as long as the provider
- * treats refresh_tokens as long-lived (typical for installed-app OAuth).
+ * treats refresh_tokens as long-lived (typical for installed-app OAuth;
+ * Google's policy: indefinite under normal use, expires only on user
+ * revocation, 6 months idle, >100 live tokens per client, or Testing-
+ * stage consent screen 7-day cap).
+ *
  * If the provider does hard refresh-token rotation, the stored secret
  * goes stale after one CI run and needs regeneration. detectRefreshRotation
  * surfaces this as a warning so operators learn empirically.
+ *
+ * Token shape differs per CLI:
+ *   - Codex:  { tokens: { access_token, refresh_token, id_token, account_id } }
+ *   - Agy:    { token:  { access_token, refresh_token, expiry, token_type }, auth_method: "consumer" }
  */
 
 import { createHash } from 'node:crypto';
@@ -26,6 +35,8 @@ import * as core from '@actions/core';
 export interface ProvisionedCredentials {
   /** True if codex's auth.json was written and parses as JSON. */
   codexOauth: boolean;
+  /** True if agy's antigravity-oauth-token was written and parses as JSON. */
+  agyOauth: boolean;
   /**
    * Map of secret label → SHA-256 prefix of the refresh_token at write
    * time. Used by detectRefreshRotation to spot mid-run rotation.
@@ -56,6 +67,7 @@ interface CredentialSlot {
  */
 export async function provisionCredentials(opts: {
   codexAuth?: string;
+  agyOauthToken?: string;
   homeDir?: string;
 }): Promise<ProvisionedCredentials> {
   const home = opts.homeDir ?? os.homedir();
@@ -72,7 +84,26 @@ export async function provisionCredentials(opts: {
     fingerprints,
   );
 
-  return { codexOauth: codexWritten, initialFingerprints: fingerprints };
+  // Agy: the keychain blob format on macOS is `go-keyring-base64:<b64>`;
+  // the file-backend on Linux expects the raw decoded JSON. Callers
+  // must strip and decode before passing — see the agy-oauth-token
+  // capture command in action.yml.
+  const agyWritten = await writeSlot(
+    {
+      label: 'AGY_OAUTH_TOKEN',
+      contents: opts.agyOauthToken,
+      relPath: path.join('.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+      refreshTokenAccessor: (j) => (j as any)?.token?.refresh_token,
+    },
+    home,
+    fingerprints,
+  );
+
+  return {
+    codexOauth: codexWritten,
+    agyOauth: agyWritten,
+    initialFingerprints: fingerprints,
+  };
 }
 
 /**
@@ -90,11 +121,22 @@ export async function detectRefreshRotation(
   initialFingerprints: Map<string, string>,
   homeDir: string = os.homedir(),
 ): Promise<void> {
-  const slots: Array<[string, string, (j: unknown) => string | undefined]> = [
-    ['CODEX_AUTH', path.join(homeDir, '.codex', 'auth.json'), (j) => (j as any)?.tokens?.refresh_token],
+  const slots: Array<[string, string, (j: unknown) => string | undefined, string]> = [
+    [
+      'CODEX_AUTH',
+      path.join(homeDir, '.codex', 'auth.json'),
+      (j) => (j as any)?.tokens?.refresh_token,
+      'codex login',
+    ],
+    [
+      'AGY_OAUTH_TOKEN',
+      path.join(homeDir, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+      (j) => (j as any)?.token?.refresh_token,
+      'agy "hi" (interactive) and re-capture the macOS keychain entry',
+    ],
   ];
 
-  for (const [label, file, accessor] of slots) {
+  for (const [label, file, accessor, regenerate] of slots) {
     const before = initialFingerprints.get(label);
     if (!before) continue;
     try {
@@ -102,7 +144,7 @@ export async function detectRefreshRotation(
       if (after && after !== before) {
         core.warning(
           `${label}: refresh_token rotated during this run (${before} → ${after}). ` +
-            `The stored secret is now stale. Regenerate locally (codex login) ` +
+            `The stored secret is now stale. Regenerate locally (${regenerate}) ` +
             `and update the GitHub secret before the prior refresh_token expires.`,
         );
       }
@@ -214,6 +256,13 @@ export function extractOauthSecrets(jsonContents: string | undefined): string[] 
     collect(tokens.access_token);
     collect(tokens.refresh_token);
     collect(tokens.id_token);
+  }
+  // Agy shape: { token: { access_token, refresh_token, expiry, token_type }, auth_method }
+  const token = (obj as { token?: Record<string, unknown> }).token;
+  if (token && typeof token === 'object') {
+    collect(token.access_token);
+    collect(token.refresh_token);
+    collect(token.id_token);
   }
   return out;
 }

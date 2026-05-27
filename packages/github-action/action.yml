@@ -1,5 +1,5 @@
 name: 'Brutalist Code Review'
-description: 'Multi-CLI brutalist code review (Claude, Codex) posted as inline PR comments via the @brutalist/orchestrator.'
+description: 'Multi-CLI brutalist code review (Claude, Codex, Antigravity) posted as inline PR comments via the @brutalist/orchestrator.'
 author: 'Brutalist'
 branding:
   icon: 'alert-triangle'
@@ -39,6 +39,27 @@ inputs:
       refresh_token in your secret is what survives across runs. If runs
       start failing auth after weeks, re-run `codex login` and update the
       secret.
+    required: false
+  agy-oauth-token:
+    description: |
+      Raw JSON contents of the macOS keychain "gemini/antigravity" entry —
+      the OAuth token for the Antigravity (agy) CLI critic. Without this,
+      agy cannot authenticate in CI runners (no env-var auth path exists
+      in v1.0.2 — agy issue #78). With it, the Action writes the JSON to
+      ~/.gemini/antigravity-cli/antigravity-oauth-token (mode 0600); agy
+      auto-detects the container environment and reads tokens from there.
+
+      One-time capture locally (after you've run `agy "hi"` interactively
+      and completed the browser OAuth flow):
+        security find-generic-password -s gemini -a antigravity -w \
+          | sed 's/^go-keyring-base64://' | base64 -d \
+          | gh secret set AGY_OAUTH_TOKEN
+
+      Note: agy rotates the access_token in-place on expiry but leaves
+      the refresh_token stable across rotations. In CI those rewrites
+      are lost when the runner is destroyed; each run starts from the
+      secret's refresh_token. If runs start failing after months, re-run
+      `agy "hi"` and re-capture the keychain entry.
     required: false
   working-directory:
     description: |

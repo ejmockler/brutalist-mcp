@@ -538,7 +538,7 @@ async function spawnAsync(
 export interface CLIAgentOptions {
   workingDirectory?: string;
   timeout?: number;
-  clis?: ('claude' | 'codex')[];
+  clis?: ('claude' | 'codex' | 'agy')[];
   analysisType?: BrutalistPromptType;
   models?: {
     claude?: string;
@@ -577,7 +577,7 @@ export interface CLIAgentOrchestratorDeps {
 
 export interface StreamingEvent {
   type: 'agent_start' | 'agent_progress' | 'agent_complete' | 'agent_error';
-  agent: 'claude' | 'codex' | 'system';
+  agent: 'claude' | 'codex' | 'agy' | 'system';
   content?: string;
   timestamp: number;
   sessionId?: string;
@@ -585,7 +585,7 @@ export interface StreamingEvent {
 }
 
 export interface CLIContext {
-  availableCLIs: ('claude' | 'codex')[];
+  availableCLIs: ('claude' | 'codex' | 'agy')[];
 }
 
 export class CLIAgentOrchestrator {
@@ -695,7 +695,7 @@ export class CLIAgentOrchestrator {
   }
 
   private emitThrottledStreamingEvent(
-    agent: 'claude' | 'codex',
+    agent: 'claude' | 'codex' | 'agy',
     type: 'agent_progress' | 'agent_error',
     content: string,
     onStreamingEvent?: (event: StreamingEvent) => void,
@@ -783,18 +783,31 @@ export class CLIAgentOrchestrator {
       return this.cliContext;
     }
 
-    const availableCLIs: ('claude' | 'codex')[] = [];
+    const availableCLIs: ('claude' | 'codex' | 'agy')[] = [];
 
     const cliChecks = [
       { name: 'claude' as const, command: 'claude --version' },
-      { name: 'codex' as const, command: 'codex --version' }
+      { name: 'codex' as const, command: 'codex --version' },
+      // agy --version exits 0 with "1.0.x"; uses the AGY_BIN env hook for
+      // the macOS PATH-shadowing case where the desktop IDE wrapper at
+      // ~/.antigravity/antigravity/bin/agy shadows the CLI agent at
+      // ~/.local/bin/agy. Linux/CI only has the CLI agent, so the bare
+      // 'agy' name resolves correctly.
+      { name: 'agy' as const, command: `${process.env.AGY_BIN || 'agy'} --version` }
     ];
 
     // NOTE: These `--version` probes are NOT spawn attempts — they must not
     // increment `cliSpawnTotal`. Only _executeCLI counts spawns.
+    //
+    // For agy, the actual binary path may be AGY_BIN (resolves the macOS
+    // PATH-shadowing gotcha). We probe whatever AGY_BIN points to, falling
+    // back to bare 'agy' on PATH.
     const results = await Promise.allSettled(cliChecks.map(async (check) => {
+      const probeCmd = check.name === 'agy'
+        ? (process.env.AGY_BIN || 'agy')
+        : check.name;
       try {
-        await spawnAsync(check.name, ['--version'], { timeout: CLI_CHECK_TIMEOUT });
+        await spawnAsync(probeCmd, ['--version'], { timeout: CLI_CHECK_TIMEOUT });
         this.emitLog().debug(`CLI available: ${check.name}`);
         return check.name;
       } catch (error) {
@@ -816,27 +829,31 @@ export class CLIAgentOrchestrator {
   }
 
   selectSingleCLI(
-    preferredCLI?: 'claude' | 'codex',
+    preferredCLI?: 'claude' | 'codex' | 'agy',
     analysisType?: BrutalistPromptType
-  ): 'claude' | 'codex' {
+  ): 'claude' | 'codex' | 'agy' {
     // 1. Honor explicit preference if available
     if (preferredCLI && this.cliContext.availableCLIs.includes(preferredCLI)) {
       this.emitLog().info(`✅ Using preferred CLI: ${preferredCLI}`);
       return preferredCLI;
     }
 
-    // 2. Smart selection based on analysis type
-    const selectionRules: Record<string, ('claude' | 'codex')[]> = {
-      'code': ['claude', 'codex'],
-      'architecture': ['claude', 'codex'],
-      'research': ['claude', 'codex'],
-      'security': ['codex', 'claude'],
-      'data': ['claude', 'codex'],
-      'product': ['claude', 'codex'],
-      'infrastructure': ['codex', 'claude'],
-      'idea': ['claude', 'codex'],
-      'debate': ['claude', 'codex'],
-      'default': ['claude', 'codex']
+    // 2. Smart selection based on analysis type. Agy is always LAST in
+    // priority order: it's 2-4× slower per call than claude/codex
+    // (30-60s vs 5-25s) and Flash-pinned, so it's only auto-selected
+    // when the others are unavailable. Callers who explicitly pass
+    // `preferredCLI: 'agy'` get it regardless (handled at step 1).
+    const selectionRules: Record<string, ('claude' | 'codex' | 'agy')[]> = {
+      'code': ['claude', 'codex', 'agy'],
+      'architecture': ['claude', 'codex', 'agy'],
+      'research': ['claude', 'codex', 'agy'],
+      'security': ['codex', 'claude', 'agy'],
+      'data': ['claude', 'codex', 'agy'],
+      'product': ['claude', 'codex', 'agy'],
+      'infrastructure': ['codex', 'claude', 'agy'],
+      'idea': ['claude', 'codex', 'agy'],
+      'debate': ['claude', 'codex', 'agy'],
+      'default': ['claude', 'codex', 'agy']
     };
 
     const priority = selectionRules[analysisType || 'default'] || selectionRules.default;
@@ -859,7 +876,7 @@ export class CLIAgentOrchestrator {
   }
 
   private async _executeCLI(
-    cliName: 'claude' | 'codex',
+    cliName: 'claude' | 'codex' | 'agy',
     userPrompt: string,
     systemPromptSpec: string,
     options: CLIAgentOptions = {},
@@ -875,7 +892,7 @@ export class CLIAgentOrchestrator {
     let built: Awaited<ReturnType<typeof commandBuilder>> | undefined;
 
     // Provider label for the spawn counter. Derived from cliName so the
-    // label set stays in sync with the 'claude' | 'codex' union
+    // label set stays in sync with the 'claude' | 'codex' | 'agy' union
     // instead of reading adapter.name.
     const provider = cliName;
 
@@ -1231,7 +1248,7 @@ export class CLIAgentOrchestrator {
   }
 
   async executeSingleCLI(
-    cli: 'claude' | 'codex',
+    cli: 'claude' | 'codex' | 'agy',
     userPrompt: string,
     systemPromptSpec: string,
     options: CLIAgentOptions = {}
@@ -1305,8 +1322,8 @@ export class CLIAgentOrchestrator {
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse[]> {
     const validAgents = cliAgents.filter(agent =>
-      ['claude', 'codex'].includes(agent)
-    ) as ('claude' | 'codex')[];
+      ['claude', 'codex', 'agy'].includes(agent)
+    ) as ('claude' | 'codex' | 'agy')[];
 
     if (validAgents.length === 0) {
       return [];
@@ -1344,11 +1361,11 @@ export class CLIAgentOrchestrator {
     userPrompt: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse> {
-    if (!['claude', 'codex'].includes(agent)) {
+    if (!['claude', 'codex', 'agy'].includes(agent)) {
       throw new Error(`Unsupported CLI agent: ${agent}`);
     }
 
-    return await this.executeSingleCLI(agent as 'claude' | 'codex', userPrompt, systemPrompt, options);
+    return await this.executeSingleCLI(agent as 'claude' | 'codex' | 'agy', userPrompt, systemPrompt, options);
   }
 
   async executeBrutalistAnalysis(
@@ -1386,7 +1403,7 @@ export class CLIAgentOrchestrator {
     const userPrompt = this.constructUserPrompt(analysisType, primaryContent, context);
 
     // Determine which CLIs to use
-    let clisToUse: ('claude' | 'codex')[];
+    let clisToUse: ('claude' | 'codex' | 'agy')[];
 
     if (options.clis && options.clis.length > 0) {
       // User specified which CLIs to use - validate they're available

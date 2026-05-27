@@ -3,7 +3,7 @@ import path from 'path';
 import os from 'os';
 import { logger } from './logger.js';
 
-type CLIName = 'claude' | 'codex';
+type CLIName = 'claude' | 'codex' | 'agy';
 
 interface CLIModelInfo {
   defaultModel?: string;
@@ -21,11 +21,18 @@ interface CLIModelInfo {
  * Any model string is accepted and passed through to the CLI.
  * For codex, deprecated model names are resolved through the
  * migration chain before invocation.
+ *
+ * agy has no discoverable config — `agy --print` is hard-pinned to
+ * "Gemini 3.5 Flash (Medium)". The cliModels.agy slot exists for shape
+ * conformance; defaultModel is constant.
  */
+const AGY_FIXED_MODEL = 'Gemini 3.5 Flash (Medium)';
+
 export class ModelResolver {
   private cliModels: Record<CLIName, CLIModelInfo> = {
     claude: { migrations: new Map() },
     codex: { migrations: new Map() },
+    agy: { defaultModel: AGY_FIXED_MODEL, migrations: new Map() },
   };
 
   private initialized = false;
@@ -49,6 +56,7 @@ export class ModelResolver {
     logger.info('🔍 ModelResolver initialized', {
       claude: this.cliModels.claude.defaultModel || '(cli default)',
       codex: this.cliModels.codex.defaultModel || '(cli default)',
+      agy: this.cliModels.agy.defaultModel,
       codexMigrations: this.cliModels.codex.migrations.size,
     });
   }
@@ -79,17 +87,18 @@ export class ModelResolver {
     return {
       claude: this.cliModels.claude.defaultModel,
       codex: this.cliModels.codex.defaultModel,
+      agy: this.cliModels.agy.defaultModel,
     };
   }
 
   /** Build a dynamic schema description for the models parameter. */
   getModelsDescription(): string {
     const parts: string[] = [];
-    for (const cli of ['claude', 'codex'] as CLIName[]) {
+    for (const cli of ['claude', 'codex', 'agy'] as CLIName[]) {
       const def = this.cliModels[cli].defaultModel;
       parts.push(`${cli}: ${def ? `default ${def}` : 'uses CLI default'}`);
     }
-    return `Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Omit to use each CLI's configured default. Current defaults — ${parts.join(', ')}`;
+    return `Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Agy is hard-pinned to ${AGY_FIXED_MODEL} (no --model flag exists at runtime; field accepted but ignored). Omit to use each CLI's configured default. Current defaults — ${parts.join(', ')}`;
   }
 
   /** Build roster text for cli_agent_roster. */
@@ -103,8 +112,9 @@ export class ModelResolver {
     if (migrations.size > 0) {
       info += ` — ${migrations.size} migration(s) tracked`;
     }
-    info += '\n\n';
-    info += '*Claude model overrides are passed through. Codex uses the Codex CLI configured/default model unless `BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true` is set; deprecated codex names are auto-resolved only when that opt-in is enabled.*\n';
+    info += '\n';
+    info += `**Agy:** ${defaults.agy} (hard-pinned, no --model flag)\n\n`;
+    info += '*Claude model overrides are passed through. Codex uses the Codex CLI configured/default model unless `BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true` is set; deprecated codex names are auto-resolved only when that opt-in is enabled. Agy is fixed to Flash Medium until Google ships agy issue #35.*\n';
     return info;
   }
 

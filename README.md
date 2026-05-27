@@ -1,14 +1,14 @@
 # Brutalist MCP
 
-Multi-perspective code analysis using Claude Code and Codex CLI agents.
+Multi-perspective code analysis using Claude Code, Codex, and Antigravity (`agy`) CLI agents.
 
-> **Gemini removed (May 2026).** Google sunsets `gemini-cli` for Pro/Ultra/free users on **2026-06-18**, and the Antigravity successor (`agy`) isn't subprocess-ready (no `--model`, no `--output-format`, [stdout-drop on non-TTY](https://github.com/google-antigravity/antigravity-cli/issues/76)). Brutalist now ships as a 2-critic system; an `agy` adapter will be added when those gaps close.
+> **Gemini → Antigravity transition (May 2026).** Google sunsets `gemini-cli` for Pro/Ultra/free users on **2026-06-18**. The successor `agy` (Antigravity v1.0.2) is now wired in as the third critic; it's slower per call (~30-60s vs 5-25s for claude/codex) and hard-pinned to `Gemini 3.5 Flash (Medium)` until Google ships [agy #35](https://github.com/google-antigravity/antigravity-cli/issues/35) (per-call `--model`), but auth + subprocess capture both work today.
 
 Get direct, honest technical feedback on your code, architecture, and ideas before they reach production.
 
 ## What It Does
 
-The Brutalist MCP connects your AI coding assistant to two different CLI agents (Claude, Codex), each providing independent analysis. This gives you multiple perspectives on:
+The Brutalist MCP connects your AI coding assistant to three different CLI agents (Claude, Codex, Antigravity), each providing independent analysis. This gives you multiple perspectives on:
 
 - Code quality and security vulnerabilities
 - Architecture decisions and scalability
@@ -29,6 +29,14 @@ npm install -g claude
 
 # Option 2: Codex
 # Install from https://github.com/openai/codex-cli
+
+# Option 3: Antigravity (agy) — the gemini-cli successor
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+# Then ONE-TIME interactive auth (browser OAuth flow):
+agy "hi"
+# On macOS, the agent binary lives at ~/.local/bin/agy; the desktop IDE
+# at ~/.antigravity/antigravity/bin/agy can shadow it on PATH. If both
+# are installed, set AGY_BIN=$HOME/.local/bin/agy in your environment.
 ```
 
 ### Step 2: Install the MCP Server
@@ -160,8 +168,9 @@ roast_cli_debate "Microservices vs Monolith for our e-commerce platform"
 This MCP server coordinates analysis from locally installed CLI agents:
 - **Claude Code CLI** - Code review and architectural analysis
 - **Codex CLI** - Security and technical implementation review
+- **Antigravity (`agy`) CLI** - Gemini 3.5 Flash-tier rapid pattern-scan critique
 
-Each agent runs locally with direct file-system access, providing independent perspectives on your code and design decisions.
+Each agent runs locally with direct file-system access, providing independent perspectives on your code and design decisions. Agy is structurally an agent (not a completion API) — it's slower per call and produces side effects under `~/.gemini/antigravity-cli/scratch/` (the adapter passes `--sandbox` to keep those out of the user's workspace).
 
 **Analysis time:** Up to 25 minutes for complex projects. Thorough analysis requires time to examine code patterns, dependencies, and architectural decisions.
 
@@ -234,16 +243,35 @@ See [docs/pagination.md](docs/pagination.md) for detailed pagination documentati
 roast(domain="codebase", target="/src")
 
 # Restrict to a subset only when the user explicitly names which critics
-roast(domain="codebase", target="/src", clis=["codex"])
+roast(domain="codebase", target="/src", clis=["codex", "agy"])
 ```
 
 ### Agent Strengths
 
 Different agents have different strengths:
-- **Code review**: Claude, Codex
-- **Architecture**: Claude, Codex
-- **Security**: Codex, Claude
-- **Research**: Claude, Codex
+- **Code review**: Claude, Codex, Agy
+- **Architecture**: Claude, Codex, Agy
+- **Security**: Codex, Claude, Agy
+- **Research**: Claude, Codex, Agy
+
+When auto-selecting (no `clis` parameter), `agy` is always tried LAST since it's the slowest per call. Explicit `clis=["agy"]` honors the request regardless.
+
+### Antigravity (Agy) Auth Setup
+
+Local dev (one-time):
+```bash
+agy "hi"   # browser OAuth flow seeds the macOS keychain (or Linux file)
+```
+
+CI / GitHub Actions: capture the token from your local macOS keychain and store as a GH secret named `AGY_OAUTH_TOKEN`:
+```bash
+security find-generic-password -s gemini -a antigravity -w \
+  | sed 's/^go-keyring-base64://' | base64 -d \
+  | gh secret set AGY_OAUTH_TOKEN
+```
+The Brutalist GitHub Action writes the secret to `~/.gemini/antigravity-cli/antigravity-oauth-token` (mode 0600) before invoking the orchestrator; agy auto-detects the container environment and reads tokens from there. Agy issue [#78](https://github.com/google-antigravity/antigravity-cli/issues/78) (env-var auth) is still open — until it closes, the file-provisioning path is the only way agy authenticates in CI.
+
+If you have BOTH the Antigravity desktop IDE and the CLI agent installed on macOS, the IDE wrapper at `~/.antigravity/antigravity/bin/agy` may shadow the CLI agent at `~/.local/bin/agy` on PATH. Set `AGY_BIN=$HOME/.local/bin/agy` to disambiguate.
 
 ### Verification-Heavy Domains
 

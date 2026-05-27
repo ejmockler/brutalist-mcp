@@ -391,7 +391,7 @@ export class StreamingCLIOrchestrator extends EventEmitter {
         
         // Circuit breaker handled the error, continue with other agents
         responses.push({
-          agent: agent as 'claude' | 'codex',
+          agent: agent as 'claude' | 'codex' | 'agy',
           success: false,
           output: '',
           error: `Circuit breaker: ${error instanceof Error ? error.message : String(error)}`,

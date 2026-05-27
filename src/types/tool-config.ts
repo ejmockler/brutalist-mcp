@@ -37,16 +37,18 @@ export const BASE_ROAST_SCHEMA = {
   // Context and execution parameters
   context: z.string().optional().describe("Additional context about the analysis"),
   workingDirectory: z.string().optional().describe("Working directory to execute from"),
-  clis: z.array(z.enum(["codex", "claude"])).min(1).max(2).optional().describe("Subset of critics to run."),
+  clis: z.array(z.enum(["codex", "claude", "agy"])).min(1).max(3).optional().describe("Subset of critics to run."),
   verbose: z.boolean().optional().describe("Include detailed execution information in output (default: false)"),
 
   // Model selection — Claude honors overrides; Codex normally uses its own CLI
   // config/default so stale tool-call tags do not override newer local Codex
-  // configuration.
+  // configuration. agy has no --model flag at runtime (Flash-pinned in
+  // --print mode); the field is accepted but ignored.
   models: z.object({
     claude: z.string().optional().describe("Any Claude model (e.g. opus, sonnet, haiku, or full ID). Omit for CLI default."),
-    codex: z.string().optional().describe("Codex override. Ignored unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true; omit for Codex CLI configured/default model.")
-  }).optional().describe("Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Omit to use each CLI's configured default."),
+    codex: z.string().optional().describe("Codex override. Ignored unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true; omit for Codex CLI configured/default model."),
+    agy: z.string().optional().describe("Agy field accepted but ignored — agy --print is hard-pinned to `Gemini 3.5 Flash (Medium)`. Reserved for when Google ships agy issue #35 (--model flag).")
+  }).optional().describe("Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Agy field reserved (no runtime --model flag). Omit to use each CLI's configured default."),
 
   // Pagination and conversation continuation
   offset: z.number().min(0).optional().describe("Pagination offset (default: 0)"),

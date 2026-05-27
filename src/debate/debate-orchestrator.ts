@@ -82,7 +82,7 @@ export interface DebateToolArgs {
   proPosition: string;
   conPosition: string;
   target?: string;
-  agents?: ('claude' | 'codex')[];
+  agents?: ('claude' | 'codex' | 'agy')[];
   rounds?: number;
   context?: string;
   workingDirectory?: string;
@@ -103,7 +103,7 @@ interface ExecuteDebateArgs {
   proPosition: string;
   conPosition: string;
   target?: string;
-  agents?: ('claude' | 'codex')[];
+  agents?: ('claude' | 'codex' | 'agy')[];
   rounds: number;
   context?: string;
   workingDirectory?: string;
@@ -481,14 +481,14 @@ export class DebateOrchestrator {
     try {
       // Get available CLIs
       const cliContext = await this.cliOrchestrator.detectCLIContext();
-      const availableCLIs = cliContext.availableCLIs as ('claude' | 'codex')[];
+      const availableCLIs = cliContext.availableCLIs as ('claude' | 'codex' | 'agy')[];
 
       if (availableCLIs.length < 2) {
         throw new Error(`Need at least 2 CLI agents for debate. Available: ${availableCLIs.join(', ')}`);
       }
 
       // Select 2 agents: use specified or random selection
-      let selectedAgents: ('claude' | 'codex')[];
+      let selectedAgents: ('claude' | 'codex' | 'agy')[];
       if (args.agents && args.agents.length === 2) {
         // Validate specified agents are available
         const unavailable = args.agents.filter(a => !availableCLIs.includes(a));
@@ -711,7 +711,7 @@ Show why your position holds against their strongest points
             // Frontier 3: Track behavioral metadata
             const finalRefused = response.success && response.output ? detectRefusal(response.output) : false;
             turnMetadata.push({
-              agent: agent as 'claude' | 'codex',
+              agent: agent as 'claude' | 'codex' | 'agy',
               position: position as 'PRO' | 'CON',
               round,
               engaged: response.success && !!response.output && !finalRefused,
@@ -796,7 +796,7 @@ Show why your position holds against their strongest points
             }
 
             turnMetadata.push({
-              agent: agent as 'claude' | 'codex',
+              agent: agent as 'claude' | 'codex' | 'agy',
               position: position as 'PRO' | 'CON',
               round,
               engaged: false,

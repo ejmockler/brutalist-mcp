@@ -50,7 +50,7 @@ CLI Agent (spawnAsync)
   to `CLIAgentOrchestrator` via `CLIAgentOptions`.
 
 **CLI adapters** (`src/cli-adapters/`):
-- CLI adapters (`ClaudeAdapter`, `CodexAdapter`) handle
+- CLI adapters (`ClaudeAdapter`, `CodexAdapter`, `AgyAdapter`) handle
   command construction and output decoding only. They do not interact with
   streaming infrastructure directly.
 - Streaming events are emitted by `CLIAgentOrchestrator` in `cli-agents.ts`

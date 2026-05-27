@@ -31,9 +31,30 @@ await spawnAsync('codex', args, {
 });
 ```
 
+**Agy (Antigravity) CLI:**
+```javascript
+// agy --print does NOT accept stdin; prompt goes via argv (~128KB OS ARG_MAX).
+// No --system or --model flag exists at runtime; fold system prompt into the
+// user prompt slot. --sandbox redirects writes to ~/.gemini/antigravity-cli/
+// scratch/ (not the user's cwd). --dangerously-skip-permissions auto-approves
+// tool permissions (no human present in --print mode).
+const combined = `${systemPrompt}\n\n---\n\n${userPrompt}`;
+const args = ['--print', combined,
+              '--print-timeout', '15m',
+              '--sandbox',
+              '--dangerously-skip-permissions'];
+await spawnAsync(process.env.AGY_BIN || 'agy', args, {
+  cwd: workingDir,
+  timeout: 1800000  // --print-timeout is internally broken; orchestrator owns the wall clock
+});
+```
+
 ### Known Failure Patterns
 
 - **Claude --append-system-prompt**: Times out in spawn context
+- **Agy --print-timeout**: Internally broken — doesn't enforce wall-clock. Orchestrator's spawnAsync timeout is what actually bounds execution
+- **Agy --print + stdin**: agy ignores stdin in print mode; prompt must be in argv
+- **Agy on macOS PATH**: If the Antigravity desktop IDE is installed, its wrapper at `~/.antigravity/antigravity/bin/agy` may shadow the CLI agent at `~/.local/bin/agy`. Use `AGY_BIN=$HOME/.local/bin/agy` to disambiguate
 
 ## TypeScript Standards
 

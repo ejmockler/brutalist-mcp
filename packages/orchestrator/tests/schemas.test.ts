@@ -144,7 +144,7 @@ describe('OrchestratorResult schema', () => {
 
 describe('enums', () => {
   it('CliName accepts the three brutalist critics', () => {
-    for (const name of ['claude', 'codex', 'gemini'] as const) {
+    for (const name of ['claude', 'codex', 'agy'] as const) {
       expect(CliNameSchema.parse(name)).toBe(name);
     }
   });

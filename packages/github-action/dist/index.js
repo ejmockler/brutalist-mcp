@@ -39664,7 +39664,7 @@ function preprocess(fn, schema) {
  * mechanism so the agent-emitted blob is runtime-validated.
  */
 
-const CliNameSchema = schemas_enum(['claude', 'codex', 'gemini']);
+const CliNameSchema = schemas_enum(['claude', 'codex', 'agy']);
 const SeveritySchema = schemas_enum(['critical', 'high', 'medium', 'low', 'nit']);
 /**
  * Diff side. RIGHT = post-image (additions); LEFT = pre-image (deletions);
@@ -39705,7 +39705,7 @@ const CliBreakdownSchema = object({
     success: schemas_boolean(),
     model: schemas_string()
         .optional()
-        .describe('Resolved model name (e.g. "opus", "gemini-3.1-pro-preview").'),
+        .describe('Resolved model name (e.g. "opus", "gpt-5").'),
     executionTimeMs: schemas_number().int().nonnegative(),
     summary: schemas_string()
         .describe('Per-CLI free-form summary preserving the brutalist prose voice.'),
@@ -39747,7 +39747,7 @@ You are the brutalist PR review orchestrator. Your job is to run multi-CLI bruta
 
 ## Tools you have
 
-- \`mcp__brutalist__roast(domain, target, context?, ...)\` — runs Claude Code, Codex, and Gemini CLI critics in parallel and returns merged prose. Each CLI's section is wrapped in stable HTML-comment delimiters (see "Parsing per-CLI output" below). This is your primary information source.
+- \`mcp__brutalist__roast(domain, target, context?, ...)\` — runs Claude Code, Codex, and Antigravity (agy) CLI critics in parallel and returns merged prose. Each CLI's section is wrapped in stable HTML-comment delimiters (see "Parsing per-CLI output" below). This is your primary information source.
 - \`mcp__brutalist__brutalist_discover(intent)\` — optional domain-selection helper.
 - \`mcp__brutalist__cli_agent_roster()\` — shows which CLIs are available; useful for diagnostics.
 - \`Read(path)\`, \`Grep(pattern, path)\` — for verifying verbatim quotes and reading file context. **You MUST grep every verbatimQuote against the actual file before submitting it.**
@@ -39873,7 +39873,7 @@ class OrchestratorTimeoutError extends Error {
     messageCount;
     constructor(timeoutMs, messageCount) {
         super(`Orchestrator exceeded wall-clock budget of ${timeoutMs}ms after ${messageCount} agent message(s). ` +
-            `Most likely a child CLI subprocess (claude/codex/gemini) stalled. ` +
+            `Most likely a child CLI subprocess (claude/codex/agy) stalled. ` +
             `Raise timeoutMs, split the diff, or investigate the stalled critic.`);
         this.timeoutMs = timeoutMs;
         this.messageCount = messageCount;
@@ -39951,8 +39951,9 @@ async function run(options) {
         tools: [submitFindings],
     });
     // Inherit the parent's full environment so spawned subprocesses keep
-    // PATH (to locate `claude`/`codex`/`gemini`/`node`), HOME (for CLI
-    // config dirs), and the rest of the toolchain. We then layer
+    // PATH (to locate `claude`/`codex`/`agy`/`node`), HOME (for CLI
+    // config dirs including `~/.gemini/antigravity-cli/` for agy's file
+    // token storage), and the rest of the toolchain. We then layer
     // brutalist-specific keys on top — this is the only correct
     // composition; partial env objects are not "additive" with most
     // child_process.spawn implementations, they're complete replacements.
@@ -39973,8 +39974,6 @@ async function run(options) {
             // overwrite any pre-existing value with `undefined`.
             ...(process.env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY } : {}),
             ...(process.env.OPENAI_API_KEY ? { OPENAI_API_KEY: process.env.OPENAI_API_KEY } : {}),
-            ...(process.env.GEMINI_API_KEY ? { GEMINI_API_KEY: process.env.GEMINI_API_KEY } : {}),
-            ...(process.env.GOOGLE_API_KEY ? { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY } : {}),
         },
     };
     // Wall-clock budget: cancel the SDK iterator if a child CLI stalls
@@ -40149,10 +40148,8 @@ function readInputs() {
         anthropicOauthToken,
         githubToken,
         openaiApiKey: lib_core.getInput('openai-api-key') || undefined,
-        googleApiKey: lib_core.getInput('google-api-key') || undefined,
         codexAuth: lib_core.getInput('codex-auth') || undefined,
-        geminiOauthCreds: lib_core.getInput('gemini-oauth-creds') || undefined,
-        geminiGoogleAccounts: lib_core.getInput('gemini-google-accounts') || undefined,
+        agyOauthToken: lib_core.getInput('agy-oauth-token') || undefined,
         workingDirectory: lib_core.getInput('working-directory') || '.',
         minimumSeverity: minimumSeverityRaw,
         maxDiffChars,
@@ -40797,12 +40794,12 @@ function findMultiLineRanges(fileLines, needle) {
 /**
  * Cross-CLI grouping.
  *
- * Brutalist's value prop is that 3 CLIs critiquing the same line is the
- * signal — *especially* when they disagree. So when multiple findings
- * land on the same `(path, resolvedLine, side)`, we collapse them into
- * a single PR comment with stacked CLI badges and a severity rollup.
- * The orchestrator emits one Finding per CLI per issue; the grouping
- * happens here.
+ * Brutalist's value prop is that multiple CLIs critiquing the same line
+ * is the signal — *especially* when they disagree. So when multiple
+ * findings land on the same `(path, resolvedLine, side)`, we collapse
+ * them into a single PR comment with stacked CLI badges and a severity
+ * rollup. The orchestrator emits one Finding per CLI per issue; the
+ * grouping happens here.
  *
  * Out-of-diff findings get rendered separately (as a section in the
  * review summary), since GitHub rejects inline comments on lines that
@@ -40836,7 +40833,6 @@ const SEVERITY_BADGES = {
 const CLI_BADGE = {
     claude: 'Claude',
     codex: 'Codex',
-    gemini: 'Gemini',
 };
 function groupInlineFindings(findings, threshold) {
     return groupInlineFindingsWithSubThreshold(findings, threshold).groups;
@@ -41308,10 +41304,10 @@ var external_node_util_ = __nccwpck_require__(7975);
  *     start.
  *
  * Soft requirements (warn but proceed):
- *   - At least one of {`claude`, `codex`, `gemini`} for the brutalist
- *     critic side. `claude` doubles as a critic so the hard requirement
- *     above already covers the minimum, but absence of `codex` and
- *     `gemini` means a single-perspective review.
+ *   - At least one of {`claude`, `codex`} for the brutalist critic side.
+ *     `claude` doubles as a critic so the hard requirement above already
+ *     covers the minimum, but absence of `codex` means a
+ *     single-perspective review.
  */
 
 
@@ -41324,13 +41320,12 @@ const execAsync = (0,external_node_util_.promisify)(external_node_child_process_
  * is enough to distinguish "installed" from "not installed".
  */
 async function runPreflight() {
-    const [brutalistMcp, claude, codex, gemini] = await Promise.all([
+    const [brutalistMcp, claude, codex] = await Promise.all([
         probeBinary('brutalist-mcp'),
         probeBinary('claude'),
         probeBinary('codex'),
-        probeBinary('gemini'),
     ]);
-    return { brutalistMcp, claude, codex, gemini };
+    return { brutalistMcp, claude, codex };
 }
 /**
  * Validate the preflight result and throw with an actionable error if a
@@ -41352,11 +41347,11 @@ function assertPreflight(result) {
     }
     // Soft warnings — having only one critic is functional but loses the
     // multi-perspective value prop.
-    const critics = [result.claude, result.codex, result.gemini].filter((b) => b.available);
+    const critics = [result.claude, result.codex].filter((b) => b.available);
     if (critics.length === 1) {
-        lib_core.warning(`Only one CLI critic available (${critics[0].binary}). Multi-perspective review requires installing additional critics: ${result.codex.available ? '' : 'codex '}${result.gemini.available ? '' : 'gemini'}.`.trim());
+        lib_core.warning(`Only one CLI critic available (${critics[0].binary}). Multi-perspective review requires installing the missing critic: ${result.codex.available ? 'claude' : 'codex'}.`);
     }
-    for (const status of [result.claude, result.codex, result.gemini]) {
+    for (const status of [result.claude, result.codex]) {
         if (status.available && status.resolvedPath) {
             lib_core.info(`✓ ${status.binary}: ${status.resolvedPath}`);
         }
@@ -41438,22 +41433,31 @@ var external_node_crypto_ = __nccwpck_require__(7598);
 var external_node_fs_ = __nccwpck_require__(3024);
 ;// CONCATENATED MODULE: ./src/oauth-provisioning.ts
 /**
- * OAuth credential provisioning for the Codex and Gemini CLIs.
+ * OAuth credential provisioning for the Codex and Antigravity (`agy`) CLIs.
  *
- * Both CLIs persist their OAuth state as JSON files in $HOME, not as env
- * vars. To run them under OAuth in CI we capture each file once locally
- * (via `codex login` / first `gemini` run), store the contents as
- * GitHub secrets, and write the secrets back to the runner's $HOME on
- * each spinup before invoking the CLIs.
+ * Both persist OAuth state as a JSON file in $HOME (agy under
+ * `~/.gemini/antigravity-cli/`, Codex under `~/.codex/`), not as env
+ * vars. To run them under OAuth in CI we capture the file once locally
+ * (via `codex login` / one-time `agy "hi"`), store the contents as a
+ * GitHub secret, and write the secret back to the runner's $HOME on
+ * each spinup before invoking the CLI.
  *
- * Lifecycle caveat (real but bounded): both CLIs rotate access tokens
+ * Lifecycle caveat (real but bounded): both CLIs rotate access_tokens
  * during use and rewrite the file. In ephemeral CI runners those writes
  * vanish with the VM. Each subsequent run starts from the secret's
  * original refresh_token. This works fine as long as the provider
- * treats refresh_tokens as long-lived (typical for installed-app OAuth).
+ * treats refresh_tokens as long-lived (typical for installed-app OAuth;
+ * Google's policy: indefinite under normal use, expires only on user
+ * revocation, 6 months idle, >100 live tokens per client, or Testing-
+ * stage consent screen 7-day cap).
+ *
  * If the provider does hard refresh-token rotation, the stored secret
  * goes stale after one CI run and needs regeneration. detectRefreshRotation
  * surfaces this as a warning so operators learn empirically.
+ *
+ * Token shape differs per CLI:
+ *   - Codex:  { tokens: { access_token, refresh_token, id_token, account_id } }
+ *   - Agy:    { token:  { access_token, refresh_token, expiry, token_type }, auth_method: "consumer" }
  */
 
 
@@ -41474,31 +41478,21 @@ async function provisionCredentials(opts) {
         relPath: external_node_path_.join('.codex', 'auth.json'),
         refreshTokenAccessor: (j) => j?.tokens?.refresh_token,
     }, home, fingerprints);
-    const geminiCredsWritten = await writeSlot({
-        label: 'GEMINI_OAUTH_CREDS',
-        contents: opts.geminiOauthCreds,
-        relPath: external_node_path_.join('.gemini', 'oauth_creds.json'),
-        refreshTokenAccessor: (j) => j?.refresh_token,
+    // Agy: the keychain blob format on macOS is `go-keyring-base64:<b64>`;
+    // the file-backend on Linux expects the raw decoded JSON. Callers
+    // must strip and decode before passing — see the agy-oauth-token
+    // capture command in action.yml.
+    const agyWritten = await writeSlot({
+        label: 'AGY_OAUTH_TOKEN',
+        contents: opts.agyOauthToken,
+        relPath: external_node_path_.join('.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+        refreshTokenAccessor: (j) => j?.token?.refresh_token,
     }, home, fingerprints);
-    const geminiAccountsWritten = await writeSlot({
-        label: 'GEMINI_GOOGLE_ACCOUNTS',
-        contents: opts.geminiGoogleAccounts,
-        relPath: external_node_path_.join('.gemini', 'google_accounts.json'),
-        // No refresh_token in this file — just the account binding.
-    }, home, fingerprints);
-    // Gemini needs BOTH files. If only one was supplied, the CLI may
-    // prompt or fail unpredictably — warn and treat as un-provisioned so
-    // the env-var fallback path can take over (if a Google API key was
-    // also supplied).
-    let geminiOauth = false;
-    if (geminiCredsWritten && geminiAccountsWritten) {
-        geminiOauth = true;
-    }
-    else if (geminiCredsWritten || geminiAccountsWritten) {
-        lib_core.warning('Gemini OAuth requires BOTH gemini-oauth-creds AND gemini-google-accounts. ' +
-            'Only one was supplied; falling back to GEMINI_API_KEY env if present.');
-    }
-    return { codexOauth: codexWritten, geminiOauth, initialFingerprints: fingerprints };
+    return {
+        codexOauth: codexWritten,
+        agyOauth: agyWritten,
+        initialFingerprints: fingerprints,
+    };
 }
 /**
  * After the orchestrator run, compare the on-disk refresh_token against
@@ -41513,10 +41507,20 @@ async function provisionCredentials(opts) {
  */
 async function detectRefreshRotation(initialFingerprints, homeDir = external_node_os_namespaceObject.homedir()) {
     const slots = [
-        ['CODEX_AUTH', external_node_path_.join(homeDir, '.codex', 'auth.json'), (j) => j?.tokens?.refresh_token],
-        ['GEMINI_OAUTH_CREDS', external_node_path_.join(homeDir, '.gemini', 'oauth_creds.json'), (j) => j?.refresh_token],
+        [
+            'CODEX_AUTH',
+            external_node_path_.join(homeDir, '.codex', 'auth.json'),
+            (j) => j?.tokens?.refresh_token,
+            'codex login',
+        ],
+        [
+            'AGY_OAUTH_TOKEN',
+            external_node_path_.join(homeDir, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+            (j) => j?.token?.refresh_token,
+            'agy "hi" (interactive) and re-capture the macOS keychain entry',
+        ],
     ];
-    for (const [label, file, accessor] of slots) {
+    for (const [label, file, accessor, regenerate] of slots) {
         const before = initialFingerprints.get(label);
         if (!before)
             continue;
@@ -41524,7 +41528,7 @@ async function detectRefreshRotation(initialFingerprints, homeDir = external_nod
             const after = fingerprintRefreshToken(await external_node_fs_.promises.readFile(file, 'utf8'), accessor);
             if (after && after !== before) {
                 lib_core.warning(`${label}: refresh_token rotated during this run (${before} → ${after}). ` +
-                    `The stored secret is now stale. Regenerate locally (codex login / gemini "hi") ` +
+                    `The stored secret is now stale. Regenerate locally (${regenerate}) ` +
                     `and update the GitHub secret before the prior refresh_token expires.`);
             }
         }
@@ -41630,10 +41634,13 @@ function extractOauthSecrets(jsonContents) {
         collect(tokens.refresh_token);
         collect(tokens.id_token);
     }
-    // Gemini shape: top-level { access_token, refresh_token, id_token }
-    collect(obj.access_token);
-    collect(obj.refresh_token);
-    collect(obj.id_token);
+    // Agy shape: { token: { access_token, refresh_token, expiry, token_type }, auth_method }
+    const token = obj.token;
+    if (token && typeof token === 'object') {
+        collect(token.access_token);
+        collect(token.refresh_token);
+        collect(token.id_token);
+    }
     return out;
 }
 // Re-export fs constants used by tests for permission assertions.
@@ -41672,30 +41679,27 @@ async function main() {
     lib_core.info('Running preflight checks...');
     const preflight = await runPreflight();
     assertPreflight(preflight);
-    // Provision OAuth credential files for Codex + Gemini. The CLIs read
-    // their OAuth state from disk (~/.codex/auth.json /
-    // ~/.gemini/oauth_creds.json + google_accounts.json), so we write the
-    // GitHub secrets back to those paths before invoking the orchestrator.
+    // Provision OAuth credential files for Codex and Agy. Both CLIs read
+    // their OAuth state from disk (~/.codex/auth.json and
+    // ~/.gemini/antigravity-cli/antigravity-oauth-token), so we write the
+    // GitHub secrets to those paths before invoking the orchestrator.
     // Files are mode 0600.
     const provisioned = await provisionCredentials({
         codexAuth: inputs.codexAuth,
-        geminiOauthCreds: inputs.geminiOauthCreds,
-        geminiGoogleAccounts: inputs.geminiGoogleAccounts,
+        agyOauthToken: inputs.agyOauthToken,
     });
     // Forward provider keys into process.env ONLY when OAuth wasn't
-    // provisioned for that provider. The CLIs prefer env-based API keys
+    // provisioned for that provider. The CLI prefers env-based API keys
     // over file-based OAuth, so setting both would override the OAuth
-    // path we just wrote to disk.
+    // path we just wrote to disk. Agy has no env-var auth path (#78 still
+    // open), so the file provisioning is the only viable CI auth.
     if (!provisioned.codexOauth && inputs.openaiApiKey) {
         process.env.OPENAI_API_KEY = inputs.openaiApiKey;
     }
-    if (!provisioned.geminiOauth && inputs.googleApiKey) {
-        process.env.GEMINI_API_KEY = inputs.googleApiKey;
-    }
     if (provisioned.codexOauth)
         lib_core.info('Codex critic will authenticate via OAuth.');
-    if (provisioned.geminiOauth)
-        lib_core.info('Gemini critic will authenticate via OAuth.');
+    if (provisioned.agyOauth)
+        lib_core.info('Agy critic will authenticate via file-based OAuth.');
     const pull = getPullRequestRef();
     if (!pull) {
         throw new Error('This action runs on pull_request events only. github.context.payload.pull_request was missing.');
@@ -41808,20 +41812,20 @@ main().catch((err) => {
     let secrets = [];
     try {
         const i = readInputs();
-        secrets = [i.anthropicOauthToken, i.openaiApiKey, i.googleApiKey].filter((s) => typeof s === 'string' && s.length >= 8);
+        secrets = [i.anthropicOauthToken, i.openaiApiKey].filter((s) => typeof s === 'string' && s.length >= 8);
         // Extract individual token fields from each OAuth credential blob
         // so partial echoes (e.g. a CLI logging "Bearer <token>") get
         // masked even when the whole-blob match doesn't fire. Defense in
         // depth on top of the blob-level mask.
         secrets.push(...extractOauthSecrets(i.codexAuth));
-        secrets.push(...extractOauthSecrets(i.geminiOauthCreds));
+        secrets.push(...extractOauthSecrets(i.agyOauthToken));
         // Also register the whole blob — covers full-payload echoes that
         // the field-level extractor wouldn't reach (e.g. an error dump that
         // serialized the input dict).
         if (i.codexAuth && i.codexAuth.length >= 16)
             secrets.push(i.codexAuth);
-        if (i.geminiOauthCreds && i.geminiOauthCreds.length >= 16)
-            secrets.push(i.geminiOauthCreds);
+        if (i.agyOauthToken && i.agyOauthToken.length >= 16)
+            secrets.push(i.agyOauthToken);
     }
     catch {
         // readInputs may itself throw (e.g. missing required input) — in
@@ -41830,7 +41834,7 @@ main().catch((err) => {
     }
     // Add any provider-key process.env values too — orchestrator forwards
     // them into spawn env, the SDK could echo them in errors.
-    for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY']) {
+    for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
         const v = process.env[key];
         if (v && v.length >= 8)
             secrets.push(v);

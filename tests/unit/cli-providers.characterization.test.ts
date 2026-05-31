@@ -263,6 +263,57 @@ describe('CLI Provider Command Construction', () => {
     });
   });
 
+  // ---- Agy (Antigravity) ----------------------------------------------
+  // agy is an agentic loop, not a completion API: pointed at a repo it
+  // wanders the filesystem and tries to review the whole tree, stalling
+  // out the wall-clock budget. The adapter prepends a diff-scoped, anchored
+  // orientation when a unified diff is present (the PR-review path) and
+  // leaves abstract roasts untouched. Prompt rides in argv (not stdin), so
+  // find it by content — robust to the macOS/Windows PTY wrapper shifting
+  // argv positions.
+  describe('Agy CLI (Antigravity)', () => {
+    const findPromptArg = (args: string[]): string =>
+      args.find((a) => typeof a === 'string' && a.includes('Be brutal')) ?? '';
+
+    const DIFF_PROMPT =
+      'Analyze the codebase directory at /work/repo for security vulnerabilities, ' +
+      'performance issues, and architectural problems. Context: ' +
+      'diff --git a/src/login.js b/src/login.js\n@@ -1,2 +1,2 @@\n-safe\n+unsafe';
+
+    async function buildAgy(userPrompt: string, opts: CLIAgentOptions = {}) {
+      return (orchestrator as any).buildCLICommand('agy', userPrompt, 'Be brutal', opts);
+    }
+
+    it('prepends a diff-scoped, anchored orientation when a diff is present', async () => {
+      const result = await buildAgy(DIFF_PROMPT, { workingDirectory: '/work/repo' });
+      const prompt = findPromptArg(result.args);
+      expect(prompt).toContain('defensive pre-merge code review');
+      expect(prompt).toContain('scope your review to the file(s) the diff changes');
+      // anchored to the absolute target so agy doesn't hunt the filesystem
+      expect(prompt).toContain('/work/repo');
+      // persona + original task preserved
+      expect(prompt).toContain('Be brutal');
+      expect(prompt).toContain('Analyze the codebase directory');
+    });
+
+    it('omits the absolute-path claim when workingDirectory is not absolute', async () => {
+      const result = await buildAgy(DIFF_PROMPT, { workingDirectory: '.' });
+      const prompt = findPromptArg(result.args);
+      expect(prompt).toContain('defensive pre-merge code review');
+      expect(prompt).not.toContain('absolute path: .');
+    });
+
+    it('does NOT add the orientation for abstract roasts (no diff)', async () => {
+      const result = await buildAgy(
+        'Analyze this idea: a social network for dogs. Find where it fails.',
+        { workingDirectory: '/work/repo' }
+      );
+      const prompt = findPromptArg(result.args);
+      expect(prompt).not.toContain('defensive pre-merge code review');
+      expect(prompt).toContain('Analyze this idea');
+    });
+  });
+
 });
 
 // ---------------------------------------------------------------------------

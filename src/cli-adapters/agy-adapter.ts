@@ -221,9 +221,42 @@ export class AgyAdapter implements CLIProvider {
     // (verified — rejected by the Go flag parser). Strong-position
     // composition: directives first, then a separator, then the user
     // content. The model treats this as the user's instructions.
+    //
+    // Agy-specific orientation (claude/codex do NOT need this — they stay
+    // focused on their own). agy is an agentic loop, not a completion API:
+    // pointed at a repo with "Analyze the codebase directory at <path>" it
+    //   (a) wanders the filesystem hunting for "where the code is" —
+    //       worsened by --sandbox redirecting its cwd sense to the scratch
+    //       dir, so it lists scratch/$HOME/config dirs before finding the
+    //       target; and
+    //   (b) takes "the codebase directory" literally and tries to review
+    //       the WHOLE repo, never converging inside the orchestrator's
+    //       wall-clock budget on a real codebase.
+    // The combination stalled out a 30-min PR-review budget on a 30-line
+    // diff. When a unified diff is present (the PR-review path) we prepend
+    // an orientation that anchors agy to the absolute target, scopes it to
+    // the changed files, and frames the task as a defensive pre-merge
+    // review (Gemini Flash otherwise intermittently refuses bare
+    // "find the vulnerability" prompts). Empirically: 30-min stall →
+    // ~15-50s focused, line-cited review. Gated on hasDiff so abstract
+    // roasts (idea/research/etc., where the content is inline and there's
+    // no filesystem target) are untouched.
+    const target = options.workingDirectory && path.isAbsolute(options.workingDirectory)
+      ? options.workingDirectory
+      : undefined;
+    // constructUserPrompt embeds the diff as "Context: diff --git ..." so
+    // the `diff --git` marker is mid-line; match it anywhere. The `@@` hunk
+    // header is a second, line-anchored signal. A false negative (missing a
+    // diff) is worse than a false positive here, so cast wide.
+    const hasDiff = /diff --git /.test(userPrompt) || /(^|\n)@@ .+ @@/.test(userPrompt);
+    const orientation = hasDiff
+      ? `You are performing a defensive pre-merge code review: your job is to help the author find and fix problems in this change before it is merged. Give your complete critique in one response, then stop. ${target ? `The code under review is in the repository at the absolute path: ${target} — read the relevant files there directly for context. ` : ''}Do not search elsewhere on the system (for example /tmp listings, your home directory, or any sandbox/scratch directory) to locate the code. A unified diff is included in the task below; even though the task may say "analyze the codebase directory", scope your review to the file(s) the diff changes rather than surveying the entire repository.`
+      : undefined;
+
+    const taskBlock = orientation ? `${orientation}\n\n${userPrompt}` : userPrompt;
     const combinedPrompt = systemPrompt
-      ? `${systemPrompt}\n\n---\n\n${userPrompt}`
-      : userPrompt;
+      ? `${systemPrompt}\n\n---\n\n${taskBlock}`
+      : taskBlock;
 
     // Soft-warn at 100KB; hard ARG_MAX is ~128KB on Linux. Brutalist's
     // own prompts (system + code excerpt) typically run 5-30KB.

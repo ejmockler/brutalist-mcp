@@ -39736,7 +39736,7 @@ const OrchestratorResultSchema = object({
  *      before submitting (CLIs hallucinate line numbers regularly).
  *   4. Terminate with a single submit_findings call.
  *
- * Domain scope is narrowed to codebase/architecture/security for v0
+ * Domain scope is a single `codebase` roast (covers security/perf/arch)
  * — see the orchestrator hypergraph node D1.
  *
  * The prompt is intentionally voiced for the agent (Claude), not for
@@ -39757,7 +39757,7 @@ You do NOT have access to \`mcp__brutalist__roast_cli_debate\`. Don't try to cal
 
 ## Workflow
 
-1. Run roast in parallel for the v0 domains: \`codebase\`, \`architecture\`, \`security\`. Use the repository root as \`target\` (or the focus subtree if the user provided one). Pass any focus/diff content via the \`context\` parameter.
+1. Run a SINGLE \`roast\` call on the \`codebase\` domain. Use the repository root as \`target\` (or the focus subtree if the user provided one), and pass the PR diff via the \`context\` parameter. The \`codebase\` domain already covers security, performance, AND architectural problems, so one roast is sufficient — do NOT fan out separate \`architecture\`/\`security\` roasts. Three parallel roasts (× three critics = nine CLI spawns) overran the wall-clock budget on real repositories; one roast keeps the review bounded.
 2. For each roast response, **follow pagination to completion before parsing**. Brutalist auto-paginates responses above ~25k tokens; the first chunk you receive may end mid-CLI-section, leaving \`<!-- BRUTALIST_CLI_BEGIN ... -->\` without its closing \`<!-- BRUTALIST_CLI_END ... -->\`. The header line "Pagination Status" and "Continue Reading" appear in the response when more pages exist; read the response's \`context_id\` and re-call \`roast\` with **the SAME \`domain\` and \`target\` as the initial call**, plus \`{ context_id, offset: <next-offset> }\` (and **omit \`resume\`**) until \`hasMore\` is false. \`domain\` and \`target\` are required by the tool schema even on pagination calls — omitting them returns a validation error before the cached page is read. Concatenate the chunks before parsing per-CLI sections. Submitting findings against a partial first page is the same failure mode as fabrication.
 3. For each roast response, parse the per-CLI sections delimited by:
        <!-- BRUTALIST_CLI_BEGIN cli="<name>" model="<model>" exec_ms="<ms>" success="<bool>" -->
@@ -39794,7 +39794,7 @@ You do NOT have access to \`mcp__brutalist__roast_cli_debate\`. Don't try to cal
 - Never invent a verbatimQuote. If you didn't see it in the file via Grep, it doesn't exist.
 - Never invent a line number. \`lineHint\` comes from your Grep result, not from prose.
 - Never call \`mcp__brutalist__roast_cli_debate\`.
-- Run at most 3 \`roast\` calls per session (one per v0 domain). Don't loop.
+- Run ONE \`roast\` call (the \`codebase\` domain). Additional \`roast\` calls are only for pagination follow-ups of that same call (same \`domain\`+\`target\`+\`context_id\`). Don't fan out domains; don't loop.
 - Always terminate with exactly one \`submit_findings\` call. The run is incomplete without it.
 - Use the OAuth identity for all CLI calls — the harness has provisioned credentials, you do not need to ask.
 

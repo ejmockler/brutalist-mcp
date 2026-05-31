@@ -1520,9 +1520,22 @@ export class CLIAgentOrchestrator {
     const sanitizedContent = primaryContent;
     const sanitizedContext = context || 'No additional context provided';
 
+    // A unified diff in `context` marks this as a change/PR review. Direct
+    // critics to focus on the changed files instead of auditing the whole
+    // tree: "Analyze the codebase directory" otherwise makes every critic
+    // (claude/codex/agy) explore the entire repo agentically, which doesn't
+    // converge on a large codebase within the orchestrator's wall-clock
+    // budget. Scoping here covers ALL critics (the agy adapter adds further
+    // agy-specific anti-wander framing on top).
+    const hasDiff = !!context && (/diff --git /.test(context) || /(^|\n)@@ .+ @@/.test(context));
+
     const prompts = {
-      code: `Analyze the codebase at ${sanitizedContent} for issues. Context: ${sanitizedContext}`,
-      codebase: `Analyze the codebase directory at ${sanitizedContent} for security vulnerabilities, performance issues, and architectural problems. Context: ${sanitizedContext}`,
+      code: hasDiff
+        ? `Review the code change for issues. The code is at ${sanitizedContent}; read the changed files there for context, but scope your review to what the change touches — do not audit the whole codebase.`
+        : `Analyze the codebase at ${sanitizedContent} for issues.`,
+      codebase: hasDiff
+        ? `Review the code change for security vulnerabilities, performance issues, and architectural problems. The repository is at ${sanitizedContent}; read the changed files there for context, but scope your review to what the change touches — do not audit the entire codebase.`
+        : `Analyze the codebase directory at ${sanitizedContent} for security vulnerabilities, performance issues, and architectural problems.`,
       architecture: `Review the architecture: ${sanitizedContent}. Find every scaling failure and cost explosion.`,
       idea: `Analyze this idea: ${sanitizedContent}. Find where imagination fails to become reality.`,
       research: `Review this research: ${sanitizedContent}. Find every methodological flaw and reproducibility issue.`,

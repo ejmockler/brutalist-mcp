@@ -36,8 +36,11 @@ describe('ORCHESTRATOR_SYSTEM_PROMPT', () => {
     expect(ORCHESTRATOR_SYSTEM_PROMPT.toLowerCase()).toMatch(/exactly once/);
   });
 
-  it('caps roast calls per session', () => {
-    expect(ORCHESTRATOR_SYSTEM_PROMPT.toLowerCase()).toMatch(/at most 3 .*roast/);
+  it('directs a single roast call (no domain fan-out)', () => {
+    // One codebase roast — three parallel domain roasts overran the
+    // wall-clock budget on real repos (see orchestrator.ts trace findings).
+    expect(ORCHESTRATOR_SYSTEM_PROMPT.toLowerCase()).toMatch(/run (a single|one) .*roast/);
+    expect(ORCHESTRATOR_SYSTEM_PROMPT.toLowerCase()).toMatch(/do not fan out|don't fan out/);
   });
 
   it('instructs the agent to follow pagination via context_id + offset', () => {

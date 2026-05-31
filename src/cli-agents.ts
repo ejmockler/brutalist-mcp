@@ -591,7 +591,17 @@ export interface CLIContext {
 }
 
 export class CLIAgentOrchestrator {
-  private defaultTimeout = 1800000; // 30 minutes - complex codebases need time
+  // Per-CLI spawn timeout. MUST honor BRUTALIST_TIMEOUT (DEFAULT_TIMEOUT,
+  // read from env at module load) — this was previously hardcoded to
+  // 1800000, which silently shadowed the env: executeSingleCLI passes
+  // `options.timeout || this.defaultTimeout` to spawnAsync, and spawnAsync's
+  // own `options.timeout || DEFAULT_TIMEOUT` then never reached DEFAULT_TIMEOUT
+  // because this value was always set. Net effect: BRUTALIST_TIMEOUT was dead
+  // for real critic spawns and any stalled critic (e.g. agy's agentic loop)
+  // ran the full 30 min, colliding with the orchestrator's wall-clock budget.
+  // Unifying on DEFAULT_TIMEOUT makes the per-critic cap actually configurable
+  // (default unchanged at 1800000 when the env is unset).
+  private defaultTimeout = DEFAULT_TIMEOUT; // honors BRUTALIST_TIMEOUT env
   private defaultWorkingDir = process.cwd();
   private cliContext: CLIContext = { availableCLIs: [] };
   private cliContextCached = false;

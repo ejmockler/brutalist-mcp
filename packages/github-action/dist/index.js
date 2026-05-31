@@ -39981,7 +39981,11 @@ async function run(options) {
     // wedged subprocess to hold the loop for the GH Actions job timeout
     // (6h default). The AbortController propagates through the SDK's
     // child-process tree.
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    // Wall-clock budget. Precedence: explicit option > BRUTALIST_ORCHESTRATOR_TIMEOUT_MS
+    // env (lets CI lower it for cheap iteration without a code change) > 30-min default.
+    const envTimeout = Number(process.env.BRUTALIST_ORCHESTRATOR_TIMEOUT_MS);
+    const timeoutMs = options.timeoutMs
+        ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : DEFAULT_TIMEOUT_MS);
     const abortController = new AbortController();
     const timeoutHandle = setTimeout(() => abortController.abort(), timeoutMs);
     // Mark the handle for garbage collection on early-exit paths.
@@ -40035,10 +40039,49 @@ async function run(options) {
     // Drain the message stream. We only consult `captured` afterwards;
     // intermediate messages are not retained (memory + downstream parsing
     // happen via the SDK tool handler boundary).
+    // Per-message trace (stderr → CI log), gated by BRUTALIST_ORCHESTRATOR_TRACE=1.
+    // One concise line per SDK message — elapsed time, type, tool names, errors —
+    // so a stalled brain is diagnosable: which roast call was issued, how long each
+    // took (gap between the tool_use and its tool_result), and where the dead time
+    // is. The brain is a separate `claude` process NOT bounded by the per-critic
+    // BRUTALIST_TIMEOUT, so this is the only window into why it stalls.
+    const traceOn = process.env.BRUTALIST_ORCHESTRATOR_TRACE === '1';
+    const traceT0 = Date.now();
     let messageCount = 0;
     try {
-        for await (const _message of Fj$({ prompt: userPrompt, options: queryOptions })) {
+        for await (const message of Fj$({ prompt: userPrompt, options: queryOptions })) {
             messageCount++;
+            if (traceOn) {
+                const elapsed = ((Date.now() - traceT0) / 1000).toFixed(1);
+                let detail = '';
+                try {
+                    const anyMsg = message;
+                    if (message.type === 'assistant') {
+                        const blocks = anyMsg.message?.content ?? [];
+                        const tools = blocks
+                            .filter((b) => b?.type === 'tool_use')
+                            .map((b) => b.name);
+                        detail = tools.length
+                            ? ` tool_use=[${tools.join(', ')}]`
+                            : (blocks.some((b) => b?.type === 'text') ? ' text' : '');
+                        if (anyMsg.error)
+                            detail += ` ERROR=${anyMsg.error}`;
+                    }
+                    else if (message.type === 'user') {
+                        const n = (anyMsg.message?.content ?? []).filter((b) => b?.type === 'tool_result').length;
+                        if (n)
+                            detail = ` tool_result x${n}`;
+                    }
+                    else if (message.type === 'result') {
+                        detail = ` subtype=${anyMsg.subtype} duration=${anyMsg.duration_ms}ms turns=${anyMsg.num_turns}`;
+                    }
+                }
+                catch {
+                    /* trace must never throw */
+                }
+                // eslint-disable-next-line no-console
+                console.error(`[orch +${elapsed}s] #${messageCount} ${message.type}${detail}`);
+            }
         }
     }
     catch (err) {

@@ -1531,16 +1531,28 @@ export class CLIAgentOrchestrator {
   ): string {
     // Trust CLI tools to handle their own security
     const sanitizedContent = primaryContent;
-    const sanitizedContext = context || 'No additional context provided';
 
-    // A unified diff in `context` marks this as a change/PR review. Direct
-    // critics to focus on the changed files instead of auditing the whole
-    // tree: "Analyze the codebase directory" otherwise makes every critic
-    // (claude/codex/agy) explore the entire repo agentically, which doesn't
-    // converge on a large codebase within the orchestrator's wall-clock
-    // budget. Scoping here covers ALL critics (the agy adapter adds further
-    // agy-specific anti-wander framing on top).
-    const hasDiff = !!context && (/diff --git /.test(context) || /(^|\n)@@ .+ @@/.test(context));
+    // Deterministic diff scoping. The orchestrator injects the PR diff via
+    // BRUTALIST_PR_DIFF on our subprocess env (it has the diff and controls
+    // our spawn env), so scoping does NOT depend on the brain relaying the
+    // diff verbatim in the roast `context` arg. Without this, a brain that
+    // paraphrases the diff leaves critics — especially agy's agentic loop —
+    // auditing the WHOLE repo until the per-critic timeout (observed: agy
+    // hit the 900s cap on a one-file change). If the brain already supplied
+    // a diff in `context`, keep it; otherwise fold in the injected one.
+    const injectedDiff = (process.env.BRUTALIST_PR_DIFF || '').trim();
+    const contextHasDiff = !!context && (/diff --git /.test(context) || /(^|\n)@@ .+ @@/.test(context));
+    const effectiveContext = (!contextHasDiff && injectedDiff)
+      ? (context ? `${context}\n\n${injectedDiff}` : injectedDiff)
+      : context;
+    const sanitizedContext = effectiveContext || 'No additional context provided';
+
+    // A unified diff marks this as a change/PR review. Direct critics to
+    // focus on the changed files instead of auditing the whole tree:
+    // "Analyze the codebase directory" otherwise makes every critic
+    // (claude/codex/agy) explore the entire repo agentically. Scoping here
+    // covers ALL critics (the agy adapter adds further anti-wander framing).
+    const hasDiff = !!effectiveContext && (/diff --git /.test(effectiveContext) || /(^|\n)@@ .+ @@/.test(effectiveContext));
 
     const prompts = {
       code: hasDiff
@@ -1564,7 +1576,7 @@ export class CLIAgentOrchestrator {
     };
 
     const specificPrompt = prompts[analysisType as keyof typeof prompts] || `Analyze ${sanitizedContent} for ${analysisType} issues.`;
-    
-    return `${specificPrompt} ${context ? `Context: ${sanitizedContext}` : ''}`;
+
+    return `${specificPrompt} ${effectiveContext ? `Context: ${sanitizedContext}` : ''}`;
   }
 }

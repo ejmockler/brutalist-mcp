@@ -202,6 +202,15 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
       // overwrite any pre-existing value with `undefined`.
       ...(process.env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY } : {}),
       ...(process.env.OPENAI_API_KEY ? { OPENAI_API_KEY: process.env.OPENAI_API_KEY } : {}),
+      // Deterministic diff scoping: hand brutalist-mcp the PR diff directly
+      // rather than relying on the brain to relay it verbatim in the roast
+      // `context` arg. constructUserPrompt folds this in so every critic —
+      // especially agy, whose agentic loop otherwise audits the whole repo
+      // and hits the per-critic timeout — scopes to the changed files. Only
+      // set when `focus` is actually a unified diff (the PR-review path).
+      ...(options.focus && (/diff --git /.test(options.focus) || /(^|\n)@@ .+ @@/.test(options.focus))
+        ? { BRUTALIST_PR_DIFF: options.focus }
+        : {}),
     },
   };
 

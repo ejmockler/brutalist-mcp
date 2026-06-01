@@ -258,6 +258,34 @@ describe('CLIAgentOrchestrator', () => {
         expect(typeof userPrompt).toBe('string');
       }).not.toThrow();
     });
+
+    // Deterministic diff scoping: the orchestrator injects the PR diff via
+    // BRUTALIST_PR_DIFF so scoping doesn't depend on the brain pasting the
+    // diff into `context` (a paraphrased context otherwise made agy audit
+    // the whole repo and time out). See orchestrator.ts brutalistConfig.env.
+    describe('BRUTALIST_PR_DIFF deterministic diff scoping', () => {
+      const DIFF = 'diff --git a/x.ts b/x.ts\n@@ -1 +1 @@\n-safe\n+eval(x)';
+      afterEach(() => { delete process.env.BRUTALIST_PR_DIFF; });
+
+      it('scopes to the change when the diff is injected via env and context is paraphrased', () => {
+        process.env.BRUTALIST_PR_DIFF = DIFF;
+        const p = (orchestrator as any).constructUserPrompt('codebase', '/repo', 'Please review the recent change to x.ts');
+        expect(p).toContain('scope your review to what the change touches');
+        expect(p).toContain('diff --git');               // diff folded into the prompt
+        expect(p).not.toContain('Analyze the codebase directory'); // not whole-repo
+      });
+
+      it('does not duplicate the diff when the brain already supplied it in context', () => {
+        process.env.BRUTALIST_PR_DIFF = DIFF;
+        const p = (orchestrator as any).constructUserPrompt('codebase', '/repo', `Context: ${DIFF}`);
+        expect((p.match(/diff --git/g) || []).length).toBe(1);
+      });
+
+      it('keeps the whole-repo default when no diff is present anywhere (non-PR roast)', () => {
+        const p = (orchestrator as any).constructUserPrompt('codebase', '/repo');
+        expect(p).toContain('Analyze the codebase directory');
+      });
+    });
   });
 
   describe('Response Synthesis', () => {

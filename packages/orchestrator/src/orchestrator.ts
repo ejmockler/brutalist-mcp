@@ -292,6 +292,11 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
             if (n) detail = ` tool_result x${n}`;
           } else if (message.type === 'result') {
             detail = ` subtype=${anyMsg.subtype} duration=${anyMsg.duration_ms}ms turns=${anyMsg.num_turns}`;
+          } else if (message.type === 'rate_limit_event') {
+            // status is the signal: 'allowed' = informational (NOT throttled);
+            // 'rejected' = actually rate-limited. Log it so we stop guessing.
+            const rl = anyMsg.rate_limit_info ?? {};
+            detail = ` status=${rl.status} util=${rl.utilization} type=${rl.rateLimitType ?? '-'} resetsAt=${rl.resetsAt ?? '-'}`;
           }
         } catch {
           /* trace must never throw */

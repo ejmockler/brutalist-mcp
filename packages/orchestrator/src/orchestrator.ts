@@ -363,7 +363,11 @@ function buildUserPrompt(options: RunOptions): string {
     parts.push(`\nContext hints:\n${options.contextHints.map((h) => `- ${h}`).join('\n')}`);
   }
   parts.push(
-    '\nProceed per the workflow. Run roast across codebase/architecture/security, parse per-CLI sections, verify every verbatimQuote with Grep, then call submit_findings.',
+    '\nProceed per the workflow. Run a SINGLE `codebase` roast (it already covers' +
+      ' security, performance, and architecture), passing the Focus diff above' +
+      ' VERBATIM (keep the `diff --git` and `@@` lines) as the roast `context` —' +
+      ' the critics use those markers to scope their review to the changed files.' +
+      ' Then parse per-CLI sections, verify every verbatimQuote with Grep, and call submit_findings.',
   );
   return parts.join('\n');
 }

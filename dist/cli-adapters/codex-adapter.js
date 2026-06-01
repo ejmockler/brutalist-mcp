@@ -173,6 +173,9 @@ export class CodexAdapter {
             // No stdout at all — could be a refusal that printed only to
             // stderr. Check anchored markers there before declaring empty.
             const refusalFromStderr = classifyCodexStderrReason(stderr);
+            if (refusalFromStderr === 'auth') {
+                return { kind: 'refused', reason: 'auth' };
+            }
             if (refusalFromStderr === 'quota') {
                 return { kind: 'refused', reason: 'quota' };
             }
@@ -184,8 +187,11 @@ export class CodexAdapter {
             return { kind: 'ok', text };
         }
         // No agent_message extracted. Examine stderr for anchored Codex
-        // refusal markers — the only place codex puts quota state.
+        // refusal markers — the only place codex puts quota/auth state.
         const refusalFromStderr = classifyCodexStderrReason(stderr);
+        if (refusalFromStderr === 'auth') {
+            return { kind: 'refused', reason: 'auth' };
+        }
         if (refusalFromStderr === 'quota') {
             return { kind: 'refused', reason: 'quota' };
         }
@@ -239,12 +245,29 @@ export class CodexAdapter {
  *   - "usage cap"                    — ChatGPT plan cap phrasing
  *   - "ChatGPT Plus" + "limit"       — paired marker for plan caps
  *
+ * Auth markers (added after CI diagnosis 2026-06): codex does HARD OAuth
+ * refresh-token rotation. A static captured CODEX_AUTH secret goes stale
+ * (its refresh_token is consumed on first use), so CI startups hit
+ * `401 ... refresh_token_reused` and exit 1 in ~2s. Without these markers
+ * that surfaced as the opaque "CODEX execution failed"; classifying it as
+ * an auth refusal lets the summary say "codex auth expired — re-capture
+ * CODEX_AUTH (or provision OPENAI_API_KEY)".
+ *
  * No loose `quota`/`limit`/`rate limit` patterns — those bit us in
  * Phase 1. Stay anchored to literal vendor error strings.
  */
 function classifyCodexStderrReason(stderr) {
     if (!stderr)
         return 'unknown';
+    // Auth checked first: a stale-token failure is a distinct, actionable
+    // outcome from a quota cap.
+    const authMarkers = [
+        /refresh_token_reused/i,
+        /refresh token was already used/i,
+        /Failed to refresh token/i,
+    ];
+    if (authMarkers.some((p) => p.test(stderr)))
+        return 'auth';
     const markers = [
         /rate_limit_exceeded/i,
         /insufficient_quota/i,

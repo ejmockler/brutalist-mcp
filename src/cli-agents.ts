@@ -1125,6 +1125,15 @@ export class CLIAgentOrchestrator {
       const isRateLimit = rateLimitPatterns.some(p => errorText.includes(p.toLowerCase()));
       const unsupportedCodexModel = cliName === 'codex'
         && isCodexUnsupportedChatGPTModelError(execError, options.models?.codex);
+      // Codex OAuth refresh-token rotation: a stale CODEX_AUTH (refresh_token
+      // already consumed) makes codex exit 1 in ~2s at startup with
+      // "401 ... refresh_token_reused". Detect it here (codex fails with a
+      // non-zero exit, so it never reaches the adapter decode path) so the
+      // failure is actionable instead of the opaque "execution failed".
+      const isCodexAuthExpired = cliName === 'codex'
+        && (errorText.includes('refresh_token_reused')
+          || errorText.includes('failed to refresh token')
+          || errorText.includes('refresh token was already used'));
 
       // Classify outcome for the spawn counter. Priority: rate-limit > timeout
       // > generic failure. Timeout check uses the centralized heuristic.
@@ -1132,7 +1141,9 @@ export class CLIAgentOrchestrator {
       // `spawned` so pre-spawn failures (e.g., commandBuilder throwing)
       // do NOT increment the counter (compose.py:174).
       let outcome: 'refused' | 'timeout' | 'failure';
-      if (isRateLimit) {
+      if (isRateLimit || isCodexAuthExpired) {
+        // Auth-expired is a refusal-like terminal state (the CLI couldn't
+        // start), not a transient crash — group it with refused for metrics.
         outcome = 'refused';
       } else if (this.isTimeoutError(execError)) {
         outcome = 'timeout';
@@ -1178,11 +1189,13 @@ export class CLIAgentOrchestrator {
       // callers can still distinguish timeout from generic failure.
       const errorMsg = isRateLimit
         ? `${cliName.toUpperCase()} hit rate/usage limit. Try again later or use a different agent.`
-        : unsupportedCodexModel
-          ? `${cliName.toUpperCase()} model "${sanitizeModelNameForMessage(options.models?.codex)}" is not supported by this Codex account.`
-          : this.isTimeoutError(execError)
-            ? `${cliName.toUpperCase()} execution timed out after ${timeout}ms. See internal logs for details.`
-            : `${cliName.toUpperCase()} execution failed. See internal logs for details.`;
+        : isCodexAuthExpired
+          ? `CODEX OAuth token expired/rotated. Re-capture it (codex login → \`gh secret set CODEX_AUTH < ~/.codex/auth.json\`) or provision OPENAI_API_KEY.`
+          : unsupportedCodexModel
+            ? `${cliName.toUpperCase()} model "${sanitizeModelNameForMessage(options.models?.codex)}" is not supported by this Codex account.`
+            : this.isTimeoutError(execError)
+              ? `${cliName.toUpperCase()} execution timed out after ${timeout}ms. See internal logs for details.`
+              : `${cliName.toUpperCase()} execution failed. See internal logs for details.`;
 
       // Emit error event. The content derives from the redacted
       // `errorMsg` above, never from `error.message` directly, so

@@ -730,6 +730,15 @@ describe('CLI Provider Error Detection', () => {
       expect(result.error).toContain('quota refused');
     });
 
+    it('codex: detects OAuth refresh-token rotation in stderr as auth refusal', async () => {
+      // Stale CODEX_AUTH (refresh_token already consumed) → codex emits
+      // "401 ... refresh_token_reused". Must classify as an auth refusal,
+      // not generic failure, so the summary is actionable.
+      const result = await simulate('codex', '', 'ERROR codex_login::auth: Failed to refresh token: 401 Unauthorized: {"code":"refresh_token_reused"}');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('auth refused');
+    });
+
     it('codex: unanchored "rate limit" prose alone in stderr does NOT trigger refusal', async () => {
       // Per Phase 2 stance: anchored markers only. The word "rate limit"
       // on its own (not the API error code `rate_limit_exceeded`) is
@@ -817,6 +826,19 @@ describe('CLI Provider Error Detection', () => {
       );
       expect(result.success).toBe(false);
       expect(result.error).not.toContain('rate/usage limit');
+    });
+
+    it('should detect codex OAuth refresh-token rotation as an actionable auth error (the CI exit-1 path)', async () => {
+      // The real CI failure: a stale CODEX_AUTH secret → codex exits 1 in
+      // ~2s with "401 ... refresh_token_reused". Must yield an actionable
+      // message (re-capture / OPENAI_API_KEY), not the opaque "execution failed".
+      const result = await simulateFailedExecution(
+        'ERROR codex_login::auth::manager: Failed to refresh token: 401 Unauthorized: {"code":"refresh_token_reused"}'
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('CODEX OAuth token expired');
+      expect(result.error).not.toContain('rate/usage limit');
+      expect(result.error).not.toContain('See internal logs');
     });
 
     it('should retry Codex with the CLI default when the requested model is unsupported for ChatGPT accounts', async () => {

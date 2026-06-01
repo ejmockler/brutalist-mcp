@@ -32,7 +32,7 @@ import { filterToolsByIntent, getMatchingDomainIds } from './tool-router.js';
 import { DebateOrchestrator } from './debate/index.js';
 
 // Use environment variable or fallback to manual version
-const PACKAGE_VERSION = process.env.npm_package_version || "1.14.5";
+const PACKAGE_VERSION = process.env.npm_package_version || "1.14.6";
 
 /**
  * BrutalistServer - Composition root for the Brutalist MCP Server
@@ -106,7 +106,12 @@ export class BrutalistServer {
   constructor(config: BrutalistServerConfig = {}) {
     this.config = {
       workingDirectory: process.cwd(),
-      defaultTimeout: 1800000, // 30 minutes - complex codebases need time
+      // This is the timeout the roast handler actually passes to each critic
+      // spawn (tool-handler.ts: `timeout: this.config.defaultTimeout`), so it
+      // MUST honor BRUTALIST_TIMEOUT — otherwise a stalled critic (e.g. an agy
+      // agentic loop, or a claude critic that wedges) runs the full 30 min and
+      // hangs the whole roast regardless of the env. Default 30 min when unset.
+      defaultTimeout: parseInt(process.env.BRUTALIST_TIMEOUT || '1800000', 10),
       transport: 'stdio', // Default to stdio for backward compatibility
       httpPort: 3000,
       ...config

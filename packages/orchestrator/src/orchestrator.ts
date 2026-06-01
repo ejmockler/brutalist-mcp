@@ -179,6 +179,17 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
     type: 'stdio',
     command: options.brutalistMcpCommand ?? 'brutalist-mcp',
     args: [],
+    // Force the brutalist tools (roast, etc.) into the turn-1 prompt instead
+    // of deferring them behind tool-search (the SDK default when tool search
+    // is enabled). Without this the brain has to *discover* `roast` via a
+    // tool-search step before it can call it; when it doesn't (observed under
+    // rate-limit throttling / a degraded first turn), it never sees `roast`,
+    // concludes "the multi-CLI roast was not available", and falls back to a
+    // solo Read/Grep review — silently dropping the entire critic panel. roast
+    // is THE primary tool; it must always be present. brutalist-mcp connects
+    // fast (transport-connect only at boot; CLI detection is lazy), so the 5s
+    // connect window alwaysLoad imposes is not a concern.
+    alwaysLoad: true,
     env: {
       ...inheritedEnv,
       // The OAuth token doubles as auth for brutalist's inner Claude
@@ -292,6 +303,11 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
             if (n) detail = ` tool_result x${n}`;
           } else if (message.type === 'result') {
             detail = ` subtype=${anyMsg.subtype} duration=${anyMsg.duration_ms}ms turns=${anyMsg.num_turns}`;
+          } else if (message.type === 'rate_limit_event') {
+            // status is the signal: 'allowed' = informational (NOT throttled);
+            // 'rejected' = actually rate-limited. Log it so we stop guessing.
+            const rl = anyMsg.rate_limit_info ?? {};
+            detail = ` status=${rl.status} util=${rl.utilization} type=${rl.rateLimitType ?? '-'} resetsAt=${rl.resetsAt ?? '-'}`;
           }
         } catch {
           /* trace must never throw */
@@ -347,7 +363,11 @@ function buildUserPrompt(options: RunOptions): string {
     parts.push(`\nContext hints:\n${options.contextHints.map((h) => `- ${h}`).join('\n')}`);
   }
   parts.push(
-    '\nProceed per the workflow. Run roast across codebase/architecture/security, parse per-CLI sections, verify every verbatimQuote with Grep, then call submit_findings.',
+    '\nProceed per the workflow. Run a SINGLE `codebase` roast (it already covers' +
+      ' security, performance, and architecture), passing the Focus diff above' +
+      ' VERBATIM (keep the `diff --git` and `@@` lines) as the roast `context` —' +
+      ' the critics use those markers to scope their review to the changed files.' +
+      ' Then parse per-CLI sections, verify every verbatimQuote with Grep, and call submit_findings.',
   );
   return parts.join('\n');
 }

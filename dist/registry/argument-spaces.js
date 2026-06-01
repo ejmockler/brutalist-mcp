@@ -1,0 +1,169 @@
+/**
+ * Argument Space Registry: Pre-built reusable argument schemas
+ *
+ * Import these to avoid duplication across tool definitions.
+ */
+import { z } from 'zod';
+import { FILESYSTEM_ARGUMENT_SPACE, TEXT_INPUT_ARGUMENT_SPACE, FILESYSTEM_WITH_DEPTH, PACKAGE_MANIFEST_SPACE, GIT_REPOSITORY_SPACE, TEST_SUITE_SPACE } from '../domains/argument-space.js';
+/**
+ * All built-in argument spaces
+ */
+export const ARGUMENT_SPACES = {
+    // Standard filesystem analysis
+    FILESYSTEM: FILESYSTEM_ARGUMENT_SPACE,
+    // Text-based input (for ideas, architecture descriptions, etc.)
+    TEXT_INPUT: TEXT_INPUT_ARGUMENT_SPACE,
+    // Filesystem with depth control (for directory structure analysis)
+    FILESYSTEM_DEPTH: FILESYSTEM_WITH_DEPTH,
+    // Package manifest analysis
+    PACKAGE_MANIFEST: PACKAGE_MANIFEST_SPACE,
+    // Git repository analysis
+    GIT_REPOSITORY: GIT_REPOSITORY_SPACE,
+    // Test suite analysis
+    TEST_SUITE: TEST_SUITE_SPACE,
+    // Extended text input with additional context fields
+    EXTENDED_TEXT_INPUT: {
+        id: 'extended_text_input',
+        name: 'Extended Text Input',
+        base: FILESYSTEM_ARGUMENT_SPACE.base,
+        domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
+            resources: z.string().optional().describe("Available resources (budget, team, time)"),
+            timeline: z.string().optional().describe("Expected timeline")
+        }),
+        computed: (args) => ({
+            workingDirectory: args.targetPath || '.',
+            contextExtensions: [args.resources, args.timeline].filter(Boolean).join('. ')
+        })
+    },
+    // Architecture-specific arguments
+    ARCHITECTURE_SPECIFIC: {
+        id: 'architecture_specific',
+        name: 'Architecture Specific',
+        base: FILESYSTEM_ARGUMENT_SPACE.base,
+        domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
+            scale: z.string().optional().describe("Expected scale/load"),
+            constraints: z.string().optional().describe("Technical/budget constraints"),
+            deployment: z.string().optional().describe("Deployment strategy")
+        }),
+        computed: (args) => ({
+            workingDirectory: args.targetPath || '.',
+            scalingContext: args.scale,
+            deploymentContext: args.deployment
+        })
+    },
+    // Research-specific arguments
+    RESEARCH_SPECIFIC: {
+        id: 'research_specific',
+        name: 'Research Specific',
+        base: FILESYSTEM_ARGUMENT_SPACE.base,
+        domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
+            field: z.string().optional().describe("Research field"),
+            claims: z.string().optional().describe("Main claims"),
+            data: z.string().optional().describe("Data sources/setup")
+        }),
+        computed: (args) => ({
+            workingDirectory: args.targetPath || '.',
+            researchField: args.field,
+            methodology: args.data
+        })
+    },
+    // Security-specific arguments
+    SECURITY_SPECIFIC: {
+        id: 'security_specific',
+        name: 'Security Specific',
+        base: FILESYSTEM_ARGUMENT_SPACE.base,
+        domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
+            assets: z.string().optional().describe("Critical assets to protect"),
+            threatModel: z.string().optional().describe("Known threats"),
+            compliance: z.string().optional().describe("Compliance requirements")
+        }),
+        computed: (args) => ({
+            workingDirectory: args.targetPath || '.',
+            criticalAssets: args.assets,
+            complianceRequirements: args.compliance
+        })
+    },
+    // Product-specific arguments
+    PRODUCT_SPECIFIC: {
+        id: 'product_specific',
+        name: 'Product Specific',
+        base: FILESYSTEM_ARGUMENT_SPACE.base,
+        domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
+            users: z.string().optional().describe("Target users"),
+            competition: z.string().optional().describe("Competitors"),
+            metrics: z.string().optional().describe("Success metrics")
+        }),
+        computed: (args) => ({
+            workingDirectory: args.targetPath || '.',
+            targetUsers: args.users,
+            competitiveContext: args.competition
+        })
+    },
+    // Design-specific arguments
+    DESIGN_SPECIFIC: {
+        id: 'design_specific',
+        name: 'Design Specific',
+        base: FILESYSTEM_ARGUMENT_SPACE.base,
+        domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
+            medium: z.string().optional().describe("Design medium (web, mobile, spatial, print)"),
+            audience: z.string().optional().describe("Who inhabits this interface"),
+            brand: z.string().optional().describe("Brand identity or design system constraints")
+        }),
+        computed: (args) => ({
+            workingDirectory: args.targetPath || '.',
+            designMedium: args.medium,
+            targetAudience: args.audience,
+            brandContext: args.brand
+        })
+    },
+    // Legal-specific arguments — all optional; legal specificity emerges from
+    // the calling agent's context, not from rigid schema. These fields exist
+    // to let the caller modulate register (practice area) and surface
+    // jurisdictional/procedural context when useful, not to enumerate law.
+    LEGAL_SPECIFIC: {
+        id: 'legal_specific',
+        name: 'Legal Specific',
+        base: FILESYSTEM_ARGUMENT_SPACE.base,
+        domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
+            practice: z.string().optional().describe("Practice register — freeform (e.g., 'litigation', 'transactional', 'regulatory', 'doctrinal', 'advisory', 'criminal defense', 'appellate'). Modulates the critic's adversary geometry."),
+            jurisdiction: z.string().optional().describe("Governing jurisdiction or forum (e.g., 'US federal', 'NY state', '9th Cir.', 'EU', 'Delaware Chancery'). Surfaces circuit splits and out-of-forum authority."),
+            posture: z.string().optional().describe("Procedural posture or use context (e.g., 'motion to dismiss', 'pre-signing redline', 'enforcement response', 'appellate opening brief', 'pre-litigation advice').")
+        }),
+        computed: (args) => ({
+            workingDirectory: args.targetPath || '.',
+            practiceRegister: args.practice,
+            jurisdictionContext: args.jurisdiction,
+            proceduralPosture: args.posture
+        })
+    },
+    // Infrastructure-specific arguments
+    INFRASTRUCTURE_SPECIFIC: {
+        id: 'infrastructure_specific',
+        name: 'Infrastructure Specific',
+        base: FILESYSTEM_ARGUMENT_SPACE.base,
+        domain: TEXT_INPUT_ARGUMENT_SPACE.domain.extend({
+            scale: z.string().optional().describe("Expected scale"),
+            sla: z.string().optional().describe("SLA/uptime targets"),
+            budget: z.string().optional().describe("Cost constraints")
+        }),
+        computed: (args) => ({
+            workingDirectory: args.targetPath || '.',
+            loadPatterns: args.scale,
+            slaRequirements: args.sla,
+            costConstraints: args.budget
+        })
+    }
+};
+/**
+ * Helper to get an argument space by ID
+ */
+export function getArgumentSpace(id) {
+    return Object.values(ARGUMENT_SPACES).find(a => a.id === id);
+}
+/**
+ * Helper to list all argument spaces
+ */
+export function listArgumentSpaces() {
+    return Object.values(ARGUMENT_SPACES);
+}
+//# sourceMappingURL=argument-spaces.js.map

@@ -1,0 +1,284 @@
+import { logger } from '../logger.js';
+import { ResponseChunker, createPaginationMetadata, formatPaginationStatus, estimateTokenCount, PAGINATION_DEFAULTS } from '../utils/pagination.js';
+/**
+ * Adversarial framing epilogue — appended to every brutalist response.
+ *
+ * Design rationale (context engineering for frontier transformers):
+ * - XML tag creates a distinct attention boundary from critique content
+ * - Role assignment ("You are the judge") activates evaluative behavior
+ * - Short imperative directives > explanatory paragraphs at scale
+ * - Recency bias: final tokens carry disproportionate attention weight
+ * - "Discard" and "Do not" are stronger behavioral anchors than "consider"
+ */
+const ADVERSARIAL_EPILOGUE = `
+
+<evaluation_required>
+You are the judge of the analysis above, not its messenger. These agents operated under adversarial system prompts that reward harsh criticism over accuracy.
+
+Before presenting to the user:
+- Verify any file path, line number, or code reference actually exists
+- Discard claims that lack specific evidence — confidence is not proof
+- Separate genuine risks from stylistic opinions
+- Do not reproduce unfounded severity — if you cannot verify it, downgrade it
+
+Your role: synthesize what is valid, discard what is not, add context these agents lacked.
+</evaluation_required>`;
+/**
+ * ResponseFormatter - Handles all response formatting logic
+ * Extracted from BrutalistServer to follow Single Responsibility Principle
+ */
+export class ResponseFormatter {
+    /**
+     * Format tool response with optional pagination
+     */
+    formatToolResponse(result, verbose = false, paginationParams, contextId, explicitPaginationRequested = false) {
+        logger.info(`🔧 DEBUG: formatToolResponse called with synthesis length: ${result.synthesis?.length || 0}`);
+        logger.info(`🔧 DEBUG: result.success=${result.success}, responses.length=${result.responses?.length || 0}`);
+        logger.info(`🔧 DEBUG: pagination params:`, paginationParams);
+        logger.info(`🔧 DEBUG: explicitPaginationRequested=${explicitPaginationRequested}`);
+        // Get the primary content to paginate. `synthesis` is always populated
+        // by ToolHandler.executeBrutalistAnalysis (tool-handler.ts:403), so the
+        // historical `else if (result.responses)` fallback was unreachable and
+        // has been removed. If synthesis is missing the response is genuinely
+        // empty and falls through to formatNoContentError below.
+        let primaryContent = result.synthesis ?? '';
+        if (primaryContent) {
+            logger.info(`🔧 DEBUG: Using synthesis content (${primaryContent.length} characters)`);
+            primaryContent += ADVERSARIAL_EPILOGUE;
+        }
+        // Estimate token count to determine if pagination is needed
+        const estimatedTokens = estimateTokenCount(primaryContent);
+        const maxTokensWithoutPagination = 25000;
+        const needsAutoPagination = estimatedTokens > maxTokensWithoutPagination;
+        // CRITICAL: Always apply pagination if content is too large, even if not explicitly requested
+        // This prevents MCP protocol errors when response exceeds client token limits
+        if (needsAutoPagination || explicitPaginationRequested) {
+            if (needsAutoPagination && !explicitPaginationRequested) {
+                logger.info(`🔧 AUTO-PAGINATING: ${estimatedTokens} tokens exceeds ${maxTokensWithoutPagination} limit - forcing first page`);
+                // Force pagination params to show first chunk (use token-based limit)
+                const forcedParams = {
+                    offset: 0,
+                    limit: PAGINATION_DEFAULTS.DEFAULT_LIMIT_TOKENS // Use token-based limit
+                };
+                return this.formatPaginatedResponse(primaryContent, forcedParams, result, verbose, contextId);
+            }
+            else if (paginationParams) {
+                logger.info(`🔧 DEBUG: Applying pagination (explicitly requested)`);
+                return this.formatPaginatedResponse(primaryContent, paginationParams, result, verbose, contextId);
+            }
+        }
+        // Non-paginated response (only for content that fits within token limit)
+        if (primaryContent) {
+            logger.info(`🔧 DEBUG: Returning full response (${estimatedTokens} tokens < ${maxTokensWithoutPagination} limit)`);
+            // Include context_id even for non-paginated responses (for future pagination/caching)
+            let responseText = '';
+            if (contextId) {
+                responseText += `# Brutalist Analysis Results\n\n`;
+                responseText += `**🔑 Context ID:** ${contextId}\n\n`;
+                responseText += `---\n\n`;
+                responseText += primaryContent;
+            }
+            else {
+                responseText = primaryContent;
+            }
+            return {
+                content: [{
+                        type: "text",
+                        text: responseText
+                    }]
+            };
+        }
+        // Error handling - no successful content
+        return this.formatNoContentError(result);
+    }
+    /**
+     * Format paginated response with metadata and navigation
+     */
+    formatPaginatedResponse(content, paginationParams, result, verbose, contextId) {
+        const offset = paginationParams.offset || 0;
+        // Convert character-based limit to token-based limit (1 token ≈ 4 chars)
+        const limitChars = paginationParams.limit || PAGINATION_DEFAULTS.DEFAULT_LIMIT;
+        const limitTokens = Math.ceil(limitChars / 4); // Convert chars to tokens
+        logger.info(`🔧 DEBUG: Paginating content - offset: ${offset}, limitChars: ${limitChars}, limitTokens: ${limitTokens}, total: ${content.length} chars`);
+        // Use ResponseChunker for intelligent boundary detection (TOKEN-BASED)
+        const chunker = new ResponseChunker(limitTokens, PAGINATION_DEFAULTS.CHUNK_OVERLAP_TOKENS);
+        const chunks = chunker.chunkText(content);
+        // Find the appropriate chunk based on offset
+        let targetChunk = chunks[0]; // Default to first chunk
+        let targetChunkIndex = 0;
+        for (let i = 0; i < chunks.length; i++) {
+            const chunk = chunks[i];
+            if (offset >= chunk.startOffset && offset < chunk.endOffset) {
+                targetChunk = chunk;
+                targetChunkIndex = i;
+                break;
+            }
+        }
+        const chunkContent = targetChunk.content;
+        const actualOffset = targetChunk.startOffset;
+        const endOffset = targetChunk.endOffset;
+        // Create pagination metadata using actual chunk boundaries
+        const pagination = createPaginationMetadata(content.length, paginationParams, limitTokens, chunks, targetChunkIndex);
+        const statusLine = formatPaginationStatus(pagination);
+        // Estimate token usage for user awareness
+        const chunkTokens = estimateTokenCount(chunkContent);
+        const totalTokens = estimateTokenCount(content);
+        // Format response with pagination info
+        let paginatedText = this.buildPaginatedHeader(pagination, contextId, chunkTokens, totalTokens, offset, endOffset);
+        // Add the actual content chunk
+        paginatedText += chunkContent;
+        // Add footer
+        paginatedText += this.buildPaginatedFooter(pagination, contextId, endOffset, content.length);
+        // Add verbose execution details if requested
+        if (verbose && result.executionSummary) {
+            paginatedText += this.buildExecutionSummary(result.executionSummary);
+        }
+        logger.info(`🔧 DEBUG: Returning paginated chunk - ${chunkContent.length} chars (${chunkTokens} tokens)`);
+        return {
+            content: [{
+                    type: "text",
+                    text: paginatedText
+                }]
+        };
+    }
+    /**
+     * Format error response with sanitized message
+     */
+    formatErrorResponse(error) {
+        logger.error("Tool execution failed", error);
+        // Sanitize error message to prevent information leakage
+        let sanitizedMessage = "Analysis failed";
+        if (error instanceof Error) {
+            // Only expose safe, generic error types
+            if (error.message.includes('timeout') || error.message.includes('Timeout')) {
+                sanitizedMessage = "Analysis timed out - try reducing scope or increasing timeout";
+            }
+            else if (error.message.includes('ENOENT') || error.message.includes('no such file')) {
+                sanitizedMessage = "Target path not found - verify the path exists and is accessible";
+            }
+            else if (error.message.includes('EACCES') || error.message.includes('permission denied')) {
+                sanitizedMessage = "Permission denied - check file access";
+            }
+            else if (error.message.includes('No CLI agents available')) {
+                sanitizedMessage = "No CLI agents available for analysis";
+            }
+            else if (error.message.includes('resume') && error.message.includes('context_id')) {
+                // User-facing validation errors for resume/continuation feature
+                sanitizedMessage = error.message;
+            }
+            else if (error.message.includes('Context ID') && error.message.includes('not found')) {
+                // Context ID not found in cache
+                sanitizedMessage = error.message;
+            }
+            else if (error.message.includes('continuation') && error.message.includes('requires')) {
+                // Continuation validation errors
+                sanitizedMessage = error.message;
+            }
+            else {
+                // Generic message for other errors to prevent path/info leakage
+                sanitizedMessage = "Analysis failed due to internal error";
+            }
+        }
+        return {
+            content: [{
+                    type: "text",
+                    text: `Brutalist MCP Error: ${sanitizedMessage}`
+                }]
+        };
+    }
+    /**
+     * Extract full content from analysis result for caching.
+     *
+     * `synthesis` is always populated by ToolHandler.executeBrutalistAnalysis
+     * (tool-handler.ts:403), so the historical raw-response reconstruction
+     * branch was unreachable. Removed as part of the per-CLI delimiter
+     * hardening — synthesis itself now carries the canonical
+     * BRUTALIST_CLI_BEGIN/END section markers.
+     */
+    extractFullContent(result) {
+        return result.synthesis ?? null;
+    }
+    // Private helper methods
+    formatNoContentError(result) {
+        let errorOutput = '';
+        if (result.responses) {
+            const failedResponses = result.responses.filter(r => !r.success);
+            if (failedResponses.length > 0) {
+                errorOutput = `❌ All CLI agents failed:\n` +
+                    failedResponses.map(r => `- ${r.agent.toUpperCase()}: ${r.error}`).join('\n');
+            }
+            else {
+                errorOutput = '❌ No CLI responses available';
+            }
+        }
+        else {
+            errorOutput = '❌ No analysis results';
+        }
+        return {
+            content: [{
+                    type: "text",
+                    text: errorOutput
+                }]
+        };
+    }
+    buildPaginatedHeader(pagination, contextId, chunkTokens, totalTokens, offset, endOffset) {
+        let header = `# Brutalist Analysis Results\n\n`;
+        const needsPagination = pagination.totalChunks > 1 || pagination.hasMore;
+        const isFirstRequest = offset === 0;
+        const statusLine = formatPaginationStatus(pagination);
+        // Always show context_id on first request for future pagination
+        if (isFirstRequest && contextId) {
+            header += `**🔑 Context ID:** ${contextId}\n`;
+            header += `**🔢 Token Estimate:** ~${totalTokens.toLocaleString()} tokens (total)\n\n`;
+        }
+        if (needsPagination) {
+            header += `**📊 Pagination Status:** ${statusLine}\n`;
+            if (!isFirstRequest && contextId) {
+                header += `**🔑 Context ID:** ${contextId}\n`;
+            }
+            header += `**🔢 Token Estimate:** ~${chunkTokens.toLocaleString()} tokens (chunk) / ~${totalTokens.toLocaleString()} tokens (total)\n\n`;
+            if (pagination.hasMore) {
+                if (contextId) {
+                    header += `**⏭️ Continue Reading:** Use \`context_id: "${contextId}", offset: ${endOffset}\` without \`resume\`\n\n`;
+                }
+                else {
+                    header += `**⏭️ Continue Reading:** Use \`offset: ${endOffset}\` for next chunk\n\n`;
+                }
+            }
+        }
+        header += `---\n\n`;
+        return header;
+    }
+    buildPaginatedFooter(pagination, contextId, endOffset, totalLength) {
+        const needsPagination = pagination.totalChunks > 1 || pagination.hasMore;
+        if (!needsPagination) {
+            return '';
+        }
+        let footer = `\n\n---\n\n`;
+        if (pagination.hasMore) {
+            footer += `📖 **End of chunk ${pagination.chunkIndex}/${pagination.totalChunks}**\n`;
+            if (contextId) {
+                footer += `🔄 To continue: Include \`context_id: "${contextId}"\` with \`offset: ${endOffset}\` in next request; omit \`resume\``;
+            }
+            else {
+                footer += `🔄 To continue: Use same tool with \`offset: ${endOffset}\``;
+            }
+        }
+        else {
+            footer += `✅ **Complete analysis shown** (${totalLength.toLocaleString()} characters total)`;
+        }
+        return footer;
+    }
+    buildExecutionSummary(summary) {
+        if (!summary)
+            return '';
+        let text = `\n\n### Execution Summary\n`;
+        text += `- **CLI Agents:** ${summary.successfulCLIs}/${summary.totalCLIs} successful\n`;
+        text += `- **Total Time:** ${summary.totalExecutionTime}ms\n`;
+        if (summary.selectedCLI) {
+            text += `- **Selected CLI:** ${summary.selectedCLI}\n`;
+        }
+        return text;
+    }
+}
+//# sourceMappingURL=response-formatter.js.map

@@ -44,7 +44,7 @@ jobs:
       - name: Mint App token (ephemeral, 1h)
         id: app-token
         if: steps.appcheck.outputs.ready == 'true'
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.CODEX_AUTH_APP_ID }}
           private-key: ${{ secrets.CODEX_AUTH_APP_PRIVATE_KEY }}

@@ -1,7 +1,7 @@
 name: Brutalist Review
 
 # Dogfood: the brutalist-mcp repo runs its own action on every incoming PR.
-# Pinned to v1.14.6 — bump the tag manually when shipping a new release.
+# Pinned to v1.14.7 — bump the tag manually when shipping a new release.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -53,14 +53,14 @@ jobs:
         # claude + brutalist-mcp are hard preflight requirements; codex and
         # agy are soft critics (warn if their auth secret is missing).
         run: |
-          npm install -g @brutalist/mcp@1.14.6 \
+          npm install -g @brutalist/mcp@1.14.7 \
                          @anthropic-ai/claude-code \
                          @openai/codex
           curl -fsSL https://antigravity.google/cli/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Brutalist review
-        uses: ejmockler/brutalist-mcp/packages/github-action@v1.14.6
+        uses: ejmockler/brutalist-mcp/packages/github-action@v1.14.7
         env:
           BRUTALIST_TIMEOUT: "900000"                  # 15 min per critic
           BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "1500000" # 25 min brain budget

@@ -39962,6 +39962,17 @@ async function run(options) {
         type: 'stdio',
         command: options.brutalistMcpCommand ?? 'brutalist-mcp',
         args: [],
+        // Force the brutalist tools (roast, etc.) into the turn-1 prompt instead
+        // of deferring them behind tool-search (the SDK default when tool search
+        // is enabled). Without this the brain has to *discover* `roast` via a
+        // tool-search step before it can call it; when it doesn't (observed under
+        // rate-limit throttling / a degraded first turn), it never sees `roast`,
+        // concludes "the multi-CLI roast was not available", and falls back to a
+        // solo Read/Grep review — silently dropping the entire critic panel. roast
+        // is THE primary tool; it must always be present. brutalist-mcp connects
+        // fast (transport-connect only at boot; CLI detection is lazy), so the 5s
+        // connect window alwaysLoad imposes is not a concern.
+        alwaysLoad: true,
         env: {
             ...inheritedEnv,
             // The OAuth token doubles as auth for brutalist's inner Claude

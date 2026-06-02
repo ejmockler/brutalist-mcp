@@ -1,0 +1,84 @@
+name: Brutalist Review
+
+# Multi-CLI adversarial code review on every PR (claude + codex + agy),
+# posted as inline comments. Installed by scripts/install-brutalist-review.sh.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Serialize: OpenAI/codex uses refresh-token reuse-detection; concurrent runs
+# refreshing the same token would revoke the family. The write-back below must
+# not race either.
+concurrency:
+  group: brutalist-review-codex-auth
+  cancel-in-progress: false
+
+jobs:
+  brutalist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Self-healing codex OAuth (GitHub App, no PAT). Inert until the App
+      # secrets exist. Mints an ephemeral 1h token to write the refreshed
+      # codex token back to CODEX_AUTH after the run.
+      - name: Detect codex write-back App
+        id: appcheck
+        env:
+          APP_ID: ${{ secrets.CODEX_AUTH_APP_ID }}
+        run: |
+          if [ -n "$APP_ID" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; else echo "ready=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Mint App token (ephemeral, 1h)
+        id: app-token
+        if: steps.appcheck.outputs.ready == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.CODEX_AUTH_APP_ID }}
+          private-key: ${{ secrets.CODEX_AUTH_APP_PRIVATE_KEY }}
+
+      - name: Install CLI critics
+        run: |
+          npm install -g @brutalist/mcp@1.14.7 \
+                         @anthropic-ai/claude-code \
+                         @openai/codex
+          curl -fsSL https://antigravity.google/cli/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Brutalist review
+        uses: ejmockler/brutalist-mcp/packages/github-action@v1.14.7
+        env:
+          BRUTALIST_TIMEOUT: "900000"                  # 15 min per critic
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "1500000" # 25 min brain budget
+        with:
+          github-token: ${{ github.token }}
+          anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          codex-auth: ${{ secrets.CODEX_AUTH }}
+          agy-oauth-token: ${{ secrets.AGY_OAUTH_TOKEN }}
+          minimum-severity: medium
+
+      - name: Persist refreshed codex OAuth token (self-healing)
+        if: always() && steps.app-token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          AUTH="$HOME/.codex/auth.json"
+          if [ ! -f "$AUTH" ]; then echo "No $AUTH — skipping."; exit 0; fi
+          if ! node -e "const t=require('$AUTH')?.tokens?.refresh_token; if(!t)process.exit(1)" 2>/dev/null; then
+            echo "auth.json has no refresh_token — skipping write-back."; exit 0
+          fi
+          if gh secret set CODEX_AUTH --repo "${{ github.repository }}" < "$AUTH"; then
+            echo "Persisted refreshed CODEX_AUTH for the next run."
+          else
+            echo "::warning::Failed to persist CODEX_AUTH (check the App's Secrets:write permission)."
+          fi

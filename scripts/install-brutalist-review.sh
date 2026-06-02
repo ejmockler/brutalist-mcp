@@ -125,6 +125,11 @@ name: Brutalist Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  # Keep the codex OAuth chain warm: refresh + write-back every 5 days in a
+  # controlled, serialized run so the token never goes idle or rotates during
+  # a racing PR run. Removes the main durability risks of ChatGPT-plan auth.
+  schedule:
+    - cron: '0 7 */5 * *'
 
 permissions:
   contents: read
@@ -202,6 +207,54 @@ jobs:
           else
             echo "::warning::Failed to persist CODEX_AUTH (check the App's Secrets:write permission)."
           fi
+
+  # Keep-warm: every 5 days, run codex once to force a token refresh near the
+  # rotation boundary, then write the refreshed token back. Keeps the chain
+  # alive (never idle) and moves rotation into this controlled run instead of
+  # a racing PR run. Shares the concurrency group so it can't double-spend.
+  codex-keepwarm:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Detect codex write-back App
+        id: appcheck
+        env:
+          APP_ID: \${{ secrets.CODEX_AUTH_APP_ID }}
+        run: |
+          if [ -n "\$APP_ID" ]; then echo "ready=true" >> "\$GITHUB_OUTPUT"; else echo "ready=false" >> "\$GITHUB_OUTPUT"; fi
+      - name: Mint App token (ephemeral, 1h)
+        id: app-token
+        if: steps.appcheck.outputs.ready == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: \${{ secrets.CODEX_AUTH_APP_ID }}
+          private-key: \${{ secrets.CODEX_AUTH_APP_PRIVATE_KEY }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install codex
+        run: npm install -g @openai/codex
+      - name: Provision + refresh codex token
+        env:
+          CODEX_AUTH: \${{ secrets.CODEX_AUTH }}
+        run: |
+          if [ -z "\$CODEX_AUTH" ]; then echo "No CODEX_AUTH — nothing to keep warm."; exit 0; fi
+          mkdir -p "\$HOME/.codex"; printf '%s' "\$CODEX_AUTH" > "\$HOME/.codex/auth.json"; chmod 600 "\$HOME/.codex/auth.json"
+          # A trivial call; codex refreshes the token in place if near the boundary.
+          printf '%s' "reply with: warm" | codex exec --sandbox read-only --skip-git-repo-check 2>&1 | tail -5 || true
+      - name: Persist refreshed codex OAuth token
+        if: always() && steps.app-token.outputs.token != ''
+        env:
+          GH_TOKEN: \${{ steps.app-token.outputs.token }}
+        run: |
+          AUTH="\$HOME/.codex/auth.json"
+          if [ ! -f "\$AUTH" ]; then echo "No \$AUTH — skipping."; exit 0; fi
+          if ! node -e "const t=require('\$AUTH')?.tokens?.refresh_token; if(!t)process.exit(1)" 2>/dev/null; then
+            echo "auth.json has no refresh_token — skipping write-back."; exit 0
+          fi
+          gh secret set CODEX_AUTH --repo "\${{ github.repository }}" < "\$AUTH" \
+            && echo "Kept CODEX_AUTH warm." || echo "::warning::keep-warm write-back failed."
 YML
 
 # Push the workflow via the API (uses the repo's default branch).

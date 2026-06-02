@@ -81,7 +81,17 @@ Claude-only; add `CODEX_AUTH`/`AGY_OAUTH_TOKEN` to light up the others.
 
 - **With the App + a CI-dedicated codex login:** hands-off. Codex refreshes its
   chain during a run; the write-back persists the rotated token to `CODEX_AUTH`
-  for the next run. No PAT, no expiry treadmill.
+  for the next run. No PAT, no expiry treadmill. A **keep-warm** job (cron every
+  5 days, same workflow) refreshes + writes back in a controlled serialized run,
+  so the token never goes idle and rotation never happens during a racing PR.
+- **CI needs its own codex chain.** Codex (ChatGPT plan) rotates one login's
+  token on refresh; if your local codex and CI share a login they revoke each
+  other. Give CI its own: `codex login` → capture for CI → `codex login` again →
+  that stays local. Two independent chains on one account, no conflict. (Not
+  bulletproof-forever on Plus — a rotation hiccup or ~6mo idle may need a
+  one-time re-login + re-run of the installer; the keep-warm job makes that
+  rare. The only zero-maintenance options — Codex Access Tokens — are
+  Business/Enterprise-only.)
 - **Without the App** (or with a shared/blanked token): codex works until its
   access-token expires (~7–10 days) or its chain is rotated out from under CI,
   then needs re-capture. The review degrades gracefully — Claude carries it and

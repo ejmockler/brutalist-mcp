@@ -1,10 +1,10 @@
 name: Brutalist Review
 
-# Multi-CLI adversarial code review on every PR (claude + agy), posted as
-# inline comments. Codex is intentionally NOT used in CI on public repos:
-# OpenAI's CI auth guide forbids ChatGPT-plan auth.json on public/open-source
-# repos, and codex-action is API-key-only (billing). Codex stays a local
-# critic; see docs/brutalist-review-setup.md to enable it on a private runner.
+# claude + codex + agy review on every PR, posted as inline comments.
+# Codex auth: the noot-1 broker pushes a fresh ChatGPT-plan access_token
+# (refresh blanked) to the CODEX_AUTH secret out-of-band (no tailnet, no
+# inbound). CI just reads it; codex never refreshes. The image_generation
+# tool is disabled (codex#21952 gpt-image-2 bug).
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -27,9 +27,12 @@ jobs:
           node-version: '20'
       - name: Install CLI critics
         run: |
-          npm install -g @brutalist/mcp@1.14.7 @anthropic-ai/claude-code
+          npm install -g @brutalist/mcp@1.14.7 @anthropic-ai/claude-code @openai/codex
           curl -fsSL https://antigravity.google/cli/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # codex: disable the broken built-in image_generation tool (gpt-image-2)
+          mkdir -p "$HOME/.codex"
+          printf '[features]\nimage_generation = false\n' > "$HOME/.codex/config.toml"
       - name: Brutalist review
         uses: ejmockler/brutalist-mcp/packages/github-action@v1.14.7
         env:
@@ -38,5 +41,6 @@ jobs:
         with:
           github-token: ${{ github.token }}
           anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          codex-auth: ${{ secrets.CODEX_AUTH }}
           agy-oauth-token: ${{ secrets.AGY_OAUTH_TOKEN }}
           minimum-severity: medium

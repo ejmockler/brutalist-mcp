@@ -3,25 +3,39 @@
 # install-brutalist-review.sh — add the Brutalist Review action to ANY GitHub
 # repo in one shot. Default critics: claude + agy.
 #
-# Codex is OPT-IN (ENABLE_CODEX=1) and intended for PRIVATE repos only:
-# OpenAI's CI auth guide forbids ChatGPT-plan auth.json on public/open-source
-# repos, and codex-action is API-key-only (billing). On public repos, leave
-# codex off and run it locally. See docs/brutalist-review-setup.md.
+# Codex is OPT-IN (ENABLE_CODEX=1). It uses ChatGPT-plan OAuth via the
+# "broker-push" model, NOT an OpenAI API key:
+#   * An always-on broker (e.g. noot-1) holds the ONE codex login and is the
+#     SOLE refresher of its token lineage. Every ~4 days it pushes a fresh,
+#     short-lived access_token (refresh_token BLANKED) to the repo's CODEX_AUTH
+#     secret via `gh secret set` — outbound only, no inbound, firewall-friendly.
+#   * CI just READS CODEX_AUTH and runs codex. It never refreshes, so the
+#     broker's refresh chain never desyncs. The CI secret therefore holds only a
+#     ~10-day access token (no refresh_token) — leaking it can't rotate the
+#     account, and fork PRs don't receive secrets anyway.
+# This installer SEEDS the initial CODEX_AUTH (refresh blanked) so the first
+# runs work immediately; you then register the repo with the broker for ongoing
+# refresh (see docs/brutalist-review-setup.md → "Register a repo with the broker").
+#
+# Note on open-source repos: ChatGPT-plan auth in CI is ToS-grey for public
+# repos. The broker model minimizes exposure (short-lived token, no refresh,
+# fork-PRs blocked from secrets via the head.repo guard), but it's still your
+# call — leave codex off and run it locally if you'd rather not.
 #
 # What this does (mechanical parts only):
 #   1. sets the critic secrets on the target repo,
 #   2. writes .github/workflows/brutalist-review.yml (pinned),
-#   3. (codex mode) sets the App secrets + verifies the App is installed.
+#   3. (codex mode) seeds CODEX_AUTH (refresh blanked) from a local auth.json.
 #
 # Manual prerequisites (browser-bound) are NOT done here — see the runbook.
 #
 # Usage (default, claude + agy):
 #   ANTHROPIC_OAUTH_TOKEN=...  ./scripts/install-brutalist-review.sh <owner/repo>
 #
-# Usage (codex enabled — PRIVATE repos / self-hosted runner):
-#   ENABLE_CODEX=1  ANTHROPIC_OAUTH_TOKEN=...  \
-#   APP_ID=...  APP_PRIVATE_KEY_FILE=~/Downloads/*.pem  CODEX_AUTH_FILE=~/.codex/auth.json \
+# Usage (codex enabled — broker-push model):
+#   ENABLE_CODEX=1  ANTHROPIC_OAUTH_TOKEN=...  CODEX_AUTH_FILE=~/.codex/auth.json \
 #   ./scripts/install-brutalist-review.sh <owner/repo>
+#   # then register <owner/repo> with the broker so the token stays fresh.
 #
 # Optional env:
 #   AGY_FROM_KEYCHAIN 1 to extract the agy token from the macOS keychain
@@ -29,8 +43,9 @@
 #   AGY_TOKEN_FILE    raw JSON agy token file (alternative to keychain)
 #   BRUTALIST_VERSION action/package version tag to pin (default: v1.14.7)
 #   MIN_SEVERITY      inline-comment severity floor (default: medium)
-#   ENABLE_CODEX      1 to add the codex critic + self-healing App write-back
-#                     + keep-warm job (default: 0)
+#   ENABLE_CODEX      1 to add the codex critic (broker-push model) (default: 0)
+#   CODEX_AUTH_FILE   local codex auth.json to seed CODEX_AUTH from
+#                     (default: ~/.codex/auth.json)
 #
 # Secrets are always piped (never echoed). Re-running is idempotent.
 set -euo pipefail
@@ -62,9 +77,9 @@ echo "Installing Brutalist Review ($VERSION) on $REPO — critics: $CRITICS"
 if [[ "$ENABLE_CODEX" == "1" ]]; then
   IS_PRIVATE=$(gh repo view "$REPO" --json isPrivate --jq .isPrivate 2>/dev/null || echo "unknown")
   if [[ "$IS_PRIVATE" != "true" ]]; then
-    warn "ENABLE_CODEX=1 on a NON-private repo ($REPO). OpenAI's CI auth guide forbids"
-    warn "ChatGPT-plan auth.json on public/open-source repos (token-exposure + account-"
-    warn "suspension risk). Use a private repo / self-hosted runner, or run claude+agy only."
+    warn "ENABLE_CODEX=1 on a NON-private repo ($REPO). The broker model blanks the"
+    warn "refresh_token (CI holds only a ~10-day access token) and fork-PRs can't read"
+    warn "secrets, but ChatGPT-plan auth in CI is still ToS-grey for open-source. Your call."
   fi
 fi
 
@@ -94,10 +109,12 @@ else
   note "agy token not provided — agy critic will be skipped (optional)."
 fi
 
-KEY_FILE=""
 if [[ "$ENABLE_CODEX" == "1" ]]; then
-  # codex (opt-in). Normalize auth_mode:"chatgpt"; keep refresh_token so the
-  # write-back can maintain a CI-dedicated login's chain.
+  # codex (opt-in, broker-push model). Seed CODEX_AUTH with the refresh_token
+  # BLANKED: CI must never refresh — the broker is the sole refresher of the
+  # token lineage, and a second refresher would invalidate the chain (codex
+  # refresh tokens are single-use with reuse-detection). The broker overwrites
+  # this seed with a fresh token within its push interval.
   if [[ -f "$CODEX_AUTH_FILE" ]]; then
     node -e '
       const fs=require("fs");
@@ -106,28 +123,15 @@ if [[ "$ENABLE_CODEX" == "1" ]]; then
       if(!t.access_token){ console.error("codex auth.json has no access_token"); process.exit(1); }
       process.stdout.write(JSON.stringify({
         OPENAI_API_KEY: a.OPENAI_API_KEY ?? null,
-        tokens: { id_token: t.id_token, access_token: t.access_token, refresh_token: t.refresh_token ?? "", account_id: t.account_id },
+        tokens: { id_token: t.id_token, access_token: t.access_token, refresh_token: "", account_id: t.account_id },
         last_refresh: a.last_refresh, auth_mode: "chatgpt",
       }));
     ' "$CODEX_AUTH_FILE" | gh secret set CODEX_AUTH --repo "$REPO"
-    ok "CODEX_AUTH set (from $CODEX_AUTH_FILE, auth_mode normalized)"
+    ok "CODEX_AUTH seeded (from $CODEX_AUTH_FILE, refresh_token blanked, auth_mode=chatgpt)"
+    note "Register $REPO with the broker for ongoing refresh — see the runbook."
   else
-    warn "CODEX_AUTH_FILE ($CODEX_AUTH_FILE) not found — codex critic will be skipped."
-  fi
-  # self-healing write-back App
-  if [[ -n "${APP_ID:-}" ]]; then
-    printf '%s' "$APP_ID" | gh secret set CODEX_AUTH_APP_ID --repo "$REPO"
-    ok "CODEX_AUTH_APP_ID set"
-    KEY_FILE="${APP_PRIVATE_KEY_FILE:-}"
-    [[ -n "$KEY_FILE" ]] && KEY_FILE=$(ls $KEY_FILE 2>/dev/null | head -1 || true)
-    if [[ -n "$KEY_FILE" && -f "$KEY_FILE" ]]; then
-      gh secret set CODEX_AUTH_APP_PRIVATE_KEY --repo "$REPO" < "$KEY_FILE"
-      ok "CODEX_AUTH_APP_PRIVATE_KEY set (from $KEY_FILE)"
-    else
-      warn "APP_PRIVATE_KEY_FILE not found — write-back stays inert."
-    fi
-  else
-    note "APP_ID not provided — codex write-back inert (codex breaks when its token expires)."
+    warn "CODEX_AUTH_FILE ($CODEX_AUTH_FILE) not found — codex critic will be skipped until"
+    warn "the broker pushes CODEX_AUTH (see docs/brutalist-review-setup.md)."
   fi
 fi
 
@@ -139,22 +143,18 @@ if [[ "$ENABLE_CODEX" == "1" ]]; then
 cat > "$TMP" <<YML
 name: Brutalist Review
 
-# claude + codex + agy review on every PR. Codex uses ChatGPT-plan auth.json
-# (private repos / self-hosted runners ONLY — see docs/brutalist-review-setup.md)
-# with a self-healing GitHub App write-back + a keep-warm schedule.
+# claude + codex + agy review on every PR, posted as inline comments.
+# Codex auth: a broker (e.g. noot-1) pushes a fresh ChatGPT-plan access_token
+# (refresh blanked) to the CODEX_AUTH secret out-of-band — no tailnet, no
+# inbound, firewall-friendly. CI just reads it; codex never refreshes. The
+# image_generation tool is disabled (codex#21952 gpt-image-2 bug).
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  schedule:
-    - cron: '0 7 */5 * *'   # keep the codex token warm
 
 permissions:
   contents: read
   pull-requests: write
-
-concurrency:
-  group: brutalist-review-codex-auth
-  cancel-in-progress: false
 
 jobs:
   brutalist:
@@ -168,19 +168,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Detect codex write-back App
-        id: appcheck
-        env:
-          APP_ID: \${{ secrets.CODEX_AUTH_APP_ID }}
-        run: |
-          if [ -n "\$APP_ID" ]; then echo "ready=true" >> "\$GITHUB_OUTPUT"; else echo "ready=false" >> "\$GITHUB_OUTPUT"; fi
-      - name: Mint App token (ephemeral, 1h)
-        id: app-token
-        if: steps.appcheck.outputs.ready == 'true'
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: \${{ secrets.CODEX_AUTH_APP_ID }}
-          private-key: \${{ secrets.CODEX_AUTH_APP_PRIVATE_KEY }}
       - name: Install CLI critics
         run: |
           npm install -g @brutalist/mcp@${PKG_VERSION} \\
@@ -188,6 +175,9 @@ jobs:
                          @openai/codex
           curl -fsSL https://antigravity.google/cli/install.sh | bash
           echo "\$HOME/.local/bin" >> "\$GITHUB_PATH"
+          # codex: disable the broken built-in image_generation tool (gpt-image-2)
+          mkdir -p "\$HOME/.codex"
+          printf '[features]\\nimage_generation = false\\n' > "\$HOME/.codex/config.toml"
       - name: Brutalist review
         uses: ejmockler/brutalist-mcp/packages/github-action@${VERSION}
         env:
@@ -199,70 +189,15 @@ jobs:
           codex-auth: \${{ secrets.CODEX_AUTH }}
           agy-oauth-token: \${{ secrets.AGY_OAUTH_TOKEN }}
           minimum-severity: ${MIN_SEVERITY}
-      - name: Persist refreshed codex OAuth token (self-healing)
-        if: always() && steps.app-token.outputs.token != ''
-        env:
-          GH_TOKEN: \${{ steps.app-token.outputs.token }}
-        run: |
-          AUTH="\$HOME/.codex/auth.json"
-          if [ ! -f "\$AUTH" ]; then echo "No \$AUTH — skipping."; exit 0; fi
-          if ! node -e "const t=require('\$AUTH')?.tokens?.refresh_token; if(!t)process.exit(1)" 2>/dev/null; then
-            echo "auth.json has no refresh_token — skipping write-back."; exit 0
-          fi
-          gh secret set CODEX_AUTH --repo "\${{ github.repository }}" < "\$AUTH" \\
-            && echo "Persisted refreshed CODEX_AUTH." || echo "::warning::write-back failed."
-
-  codex-keepwarm:
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Detect codex write-back App
-        id: appcheck
-        env:
-          APP_ID: \${{ secrets.CODEX_AUTH_APP_ID }}
-        run: |
-          if [ -n "\$APP_ID" ]; then echo "ready=true" >> "\$GITHUB_OUTPUT"; else echo "ready=false" >> "\$GITHUB_OUTPUT"; fi
-      - name: Mint App token (ephemeral, 1h)
-        id: app-token
-        if: steps.appcheck.outputs.ready == 'true'
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: \${{ secrets.CODEX_AUTH_APP_ID }}
-          private-key: \${{ secrets.CODEX_AUTH_APP_PRIVATE_KEY }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - name: Install codex
-        run: npm install -g @openai/codex
-      - name: Provision + refresh codex token
-        env:
-          CODEX_AUTH: \${{ secrets.CODEX_AUTH }}
-        run: |
-          if [ -z "\$CODEX_AUTH" ]; then echo "No CODEX_AUTH — nothing to keep warm."; exit 0; fi
-          mkdir -p "\$HOME/.codex"; printf '%s' "\$CODEX_AUTH" > "\$HOME/.codex/auth.json"; chmod 600 "\$HOME/.codex/auth.json"
-          printf '%s' "reply with: warm" | codex exec --sandbox read-only --skip-git-repo-check 2>&1 | tail -5 || true
-      - name: Persist refreshed codex OAuth token
-        if: always() && steps.app-token.outputs.token != ''
-        env:
-          GH_TOKEN: \${{ steps.app-token.outputs.token }}
-        run: |
-          AUTH="\$HOME/.codex/auth.json"
-          if [ ! -f "\$AUTH" ]; then echo "No \$AUTH — skipping."; exit 0; fi
-          if ! node -e "const t=require('\$AUTH')?.tokens?.refresh_token; if(!t)process.exit(1)" 2>/dev/null; then
-            echo "auth.json has no refresh_token — skipping."; exit 0
-          fi
-          gh secret set CODEX_AUTH --repo "\${{ github.repository }}" < "\$AUTH" \\
-            && echo "Kept CODEX_AUTH warm." || echo "::warning::keep-warm write-back failed."
 YML
 else
 cat > "$TMP" <<YML
 name: Brutalist Review
 
 # claude + agy review on every PR, posted as inline comments. Codex is run
-# locally, not in CI (OpenAI forbids ChatGPT-plan auth.json on public repos;
-# codex-action is API-key-only). To enable codex on a private repo /
-# self-hosted runner, re-run the installer with ENABLE_CODEX=1.
+# locally, not in CI. To add the codex critic via the broker-push model
+# (ChatGPT-plan auth, no API key), re-run the installer with ENABLE_CODEX=1
+# and register the repo with the broker — see docs/brutalist-review-setup.md.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -313,22 +248,8 @@ else
   warn "could not push workflow (branch protection?). Add $WF manually — written to: $TMP"
 fi
 
-# --- 3. (codex mode) verify App installation ------------------------------
-if [[ "$ENABLE_CODEX" == "1" && -n "${APP_ID:-}" && -n "$KEY_FILE" && -f "$KEY_FILE" ]]; then
-  INSTALLED=$(node -e '
-    const fs=require("fs"),crypto=require("crypto"),https=require("https");
-    const pem=fs.readFileSync(process.argv[1],"utf8"), appId=process.argv[2], repo=process.argv[3];
-    const now=Math.floor(Date.now()/1000), b64=o=>Buffer.from(JSON.stringify(o)).toString("base64url");
-    const h=b64({alg:"RS256",typ:"JWT"}), p=b64({iat:now-60,exp:now+540,iss:Number(appId)});
-    const s=crypto.sign("RSA-SHA256",Buffer.from(h+"."+p),pem).toString("base64url");
-    https.request({host:"api.github.com",path:`/repos/${repo}/installation`,headers:{Authorization:`Bearer ${h}.${p}.${s}`,Accept:"application/vnd.github+json","User-Agent":"install"}},
-      r=>process.stdout.write(String(r.statusCode))).end();
-  ' "$KEY_FILE" "$APP_ID" "$REPO" 2>/dev/null || echo "err")
-  if [[ "$INSTALLED" == "200" ]]; then ok "GitHub App is installed on $REPO"
-  else warn "GitHub App NOT installed on $REPO (HTTP $INSTALLED). Install: https://github.com/settings/apps"; fi
-fi
-
-rm -f "$TMP"
+[[ -f "$TMP" ]] && rm -f "$TMP"
 echo
 ok "Done. Next PR on $REPO triggers the review ($CRITICS)."
-note "See docs/brutalist-review-setup.md. Codex-in-CI (ENABLE_CODEX=1) is for private repos only."
+note "See docs/brutalist-review-setup.md."
+[[ "$ENABLE_CODEX" == "1" ]] && note "Codex stays fresh only once $REPO is registered with the broker (runbook)."

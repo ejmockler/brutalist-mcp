@@ -16,7 +16,7 @@ permissions:
 jobs:
   brutalist:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 45
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -41,12 +41,13 @@ jobs:
         # action receives all four credentials below, so it must not move.
         uses: ejmockler/brutalist-mcp/packages/github-action@15cedc8159a54662fa741395746d4aa0e161a3b4 # v1.14.7
         env:
-          # agy is a real agentic critic, not a quick scan — on a non-trivial diff
-          # it needs more than the old 15-min per-critic cap (it was getting SIGKILLed
-          # at exactly 900000ms with no output). Give critics 25 min each and the
-          # orchestrator 40 min so agy actually completes; job timeout 50 covers it.
-          BRUTALIST_TIMEOUT: "1500000"
-          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2400000"
+          # The round-3 FAILURE was the ORCHESTRATOR budget, not the per-critic cap:
+          # on a large diff the brain needs room AFTER the slowest critic returns, and
+          # 25 min wasn't enough. Raising the per-critic cap to 25 min did NOT help agy
+          # (it ran to the exact cap with no output either way — a CI-side agy issue,
+          # not time). So: keep the 15-min per-critic cap, give the orchestrator 35 min.
+          BRUTALIST_TIMEOUT: "900000"
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2100000"
         with:
           github-token: ${{ github.token }}
           anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}

@@ -220,7 +220,7 @@ permissions:
 jobs:
   brutalist:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -245,7 +245,7 @@ jobs:
         uses: ejmockler/brutalist-mcp/packages/github-action@${ACTION_SHA} # ${VERSION}
         env:
           BRUTALIST_TIMEOUT: "900000"
-          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "1500000"
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2100000"
         with:
           github-token: \${{ github.token }}
           anthropic-oauth-token: \${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
@@ -272,7 +272,7 @@ permissions:
 jobs:
   brutalist:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -291,7 +291,7 @@ jobs:
         uses: ejmockler/brutalist-mcp/packages/github-action@${ACTION_SHA} # ${VERSION}
         env:
           BRUTALIST_TIMEOUT: "900000"
-          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "1500000"
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2100000"
         with:
           github-token: \${{ github.token }}
           anthropic-oauth-token: \${{ secrets.ANTHROPIC_OAUTH_TOKEN }}

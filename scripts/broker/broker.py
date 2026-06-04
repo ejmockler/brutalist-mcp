@@ -19,10 +19,11 @@
 # Files in BROKER_HOME:
 #   auth.json   the ONE codex login — copy of ~/.codex/auth.json after `codex login`
 #   broker.key  shared secret — generate: openssl rand -hex 32 > broker.key && chmod 600 broker.key
-import json, time, base64, os, threading, urllib.request, http.server
+import json, time, base64, os, threading, fcntl, urllib.request, http.server
 
 HOME = os.environ.get("BROKER_HOME") or os.path.dirname(os.path.abspath(__file__))
 AUTH = os.path.join(HOME, "auth.json")
+LOCKF = os.path.join(HOME, "broker.lock")
 KEY = open(os.path.join(HOME, "broker.key")).read().strip()
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"   # codex's public OAuth client id (not a secret)
 TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -75,7 +76,12 @@ def refresh(a):
     return a
 
 def get_token(force=False):
-    with _lock:
+    # _lock serializes threads in THIS process; the flock serializes across
+    # PROCESSES (e.g. a stray debug broker beside the systemd service) so two
+    # instances can't both refresh the single-use chain and trip reuse-detection
+    # — the one invariant the whole broker model depends on.
+    with _lock, open(LOCKF, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
         a = load()
         if force or access_exp(a) - time.time() < BUFFER:
             a = refresh(a)
@@ -88,6 +94,10 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(code); self.send_header("Content-Type", "application/json")
         self.end_headers(); self.wfile.write(json.dumps(obj).encode())
     def do_GET(self):
+        # /token serves a cached token (refreshes only when near expiry).
+        # /token/force ROTATES the lineage every call — keep it for the push job
+        # only; anyone with broker.key can call it, so hold the key tightly and
+        # bind privately. (flock in get_token keeps forced rotations serialized.)
         path = self.path.split("?")[0]
         if path not in ("/token", "/token/force", "/health"):
             return self._send(404, {"error": "not found"})

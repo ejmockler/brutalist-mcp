@@ -58,7 +58,7 @@ login and is the **sole refresher**. Everyone else — your laptop *and* CI — 
 consume, so a freshly-minted access token with the refresh field blanked works
 fine and can't desync anything.
 
-```
+```text
 broker host (always-on, behind a firewall — outbound only)
   codex-broker        ── holds the ONE login; sole refresher of the lineage
   codex-push.timer    ── every ~4 days: refresh, blank refresh_token,
@@ -84,28 +84,40 @@ ChatGPT-plan login in CI on open-source; that's your call.
 
 ### 3a. Stand up the broker (once, on the always-on host)
 
-1. `codex login` on that host → `~/codex-broker/auth.json` (a dedicated copy,
-   kept out of the host's own `~/.codex`).
-2. Run the broker as a **systemd *user* service** (`loginctl enable-linger
+A complete, parameterized reference implementation lives in
+[`scripts/broker/`](../scripts/broker/) — `broker.py`, `push-codex-secret.sh`,
+systemd unit templates, and a step-by-step README. In short:
+
+1. `codex login` on that host, copy `~/.codex/auth.json` → `~/codex-broker/auth.json`,
+   and generate `broker.key` (`openssl rand -hex 32`).
+2. Run `broker.py` as a **systemd *user* service** (`loginctl enable-linger
    <user>` so it survives logout). It refreshes when the access token is within
-   ~10 min of expiry and serves `/token` over your VPN IP only, key-gated. See
-   `noot-1:~/codex-broker/broker.py`.
-3. Run the push as a **systemd timer** (`OnUnitActiveSec=4d`): it force-refreshes,
-   builds an `auth.json` with `refresh_token=""` + `auth_mode:"chatgpt"`, and
-   `gh secret set CODEX_AUTH --repo <r>` for each repo in its `REPOS` list, using
-   the host's own `gh` auth. See `noot-1:~/codex-broker/push-codex-secret.sh`.
-4. Point your laptop at the broker (optional): a small `pull` script + a launchd/
-   cron job that writes `~/.codex/auth.json` (refresh blanked) every few hours, so
-   local codex also rides the one lineage.
+   ~10 min of expiry and serves `/token` over your VPN IP only (`BROKER_BIND_IP`),
+   key-gated.
+3. Run `push-codex-secret.sh` as a **systemd timer** (`OnUnitActiveSec=4d`): it
+   force-refreshes, builds an `auth.json` with `refresh_token=""` +
+   `auth_mode:"chatgpt"`, and `gh secret set CODEX_AUTH --repo <r>` for each repo
+   in its `REPOS` list, using the host's own `gh` auth.
+4. Point your laptop at the broker (optional): a `pull` job (launchd/cron) that
+   writes `~/.codex/auth.json` (refresh blanked) every few hours — see the
+   README — so local codex also rides the one lineage.
+
+See `scripts/broker/README.md` for the exact commands.
 
 ### 3b. Install codex on a repo
 
 ```bash
 ENABLE_CODEX=1 \
+ALLOW_PUBLIC_CODEX=1 \          # required on a PUBLIC repo — a deliberate opt-in
 ANTHROPIC_OAUTH_TOKEN='...' \
 CODEX_AUTH_FILE=~/.codex/auth.json \
   ./scripts/install-brutalist-review.sh <owner/repo>
 ```
+
+On a **public** repo the installer refuses codex unless `ALLOW_PUBLIC_CODEX=1` is
+set — ChatGPT-plan auth in public CI is ToS-grey and any write-access collaborator
+can exfiltrate `CODEX_AUTH` (the `head.repo` guard only blocks forks). Omit it on
+private repos.
 
 This seeds `CODEX_AUTH` (refresh blanked) so the first runs work immediately,
 and writes the codex-enabled workflow (installs `@openai/codex`, disables the
@@ -121,9 +133,9 @@ push:
 ssh <broker-host> 'REPOS="owner/repo-a owner/repo-b" ~/codex-broker/push-codex-secret.sh'
 ```
 
-(or edit the env in the systemd unit / `REPOS` file the script reads). The
-broker's `gh` must have access to set secrets on each repo. From then on the
-4-day timer keeps every registered repo's `CODEX_AUTH` fresh.
+(or edit `REPOS` in the `codex-push.service` systemd unit — see
+`scripts/broker/systemd/`). The broker's `gh` must have Secrets:write on each
+repo. From then on the 4-day timer keeps every registered repo's `CODEX_AUTH` fresh.
 
 ### Durability (codex mode)
 Hands-off. The broker refreshes every ~4 days; access tokens live ~10 days, so

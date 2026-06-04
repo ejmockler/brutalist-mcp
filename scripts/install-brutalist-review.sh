@@ -42,10 +42,16 @@
 #                     (default: 1 on macOS, else 0)
 #   AGY_TOKEN_FILE    raw JSON agy token file (alternative to keychain)
 #   BRUTALIST_VERSION action/package version tag to pin (default: v1.14.7)
-#   MIN_SEVERITY      inline-comment severity floor (default: medium)
+#   MIN_SEVERITY      inline-comment severity floor: nit|low|medium|high|critical
+#                     (default: medium)
 #   ENABLE_CODEX      1 to add the codex critic (broker-push model) (default: 0)
+#   ALLOW_PUBLIC_CODEX 1 to allow ENABLE_CODEX on a PUBLIC repo (required there —
+#                      ChatGPT-plan auth in public CI is ToS-grey + collaborator-
+#                      exfiltratable; see the runbook) (default: 0)
 #   CODEX_AUTH_FILE   local codex auth.json to seed CODEX_AUTH from
 #                     (default: ~/.codex/auth.json)
+#   ACTION_SHA / CLAUDE_CLI_VERSION / CODEX_CLI_VERSION  override the pinned
+#                     action commit + critic CLI versions (advanced; keep in sync)
 #
 # Secrets are always piped (never echoed). Re-running is idempotent.
 set -euo pipefail
@@ -64,8 +70,9 @@ CODEX_AUTH_FILE="${CODEX_AUTH_FILE:-$HOME/.codex/auth.json}"
 
 # Pin the action to an IMMUTABLE commit SHA, not the mutable VERSION tag — the
 # action receives every OAuth token (github/anthropic/codex/agy), so a moved tag
-# or a compromised tag-ref would hand an attacker all of them. ACTION_SHA must be
-# the commit the VERSION tag points at; override both together when bumping.
+# or a compromised tag-ref would hand an attacker all of them. ACTION_SHA MUST be
+# the commit the VERSION tag points at — when bumping, set both and verify with:
+#   git rev-parse <VERSION>^{commit}   (must equal ACTION_SHA)
 ACTION_SHA="${ACTION_SHA:-15cedc8159a54662fa741395746d4aa0e161a3b4}"  # = v1.14.7
 # Pin the critic CLIs (supply-chain: an unpinned @latest install runs BEFORE the
 # secrets are present, but the planted binary persists and later receives tokens).
@@ -74,11 +81,13 @@ CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.136.0}"
 
 # Validate operator-supplied values before they are interpolated into the
 # generated YAML (a poisoned env must not be able to inject workflow content).
-[[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]            || { echo "bad BRUTALIST_VERSION: $VERSION" >&2; exit 2; }
-[[ "$ACTION_SHA" =~ ^[0-9a-f]{40}$ ]]                     || { echo "bad ACTION_SHA: $ACTION_SHA" >&2; exit 2; }
-[[ "$MIN_SEVERITY" =~ ^(low|medium|high|critical)$ ]]    || { echo "bad MIN_SEVERITY: $MIN_SEVERITY" >&2; exit 2; }
-[[ "$CLAUDE_CLI_VERSION" =~ ^[0-9][0-9.]*$ ]]            || { echo "bad CLAUDE_CLI_VERSION: $CLAUDE_CLI_VERSION" >&2; exit 2; }
-[[ "$CODEX_CLI_VERSION" =~ ^[0-9][0-9.]*$ ]]             || { echo "bad CODEX_CLI_VERSION: $CODEX_CLI_VERSION" >&2; exit 2; }
+# Version pins require >=2 dot-separated numbers (reject bare ints / trailing /
+# double dots). MIN_SEVERITY mirrors the action's SeverityFilter (incl. 'nit').
+[[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]                 || { echo "bad BRUTALIST_VERSION: $VERSION" >&2; exit 2; }
+[[ "$ACTION_SHA" =~ ^[0-9a-f]{40}$ ]]                          || { echo "bad ACTION_SHA: $ACTION_SHA" >&2; exit 2; }
+[[ "$MIN_SEVERITY" =~ ^(nit|low|medium|high|critical)$ ]]      || { echo "bad MIN_SEVERITY: $MIN_SEVERITY (nit|low|medium|high|critical)" >&2; exit 2; }
+[[ "$CLAUDE_CLI_VERSION" =~ ^[0-9]+(\.[0-9]+)+$ ]]             || { echo "bad CLAUDE_CLI_VERSION: $CLAUDE_CLI_VERSION" >&2; exit 2; }
+[[ "$CODEX_CLI_VERSION" =~ ^[0-9]+(\.[0-9]+)+$ ]]              || { echo "bad CODEX_CLI_VERSION: $CODEX_CLI_VERSION" >&2; exit 2; }
 
 note() { printf '  %s\n' "$*"; }
 ok()   { printf '✓ %s\n' "$*"; }
@@ -95,9 +104,20 @@ echo "Installing Brutalist Review ($VERSION) on $REPO — critics: $CRITICS"
 if [[ "$ENABLE_CODEX" == "1" ]]; then
   IS_PRIVATE=$(gh repo view "$REPO" --json isPrivate --jq .isPrivate 2>/dev/null || echo "unknown")
   if [[ "$IS_PRIVATE" != "true" ]]; then
-    warn "ENABLE_CODEX=1 on a NON-private repo ($REPO). The broker model blanks the"
-    warn "refresh_token (CI holds only a ~10-day access token) and fork-PRs can't read"
-    warn "secrets, but ChatGPT-plan auth in CI is still ToS-grey for open-source. Your call."
+    # Codex on a PUBLIC repo is a real ToS boundary, not a style preference:
+    # ChatGPT-plan auth in open-source CI risks account suspension, and ANY
+    # write-access collaborator can exfiltrate CODEX_AUTH (the head.repo guard
+    # only blocks forks). Require an explicit affirmative flag, not a silent
+    # opt-in — the broker model lowers blast radius but does not erase it.
+    if [[ "${ALLOW_PUBLIC_CODEX:-0}" != "1" ]]; then
+      warn "REFUSING codex on NON-private repo ($REPO): ChatGPT-plan auth in public CI is"
+      warn "ToS-grey (account-suspension risk) and any write-access collaborator can exfiltrate"
+      warn "CODEX_AUTH. Re-run with ALLOW_PUBLIC_CODEX=1 to proceed deliberately, or omit"
+      warn "ENABLE_CODEX to run claude+agy and keep codex local."
+      exit 2
+    fi
+    warn "proceeding with codex on PUBLIC repo $REPO (ALLOW_PUBLIC_CODEX=1) — blast radius is"
+    warn "your ChatGPT account; refresh is blanked (10-day cap) and fork PRs get no secrets."
   fi
 fi
 
@@ -141,6 +161,12 @@ if [[ "$ENABLE_CODEX" == "1" ]]; then
   # token lineage, and a second refresher would invalidate the chain (codex
   # refresh tokens are single-use with reuse-detection). The broker overwrites
   # this seed with a fresh token within its push interval.
+  #
+  # CONTRACT: this relies on codex NOT attempting a refresh when refresh_token is
+  # "" (empirically validated, and the reason CODEX_CLI_VERSION is pinned — a
+  # future codex could change this). If it ever does refresh, the review degrades
+  # gracefully: the codex critic fails legibly ("CODEX OAuth token expired") and
+  # claude+agy still post — it does not break the whole review.
   if [[ -f "$CODEX_AUTH_FILE" ]]; then
     node -e '
       const fs=require("fs");
@@ -163,7 +189,7 @@ if [[ "$ENABLE_CODEX" == "1" ]]; then
     warn "CODEX_AUTH_FILE ($CODEX_AUTH_FILE) not found — codex critic will be skipped until"
     warn "the broker pushes CODEX_AUTH (see docs/brutalist-review-setup.md)."
   fi
-elif gh secret list --repo "$REPO" 2>/dev/null | grep -q '^CODEX_AUTH[[:space:]]'; then
+elif gh secret list --repo "$REPO" 2>/dev/null | awk '{print $1}' | grep -qx CODEX_AUTH; then
   # Re-running without ENABLE_CODEX=1 does NOT silently disable codex: the secret
   # (and any broker registration) persist. Surface that so it isn't a footgun.
   warn "codex is disabled this run, but a CODEX_AUTH secret still EXISTS on $REPO."
@@ -197,10 +223,10 @@ jobs:
     timeout-minutes: 35
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
       - name: Install CLI critics
@@ -249,10 +275,10 @@ jobs:
     timeout-minutes: 35
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
       - name: Install CLI critics
@@ -287,11 +313,11 @@ ARGS=(-f message="ci: install Brutalist Review ($VERSION, $CRITICS) on every PR"
 [[ -n "$EXISTING_SHA" ]] && ARGS+=(-f sha="$EXISTING_SHA")
 if gh api --method PUT "repos/$REPO/contents/$WF" "${ARGS[@]}" --jq '.commit.sha' >/dev/null 2>&1; then
   ok "workflow committed to $REPO@$DEFAULT_BRANCH:$WF"
+  rm -f "$TMP"
 else
-  warn "could not push workflow (branch protection?). Add $WF manually — written to: $TMP"
+  # Keep $TMP on failure — the operator needs it to add the workflow by hand.
+  warn "could not push workflow (branch protection?). Add $WF manually from: $TMP"
 fi
-
-[[ -f "$TMP" ]] && rm -f "$TMP"
 echo
 ok "Done. Next PR on $REPO triggers the review ($CRITICS)."
 note "See docs/brutalist-review-setup.md."

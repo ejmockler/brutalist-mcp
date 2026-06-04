@@ -62,6 +62,24 @@ MIN_SEVERITY="${MIN_SEVERITY:-medium}"
 ENABLE_CODEX="${ENABLE_CODEX:-0}"
 CODEX_AUTH_FILE="${CODEX_AUTH_FILE:-$HOME/.codex/auth.json}"
 
+# Pin the action to an IMMUTABLE commit SHA, not the mutable VERSION tag — the
+# action receives every OAuth token (github/anthropic/codex/agy), so a moved tag
+# or a compromised tag-ref would hand an attacker all of them. ACTION_SHA must be
+# the commit the VERSION tag points at; override both together when bumping.
+ACTION_SHA="${ACTION_SHA:-15cedc8159a54662fa741395746d4aa0e161a3b4}"  # = v1.14.7
+# Pin the critic CLIs (supply-chain: an unpinned @latest install runs BEFORE the
+# secrets are present, but the planted binary persists and later receives tokens).
+CLAUDE_CLI_VERSION="${CLAUDE_CLI_VERSION:-2.1.162}"
+CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.136.0}"
+
+# Validate operator-supplied values before they are interpolated into the
+# generated YAML (a poisoned env must not be able to inject workflow content).
+[[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]            || { echo "bad BRUTALIST_VERSION: $VERSION" >&2; exit 2; }
+[[ "$ACTION_SHA" =~ ^[0-9a-f]{40}$ ]]                     || { echo "bad ACTION_SHA: $ACTION_SHA" >&2; exit 2; }
+[[ "$MIN_SEVERITY" =~ ^(low|medium|high|critical)$ ]]    || { echo "bad MIN_SEVERITY: $MIN_SEVERITY" >&2; exit 2; }
+[[ "$CLAUDE_CLI_VERSION" =~ ^[0-9][0-9.]*$ ]]            || { echo "bad CLAUDE_CLI_VERSION: $CLAUDE_CLI_VERSION" >&2; exit 2; }
+[[ "$CODEX_CLI_VERSION" =~ ^[0-9][0-9.]*$ ]]             || { echo "bad CODEX_CLI_VERSION: $CODEX_CLI_VERSION" >&2; exit 2; }
+
 note() { printf '  %s\n' "$*"; }
 ok()   { printf '✓ %s\n' "$*"; }
 warn() { printf '⚠ %s\n' "$*" >&2; }
@@ -98,10 +116,18 @@ if [[ -n "${AGY_TOKEN_FILE:-}" && -f "$AGY_TOKEN_FILE" ]]; then
   ok "AGY_OAUTH_TOKEN set (from $AGY_TOKEN_FILE)"
 elif [[ "${AGY_FROM_KEYCHAIN:-$([[ $OSTYPE == darwin* ]] && echo 1 || echo 0)}" == "1" ]]; then
   if security find-generic-password -s gemini -a antigravity -w >/dev/null 2>&1; then
-    security find-generic-password -s gemini -a antigravity -w \
-      | sed 's/^go-keyring-base64://' | base64 -d \
-      | gh secret set AGY_OAUTH_TOKEN --repo "$REPO"
-    ok "AGY_OAUTH_TOKEN set (from macOS keychain)"
+    # Decode into a var first so a base64 failure (raw/non-encoded entry) WARNS
+    # and skips the optional critic instead of aborting the whole install under
+    # `set -o pipefail`, and so we never set an empty AGY_OAUTH_TOKEN secret.
+    AGY_RAW=$(security find-generic-password -s gemini -a antigravity -w \
+                | sed 's/^go-keyring-base64://' | base64 -d 2>/dev/null) || AGY_RAW=""
+    if [[ -n "$AGY_RAW" ]]; then
+      printf '%s' "$AGY_RAW" | gh secret set AGY_OAUTH_TOKEN --repo "$REPO"
+      ok "AGY_OAUTH_TOKEN set (from macOS keychain)"
+    else
+      warn "agy keychain entry could not be decoded — agy critic will be skipped."
+    fi
+    unset AGY_RAW
   else
     warn "agy keychain entry not found (run \`agy \"hi\"\` once) — agy critic will be skipped."
   fi
@@ -121,10 +147,14 @@ if [[ "$ENABLE_CODEX" == "1" ]]; then
       const a=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
       const t=a.tokens||{};
       if(!t.access_token){ console.error("codex auth.json has no access_token"); process.exit(1); }
+      // NEVER propagate a local OPENAI_API_KEY into a public-repo secret — the
+      // broker model is OAuth-only. Force null. Default id_token/account_id to
+      // "" so JSON.stringify does not silently DROP missing keys (codex then
+      // gets a malformed auth.json and fails).
       process.stdout.write(JSON.stringify({
-        OPENAI_API_KEY: a.OPENAI_API_KEY ?? null,
-        tokens: { id_token: t.id_token, access_token: t.access_token, refresh_token: "", account_id: t.account_id },
-        last_refresh: a.last_refresh, auth_mode: "chatgpt",
+        OPENAI_API_KEY: null,
+        tokens: { id_token: t.id_token ?? "", access_token: t.access_token, refresh_token: "", account_id: t.account_id ?? "" },
+        last_refresh: a.last_refresh ?? null, auth_mode: "chatgpt",
       }));
     ' "$CODEX_AUTH_FILE" | gh secret set CODEX_AUTH --repo "$REPO"
     ok "CODEX_AUTH seeded (from $CODEX_AUTH_FILE, refresh_token blanked, auth_mode=chatgpt)"
@@ -133,6 +163,11 @@ if [[ "$ENABLE_CODEX" == "1" ]]; then
     warn "CODEX_AUTH_FILE ($CODEX_AUTH_FILE) not found — codex critic will be skipped until"
     warn "the broker pushes CODEX_AUTH (see docs/brutalist-review-setup.md)."
   fi
+elif gh secret list --repo "$REPO" 2>/dev/null | grep -q '^CODEX_AUTH[[:space:]]'; then
+  # Re-running without ENABLE_CODEX=1 does NOT silently disable codex: the secret
+  # (and any broker registration) persist. Surface that so it isn't a footgun.
+  warn "codex is disabled this run, but a CODEX_AUTH secret still EXISTS on $REPO."
+  warn "To fully remove codex: gh secret delete CODEX_AUTH --repo $REPO (+ unregister it from the broker)."
 fi
 
 # --- 2. workflow -----------------------------------------------------------
@@ -171,15 +206,17 @@ jobs:
       - name: Install CLI critics
         run: |
           npm install -g @brutalist/mcp@${PKG_VERSION} \\
-                         @anthropic-ai/claude-code \\
-                         @openai/codex
+                         @anthropic-ai/claude-code@${CLAUDE_CLI_VERSION} \\
+                         @openai/codex@${CODEX_CLI_VERSION}
+          # NOTE: the agy installer is unpinned upstream (no published checksum) —
+          # residual supply-chain surface; it runs before any secret is present.
           curl -fsSL https://antigravity.google/cli/install.sh | bash
           echo "\$HOME/.local/bin" >> "\$GITHUB_PATH"
           # codex: disable the broken built-in image_generation tool (gpt-image-2)
           mkdir -p "\$HOME/.codex"
           printf '[features]\\nimage_generation = false\\n' > "\$HOME/.codex/config.toml"
       - name: Brutalist review
-        uses: ejmockler/brutalist-mcp/packages/github-action@${VERSION}
+        uses: ejmockler/brutalist-mcp/packages/github-action@${ACTION_SHA} # ${VERSION}
         env:
           BRUTALIST_TIMEOUT: "900000"
           BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "1500000"
@@ -220,11 +257,12 @@ jobs:
           node-version: '20'
       - name: Install CLI critics
         run: |
-          npm install -g @brutalist/mcp@${PKG_VERSION} @anthropic-ai/claude-code
+          npm install -g @brutalist/mcp@${PKG_VERSION} @anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}
+          # NOTE: agy installer is unpinned upstream (no published checksum) — residual supply-chain surface.
           curl -fsSL https://antigravity.google/cli/install.sh | bash
           echo "\$HOME/.local/bin" >> "\$GITHUB_PATH"
       - name: Brutalist review
-        uses: ejmockler/brutalist-mcp/packages/github-action@${VERSION}
+        uses: ejmockler/brutalist-mcp/packages/github-action@${ACTION_SHA} # ${VERSION}
         env:
           BRUTALIST_TIMEOUT: "900000"
           BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "1500000"
@@ -237,7 +275,12 @@ YML
 fi
 
 # Push the workflow via the API (uses the repo's default branch).
-DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq .defaultBranchRef.name)
+DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name // ""')
+if [[ -z "$DEFAULT_BRANCH" ]]; then
+  warn "no default branch on $REPO (empty repo?) — push an initial commit, then re-run."
+  warn "workflow written to: $TMP"
+  exit 1
+fi
 EXISTING_SHA=$(gh api "repos/$REPO/contents/$WF?ref=$DEFAULT_BRANCH" --jq .sha 2>/dev/null || true)
 CONTENT=$(base64 < "$TMP" | tr -d '\n')
 ARGS=(-f message="ci: install Brutalist Review ($VERSION, $CRITICS) on every PR" -f content="$CONTENT" -f branch="$DEFAULT_BRANCH")

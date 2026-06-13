@@ -160,4 +160,15 @@ export interface RunOptions {
    * via AbortController so failure is loud and bounded.
    */
   timeoutMs?: number;
+
+  /**
+   * Hard cap on agent turns. Defaults to 50 (DEFAULT_MAX_TURNS), overridable
+   * via the BRUTALIST_ORCHESTRATOR_MAX_TURNS env var (this option wins over
+   * the env var). It's the seatbelt against a confused brain looping until the
+   * wall-clock timeout — sized for the worst-case happy path, which is
+   * dominated by roast pagination (each oversized 3-critic roast spans several
+   * SAME-domain/target re-calls, one turn each). The wall-clock budget
+   * (timeoutMs) remains the real seatbelt; this just bounds turn count.
+   */
+  maxTurns?: number;
 }

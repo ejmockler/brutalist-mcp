@@ -175,10 +175,50 @@ describe('orchestrator.run()', () => {
 
     await run({ repoPath: '/tmp/repo', oauthToken: 'tok' });
 
-    // The exact number is a guardrail; the contract is "non-trivial finite cap".
+    // The exact number is a guardrail; the contract is "non-trivial finite cap"
+    // with real headroom above the old 20 (pagination alone can burn that).
     expect(typeof capturedQueryOptions.maxTurns).toBe('number');
-    expect(capturedQueryOptions.maxTurns).toBeGreaterThan(0);
+    expect(capturedQueryOptions.maxTurns).toBeGreaterThanOrEqual(40);
     expect(capturedQueryOptions.maxTurns).toBeLessThan(100);
+  });
+
+  it('lets an explicit maxTurns option override the default', async () => {
+    mockQuery.mockReturnValue(
+      makeMessageStream(async () => {
+        await capturedHandler!(FIXTURE_OK);
+      }),
+    );
+
+    await run({ repoPath: '/tmp/repo', oauthToken: 'tok', maxTurns: 7 });
+
+    expect(capturedQueryOptions.maxTurns).toBe(7);
+  });
+
+  it('honors BRUTALIST_ORCHESTRATOR_MAX_TURNS, but the explicit option wins', async () => {
+    const prev = process.env.BRUTALIST_ORCHESTRATOR_MAX_TURNS;
+    try {
+      process.env.BRUTALIST_ORCHESTRATOR_MAX_TURNS = '12';
+
+      mockQuery.mockReturnValue(
+        makeMessageStream(async () => {
+          await capturedHandler!(FIXTURE_OK);
+        }),
+      );
+      await run({ repoPath: '/tmp/repo', oauthToken: 'tok' });
+      expect(capturedQueryOptions.maxTurns).toBe(12);
+
+      // Explicit option takes precedence over the env var.
+      mockQuery.mockReturnValue(
+        makeMessageStream(async () => {
+          await capturedHandler!(FIXTURE_OK);
+        }),
+      );
+      await run({ repoPath: '/tmp/repo', oauthToken: 'tok', maxTurns: 33 });
+      expect(capturedQueryOptions.maxTurns).toBe(33);
+    } finally {
+      if (prev === undefined) delete process.env.BRUTALIST_ORCHESTRATOR_MAX_TURNS;
+      else process.env.BRUTALIST_ORCHESTRATOR_MAX_TURNS = prev;
+    }
   });
 
   it('throws OrchestratorIncompleteError when the agent never calls submit_findings', async () => {

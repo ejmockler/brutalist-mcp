@@ -85,6 +85,18 @@ export class OrchestratorTimeoutError extends Error {
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
+// Hard cap on agent turns — the seatbelt against a confused brain looping
+// until the wall-clock timeout. Sized for the worst-case happy path, which is
+// dominated by pagination: a 3-critic roast (claude+codex+agy) routinely
+// exceeds brutalist's ~25k-token page size, so each of up to 3 roasts can span
+// several SAME-domain/target re-calls (one turn each) before it's fully read.
+// Budget: optional brutalist_discover (1) + 3 roast issues (3) + pagination
+// follow-ups (~3 pages × 3 roasts ≈ 9) + grep-based quote verification (~several)
+// + terminal submit_findings (1) already crowds 20, leaving zero headroom for a
+// re-read or retry. 50 restores generous slack while staying a non-trivial
+// finite cap; the wall-clock budget (timeoutMs) remains the real seatbelt.
+const DEFAULT_MAX_TURNS = 50;
+
 export async function run(options: RunOptions): Promise<OrchestratorResult> {
   // Closure-scoped capture for the structured output. The submit_findings
   // tool's handler writes here; run() reads after query() drains.
@@ -215,10 +227,10 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
   };
 
   // Wall-clock budget: cancel the SDK iterator if a child CLI stalls
-  // past the timeout. Without this, maxTurns:20 still allows a single
+  // past the timeout. Without this, the maxTurns cap still allows a single
   // wedged subprocess to hold the loop for the GH Actions job timeout
-  // (6h default). The AbortController propagates through the SDK's
-  // child-process tree.
+  // (6h default) — a turn never completes, so the turn counter never advances.
+  // The AbortController propagates through the SDK's child-process tree.
   // Wall-clock budget. Precedence: explicit option > BRUTALIST_ORCHESTRATOR_TIMEOUT_MS
   // env (lets CI lower it for cheap iteration without a code change) > 30-min default.
   const envTimeout = Number(process.env.BRUTALIST_ORCHESTRATOR_TIMEOUT_MS);
@@ -228,6 +240,13 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
   const timeoutHandle = setTimeout(() => abortController.abort(), timeoutMs);
   // Mark the handle for garbage collection on early-exit paths.
   if (typeof timeoutHandle.unref === 'function') timeoutHandle.unref();
+
+  // Turn cap. Precedence mirrors timeoutMs: explicit option >
+  // BRUTALIST_ORCHESTRATOR_MAX_TURNS env (lets CI/operators tune without a code
+  // change) > DEFAULT_MAX_TURNS.
+  const envMaxTurns = Number(process.env.BRUTALIST_ORCHESTRATOR_MAX_TURNS);
+  const maxTurns = options.maxTurns
+    ?? (Number.isFinite(envMaxTurns) && envMaxTurns > 0 ? envMaxTurns : DEFAULT_MAX_TURNS);
 
   const queryOptions: Options = {
     abortController,
@@ -248,14 +267,12 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
     ],
     disallowedTools: [...DENIED_BRUTALIST_TOOLS],
     systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
-    // Hard cap on agent turns. Without this, a confused agent can loop
-    // until the GitHub Actions job timeout (6h default) before failing.
-    // 20 turns covers: optional brutalist_discover, up to 3 roast calls,
-    // pagination follow-ups (each roast may need 2–3 page reads),
-    // grep-based quote verification, and the terminal submit_findings.
-    // The system prompt's "at most 3 roast calls" remains the primary
-    // budget; this is the seatbelt.
-    maxTurns: 20,
+    // Hard cap on agent turns — the seatbelt against a confused agent looping
+    // until the GitHub Actions job timeout (6h default) before failing. The
+    // system prompt's "at most 3 roast calls" remains the primary budget; this
+    // is the backstop. See DEFAULT_MAX_TURNS for the sizing rationale and the
+    // BRUTALIST_ORCHESTRATOR_MAX_TURNS env override.
+    maxTurns,
     env: {
       // Inherit parent env (PATH, HOME, runner-injected vars). Without
       // this the spawned `claude` binary used by the Agent SDK can't be

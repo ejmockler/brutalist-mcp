@@ -124,6 +124,16 @@ jobs:
           # working-directory: .
 ```
 
+### Pinning
+
+The `@v1.14.0` above is an exact release. Three pinning styles, strongest supply-chain guarantee first:
+
+- **By commit SHA** — `…/github-action@<40-char-sha>` (optionally `# v1.14.8`). Immutable; nothing moves under you. Recommended for security-sensitive repos.
+- **By exact release** — `…/github-action@v1.14.8`. Immutable tag; update by bumping the line.
+- **By moving major/minor** — `…/github-action@v1` or `@v1.14`. These tags are auto-repointed to the newest release on each publish, so you receive patches without editing your workflow. Convenient, but you inherit changes you didn't pin to.
+
+Tuning knobs (env on the action's step), useful once you're on a release that supports them: `BRUTALIST_ORCHESTRATOR_TIMEOUT_MS` (wall-clock budget, default 30m) and `BRUTALIST_ORCHESTRATOR_MAX_TURNS` (agent turn cap, default 50) — raise the latter if reviews of very large diffs terminate as incomplete.
+
 ## Inputs
 
 | Name | Required | Default | Description |

@@ -37,9 +37,11 @@ jobs:
           mkdir -p "$HOME/.codex"
           printf '[features]\nimage_generation = false\n' > "$HOME/.codex/config.toml"
       - name: Brutalist review
-        # Pinned to the immutable v1.14.7 commit SHA, not the mutable tag — this
+        # Pinned to the immutable v1.15.0 commit SHA, not the mutable tag — this
         # action receives all four credentials below, so it must not move.
-        uses: ejmockler/brutalist-mcp/packages/github-action@15cedc8159a54662fa741395746d4aa0e161a3b4 # v1.14.7
+        # v1.15.0 raises the orchestrator turn cap 20→50 (BRUTALIST_ORCHESTRATOR_MAX_TURNS,
+        # default 50), so the brain no longer exhausts turns on large diffs.
+        uses: ejmockler/brutalist-mcp/packages/github-action@93b4ec30bf6987970432d7d53662aa28d390a9b0 # v1.15.0
         env:
           # The round-3 FAILURE was the ORCHESTRATOR budget, not the per-critic cap:
           # on a large diff the brain needs room AFTER the slowest critic returns, and

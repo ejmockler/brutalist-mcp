@@ -4,8 +4,9 @@ Run the Brutalist multi-CLI code review on every PR of any repo.
 
 - **Default critics: Claude + agy.** Works on public and private repos, no
   ongoing auth maintenance.
-- **Codex is opt-in and private-repo-only** — see §3. On public repos, run
-  codex locally, not in CI (reason in §3).
+- **Codex is opt-in** (§3) via the **broker-push model** — ChatGPT-plan auth,
+  no OpenAI API key, and (unlike a naive `auth.json`-in-a-secret) it coexists
+  with your *local* codex on the *same* account and stays fresh hands-off.
 
 ---
 
@@ -17,7 +18,7 @@ Capture the critic credentials (each is one-time, browser-bound):
 |--------|---------|-------|
 | **claude** (required) | `claude setup-token` → copy the token | The orchestrator brain + the claude critic. |
 | **agy** (optional) | `agy "hi"` once (browser OAuth) | Token lives in the macOS keychain; the installer extracts it. |
-| **codex** (optional, private repos) | see §3 | ChatGPT-plan OAuth. |
+| **codex** (optional) | a running **broker** (§3) | ChatGPT-plan OAuth, pushed to CI out-of-band. |
 
 ---
 
@@ -38,48 +39,107 @@ Claude-only; add `AGY_OAUTH_TOKEN` for the second lens.
 
 ---
 
-## 3. Codex in CI — private repos / self-hosted runners only
+## 3. Codex in CI — the broker-push model
 
-**Do not enable codex-in-CI on a public/open-source repo.** OpenAI's
-[CI/CD auth guide](https://developers.openai.com/codex/auth/ci-cd-auth)
-explicitly forbids using a ChatGPT-plan `auth.json` there (token-exposure +
-personal-account suspension risk), and the official `openai/codex-action` is
-API-key-only (it proxies the billed Responses API — no subscription path). On
-public repos, keep codex **local**.
+The hard problem: codex authenticates against your **ChatGPT plan** (the
+official `openai/codex-action` is API-key-only — it bills the Responses API, no
+subscription path), and a ChatGPT-plan login is *singular and self-rotating*:
 
-On a **private** repo (or self-hosted runner), codex can run on your ChatGPT
-plan with a self-healing GitHub App write-back. Hard facts to design around:
+- **One active grant per account.** A second `codex login` *revokes* the first.
+- **Single-use refresh tokens with reuse-detection.** Two independent refreshers
+  on the same lineage → the chain is invalidated (`refresh_token_reused`). So you
+  can't just drop `auth.json` into a CI secret and let CI refresh it: CI and your
+  laptop would fight over the lineage and both break.
 
-- **One active codex session per ChatGPT account** — empirically confirmed: a
-  second `codex login` *revokes* the first. So you cannot run codex both
-  locally and in CI on one account. To do both, use a **dedicated 2nd
-  account** for CI (or only run codex in CI, not locally). Codex Access Tokens
-  (refresh-free, isolated) would be ideal but are **Business/Enterprise-only**.
-- **Refresh-token rotation** — codex rotates its token on refresh (~every 8
-  days). CI must persist the rotated token back, or it goes stale. That's what
-  the GitHub App + write-back + keep-warm job do.
+**The broker fixes this by making exactly one process the refresher.** An
+always-on host (a home server, a NAS, a small VM — here, `noot-1`) holds the one
+login and is the **sole refresher**. Everyone else — your laptop *and* CI — just
+*consumes* short-lived access tokens it hands out. Codex does no validation on
+consume, so a freshly-minted access token with the refresh field blanked works
+fine and can't desync anything.
 
-### Enable it
-1. Create a **GitHub App**: [github.com/settings/apps/new](https://github.com/settings/apps/new) →
-   uncheck Webhook → **Repository permissions → Secrets: Read and write** →
-   Create → Generate a private key (`.pem`), note the **App ID** → **Install**
-   on the (private) repo.
-2. On a trusted machine dedicated to CI's account: `codex login` →
-   `~/.codex/auth.json`.
-3. Install with codex enabled:
-   ```bash
-   ENABLE_CODEX=1 \
-   ANTHROPIC_OAUTH_TOKEN='...' \
-   APP_ID='<numeric App ID>' APP_PRIVATE_KEY_FILE=~/Downloads/*.pem \
-   CODEX_AUTH_FILE=~/.codex/auth.json \
-     ./scripts/install-brutalist-review.sh <owner/private-repo>
-   ```
-   This adds the codex critic, the App write-back, a **keep-warm** cron (every
-   5 days — refreshes + writes back so the token never idles), and a
-   `concurrency` group (codex's reuse-detection forbids concurrent refreshes).
+```text
+broker host (always-on, behind a firewall — outbound only)
+  codex-broker        ── holds the ONE login; sole refresher of the lineage
+  codex-push.timer    ── every ~4 days: refresh, blank refresh_token,
+                          `gh secret set CODEX_AUTH --repo <each repo>`   ──┐
+                                                                           │ outbound
+  laptop ── pulls a fresh access_token from the broker over your VPN       │ HTTPS
+                                                                           ▼
+GitHub:  CODEX_AUTH secret (short-lived access token, refresh BLANKED)
+  └─► CI reads it → ~/.codex/auth.json → codex exec     (never refreshes)
+```
+
+Why this satisfies the usual constraints: the broker only makes **outbound**
+calls, so it works from behind a firewall with no inbound and **no CI runner on
+your VPN**. CI treats `CODEX_AUTH` like any normal secret. Because CI never
+refreshes, the broker's lineage never desyncs — local + CI run off one account
+indefinitely.
+
+**Public repos:** the CI secret holds only a ~10-day access token with **no
+refresh token**, and fork PRs don't receive secrets (the workflow's
+`head.repo.full_name == github.repository` guard also blocks them) — so exposure
+is far lower than shipping a full `auth.json`. It's still ToS-grey to use a
+ChatGPT-plan login in CI on open-source; that's your call.
+
+### 3a. Stand up the broker (once, on the always-on host)
+
+A complete, parameterized reference implementation lives in
+[`scripts/broker/`](../scripts/broker/) — `broker.py`, `push-codex-secret.sh`,
+systemd unit templates, and a step-by-step README. In short:
+
+1. `codex login` on that host, copy `~/.codex/auth.json` → `~/codex-broker/auth.json`,
+   and generate `broker.key` (`openssl rand -hex 32`).
+2. Run `broker.py` as a **systemd *user* service** (`loginctl enable-linger
+   <user>` so it survives logout). It refreshes when the access token is within
+   ~10 min of expiry and serves `/token` over your VPN IP only (`BROKER_BIND_IP`),
+   key-gated.
+3. Run `push-codex-secret.sh` as a **systemd timer** (`OnUnitActiveSec=4d`): it
+   force-refreshes, builds an `auth.json` with `refresh_token=""` +
+   `auth_mode:"chatgpt"`, and `gh secret set CODEX_AUTH --repo <r>` for each repo
+   in its `REPOS` list, using the host's own `gh` auth.
+4. Point your laptop at the broker (optional): a `pull` job (launchd/cron) that
+   writes `~/.codex/auth.json` (refresh blanked) every few hours — see the
+   README — so local codex also rides the one lineage.
+
+See `scripts/broker/README.md` for the exact commands.
+
+### 3b. Install codex on a repo
+
+```bash
+ENABLE_CODEX=1 \
+ALLOW_PUBLIC_CODEX=1 \          # required on a PUBLIC repo — a deliberate opt-in
+ANTHROPIC_OAUTH_TOKEN='...' \
+CODEX_AUTH_FILE=~/.codex/auth.json \
+  ./scripts/install-brutalist-review.sh <owner/repo>
+```
+
+On a **public** repo the installer refuses codex unless `ALLOW_PUBLIC_CODEX=1` is
+set — ChatGPT-plan auth in public CI is ToS-grey and any write-access collaborator
+can exfiltrate `CODEX_AUTH` (the `head.repo` guard only blocks forks). Omit it on
+private repos.
+
+This seeds `CODEX_AUTH` (refresh blanked) so the first runs work immediately,
+and writes the codex-enabled workflow (installs `@openai/codex`, disables the
+broken `image_generation` tool — codex#21952 — and reads `CODEX_AUTH`). No
+GitHub App, no in-CI refresh, no keep-warm cron: the broker owns refresh.
+
+### 3c. Register the repo with the broker (ongoing freshness)
+
+Add `<owner/repo>` to the push script's `REPOS` on the broker host and kick one
+push:
+
+```bash
+ssh <broker-host> 'REPOS="owner/repo-a owner/repo-b" ~/codex-broker/push-codex-secret.sh'
+```
+
+(or edit `REPOS` in the `codex-push.service` systemd unit — see
+`scripts/broker/systemd/`). The broker's `gh` must have Secrets:write on each
+repo. From then on the 4-day timer keeps every registered repo's `CODEX_AUTH` fresh.
 
 ### Durability (codex mode)
-Hands-off in the normal case. Residual risk: a rotation hiccup or ~6 months
-idle may need a one-time `codex login` + re-run of the installer. When codex
-fails, the review degrades gracefully (Claude + agy still post) and the
-summary says *"CODEX OAuth token expired — re-capture."*
+Hands-off. The broker refreshes every ~4 days; access tokens live ~10 days, so
+there's ample margin. If the broker host is down longer than the token TTL,
+codex degrades gracefully — Claude + agy still post, and the summary notes
+*"CODEX OAuth token expired."* Recovery is just bringing the broker back (or a
+one-time `codex login` on it if the lineage ever fully lapses).

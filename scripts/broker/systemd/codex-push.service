@@ -1,0 +1,11 @@
+# systemd USER service: refresh + push CODEX_AUTH to each target repo.
+# Driven by codex-push.timer. Edit REPOS to your repos.
+# Install: copy to ~/.config/systemd/user/, then `systemctl --user daemon-reload`.
+[Unit]
+Description=Push fresh codex token to GitHub CODEX_AUTH secret
+
+[Service]
+Type=oneshot
+Environment="REPOS=owner/repo-a owner/repo-b"
+# Environment="BROKER_URL=http://127.0.0.1:8080"
+ExecStart=%h/codex-broker/push-codex-secret.sh

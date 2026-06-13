@@ -1,0 +1,20 @@
+# systemd USER service for the codex token broker.
+# Install: copy to ~/.config/systemd/user/, then:
+#   loginctl enable-linger "$USER"          # survive logout / run while logged out
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now codex-broker.service
+# Set BROKER_BIND_IP to your VPN/Tailscale IP to serve other machines.
+[Unit]
+Description=Codex token broker (serves ChatGPT-plan access_token over a private network)
+After=network-online.target
+
+[Service]
+# Environment="BROKER_BIND_IP=100.x.y.z"   # your tailnet IP (omit = 127.0.0.1)
+# Environment="BROKER_PORT=8080"
+ExecStart=/usr/bin/python3 %h/codex-broker/broker.py
+WorkingDirectory=%h/codex-broker
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

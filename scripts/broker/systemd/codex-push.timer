@@ -1,0 +1,15 @@
+# systemd USER timer: push a fresh CODEX_AUTH every 4 days.
+# codex access tokens live ~10 days, so a 4-day cadence keeps the secret >=6 days
+# valid at all times. Install: copy to ~/.config/systemd/user/, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now codex-push.timer
+[Unit]
+Description=Refresh+push codex CODEX_AUTH secret every 4 days
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=4d
+Persistent=true
+
+[Install]
+WantedBy=timers.target

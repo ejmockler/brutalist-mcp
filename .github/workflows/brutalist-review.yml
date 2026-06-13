@@ -16,28 +16,38 @@ permissions:
 jobs:
   brutalist:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
       - name: Install CLI critics
         run: |
-          npm install -g @brutalist/mcp@1.14.7 @anthropic-ai/claude-code @openai/codex
+          # Pin every critic CLI — an unpinned @latest runs before secrets exist,
+          # but a planted binary persists and later receives the OAuth tokens.
+          npm install -g @brutalist/mcp@1.14.7 @anthropic-ai/claude-code@2.1.162 @openai/codex@0.136.0
+          # NOTE: agy installer is unpinned upstream (no published checksum) — residual supply-chain surface.
           curl -fsSL https://antigravity.google/cli/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           # codex: disable the broken built-in image_generation tool (gpt-image-2)
           mkdir -p "$HOME/.codex"
           printf '[features]\nimage_generation = false\n' > "$HOME/.codex/config.toml"
       - name: Brutalist review
-        uses: ejmockler/brutalist-mcp/packages/github-action@v1.14.7
+        # Pinned to the immutable v1.14.7 commit SHA, not the mutable tag — this
+        # action receives all four credentials below, so it must not move.
+        uses: ejmockler/brutalist-mcp/packages/github-action@15cedc8159a54662fa741395746d4aa0e161a3b4 # v1.14.7
         env:
+          # The round-3 FAILURE was the ORCHESTRATOR budget, not the per-critic cap:
+          # on a large diff the brain needs room AFTER the slowest critic returns, and
+          # 25 min wasn't enough. Raising the per-critic cap to 25 min did NOT help agy
+          # (it ran to the exact cap with no output either way — a CI-side agy issue,
+          # not time). So: keep the 15-min per-critic cap, give the orchestrator 35 min.
           BRUTALIST_TIMEOUT: "900000"
-          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "1500000"
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2100000"
         with:
           github-token: ${{ github.token }}
           anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}

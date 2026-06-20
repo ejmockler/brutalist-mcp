@@ -40227,13 +40227,18 @@ function readInputs() {
     if (!(minimumSeverityRaw in SEVERITY_RANK)) {
         throw new Error(`Invalid minimum-severity "${minimumSeverityRaw}". Valid: ${Object.keys(SEVERITY_RANK).join(', ')}.`);
     }
-    const maxDiffCharsRaw = lib_core.getInput('max-diff-chars') || '80000';
+    const maxDiffCharsRaw = lib_core.getInput('max-diff-chars') || '2000000';
     const maxDiffChars = parseInt(maxDiffCharsRaw, 10);
     if (!Number.isFinite(maxDiffChars) || maxDiffChars < 1000) {
         throw new Error(`Invalid max-diff-chars "${maxDiffCharsRaw}" — must be an integer ≥ 1000.`);
     }
     return {
-        anthropicOauthToken,
+        // Trim the OAuth token: a trailing newline (common when a secret is
+        // captured via `echo`/copy-paste) survives the non-empty check above
+        // but makes the SDK's CLAUDE_CODE_OAUTH_TOKEN parser reject it with a
+        // cryptic 401. OAuth tokens never contain surrounding whitespace, so
+        // trimming is strictly safe and kills that failure vector.
+        anthropicOauthToken: anthropicOauthToken.trim(),
         githubToken,
         openaiApiKey: lib_core.getInput('openai-api-key') || undefined,
         codexAuth: lib_core.getInput('codex-auth') || undefined,
@@ -41927,7 +41932,23 @@ main().catch((err) => {
         if (v && v.length >= 8)
             secrets.push(v);
     }
-    lib_core.setFailed(redactSecrets(raw, secrets));
+    const redacted = redactSecrets(raw, secrets);
+    // Classify auth failures so the SDK's opaque "401 Invalid authentication
+    // credentials" (which surfaces on the orchestrator's first turn, before any
+    // critic runs) becomes an actionable instruction instead of a dead end.
+    // OAuth tokens from `claude setup-token` are long-lived but can be revoked
+    // or rotated — generating a fresh token elsewhere can invalidate an older
+    // one still sitting in a repo secret, which is exactly this 401.
+    const looksLikeAuthFailure = /\b401\b|invalid authentication|authentication_error|failed to authenticate/i.test(raw);
+    const message = looksLikeAuthFailure
+        ? `${redacted}\n\n` +
+            'This is an authentication failure, not a code error. The ANTHROPIC_OAUTH_TOKEN ' +
+            'secret is most likely expired, revoked, or rotated. Regenerate it and update the secret:\n' +
+            '    claude setup-token\n' +
+            '    gh secret set ANTHROPIC_OAUTH_TOKEN --repo <owner>/<repo>\n' +
+            'Capture it without a trailing newline (the action trims it defensively, but the secret should be clean).'
+        : redacted;
+    lib_core.setFailed(message);
 });
 /**
  * Strip any of the supplied secret values from a string before it

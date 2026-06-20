@@ -21,7 +21,7 @@
     "prepublishOnly": "npm run build"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0"
   },
   "dependencies": {
     "@actions/core": "^1.11.1",

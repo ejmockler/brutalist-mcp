@@ -229,7 +229,24 @@ main().catch((err) => {
     const v = process.env[key];
     if (v && v.length >= 8) secrets.push(v);
   }
-  core.setFailed(redactSecrets(raw, secrets));
+  const redacted = redactSecrets(raw, secrets);
+  // Classify auth failures so the SDK's opaque "401 Invalid authentication
+  // credentials" (which surfaces on the orchestrator's first turn, before any
+  // critic runs) becomes an actionable instruction instead of a dead end.
+  // OAuth tokens from `claude setup-token` are long-lived but can be revoked
+  // or rotated — generating a fresh token elsewhere can invalidate an older
+  // one still sitting in a repo secret, which is exactly this 401.
+  const looksLikeAuthFailure =
+    /\b401\b|invalid authentication|authentication_error|failed to authenticate/i.test(raw);
+  const message = looksLikeAuthFailure
+    ? `${redacted}\n\n` +
+      'This is an authentication failure, not a code error. The ANTHROPIC_OAUTH_TOKEN ' +
+      'secret is most likely expired, revoked, or rotated. Regenerate it and update the secret:\n' +
+      '    claude setup-token\n' +
+      '    gh secret set ANTHROPIC_OAUTH_TOKEN --repo <owner>/<repo>\n' +
+      'Capture it without a trailing newline (the action trims it defensively, but the secret should be clean).'
+    : redacted;
+  core.setFailed(message);
 });
 
 /**

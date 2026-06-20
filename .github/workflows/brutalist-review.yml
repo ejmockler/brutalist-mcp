@@ -37,11 +37,12 @@ jobs:
           mkdir -p "$HOME/.codex"
           printf '[features]\nimage_generation = false\n' > "$HOME/.codex/config.toml"
       - name: Brutalist review
-        # Pinned to the immutable v1.15.0 commit SHA, not the mutable tag — this
-        # action receives all four credentials below, so it must not move.
-        # v1.15.0 raises the orchestrator turn cap 20→50 (BRUTALIST_ORCHESTRATOR_MAX_TURNS,
-        # default 50), so the brain no longer exhausts turns on large diffs.
-        uses: ejmockler/brutalist-mcp/packages/github-action@93b4ec30bf6987970432d7d53662aa28d390a9b0 # v1.15.0
+        # Tracks the moving @v1 tag — repointed to each release by the upstream
+        # move-tags automation — so the fleet auto-updates to the latest brutalist
+        # action. Trust root is the owner-controlled ejmockler/brutalist-mcp repo +
+        # release pipeline (same owner as this repo). @v1 ships the turn-cap 20→50
+        # fix (orchestrator default 50) so the brain no longer exhausts turns.
+        uses: ejmockler/brutalist-mcp/packages/github-action@v1
         env:
           # The round-3 FAILURE was the ORCHESTRATOR budget, not the per-critic cap:
           # on a large diff the brain needs room AFTER the slowest critic returns, and

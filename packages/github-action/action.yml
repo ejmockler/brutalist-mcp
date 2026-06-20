@@ -77,12 +77,20 @@ inputs:
   max-diff-chars:
     description: |
       Maximum diff size in characters passed to the orchestrator. Diffs
-      above this threshold are truncated to keep prompt budgets in check
-      and a warning is emitted. Set higher (e.g. 200000) for monorepo
-      PRs where partial diff context produces unreliable findings.
-      Default: 80000.
+      above this threshold are truncated at a file boundary and a warning
+      is emitted. The default is deliberately large: coding-agent PRs are
+      routinely huge (tens of thousands of changed lines), and silently
+      dropping most of the diff produces a review that looks complete but
+      isn't.
+
+      Default: 2000000 (~500K tokens — fits Claude's 1M-token context with
+      headroom for the system prompt and critic output). The diff is also
+      forwarded to each CLI critic; Codex/agy have smaller context windows,
+      so on multi-megabyte diffs those critics may still truncate
+      internally. Lower this only if you hit context-budget errors; raise
+      it for monorepo PRs that exceed even 2M characters.
     required: false
-    default: '80000'
+    default: '2000000'
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'

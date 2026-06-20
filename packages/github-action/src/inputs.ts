@@ -68,7 +68,7 @@ export function readInputs(): ActionInputs {
     );
   }
 
-  const maxDiffCharsRaw = core.getInput('max-diff-chars') || '80000';
+  const maxDiffCharsRaw = core.getInput('max-diff-chars') || '2000000';
   const maxDiffChars = parseInt(maxDiffCharsRaw, 10);
   if (!Number.isFinite(maxDiffChars) || maxDiffChars < 1000) {
     throw new Error(
@@ -77,7 +77,12 @@ export function readInputs(): ActionInputs {
   }
 
   return {
-    anthropicOauthToken,
+    // Trim the OAuth token: a trailing newline (common when a secret is
+    // captured via `echo`/copy-paste) survives the non-empty check above
+    // but makes the SDK's CLAUDE_CODE_OAUTH_TOKEN parser reject it with a
+    // cryptic 401. OAuth tokens never contain surrounding whitespace, so
+    // trimming is strictly safe and kills that failure vector.
+    anthropicOauthToken: anthropicOauthToken.trim(),
     githubToken,
     openaiApiKey: core.getInput('openai-api-key') || undefined,
     codexAuth: core.getInput('codex-auth') || undefined,

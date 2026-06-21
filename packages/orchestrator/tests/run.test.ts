@@ -13,6 +13,7 @@
  */
 
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { existsSync, readFileSync } from 'node:fs';
 
 // Mock the SDK before importing orchestrator. Capture the tool handler
 // from the `tool()` call so tests can drive it like the agent would.
@@ -82,6 +83,69 @@ describe('orchestrator.run()', () => {
     expect(capturedQueryOptions.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth-secret');
     const brutalistServer = capturedQueryOptions.mcpServers.brutalist;
     expect(brutalistServer.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth-secret');
+  });
+
+  // PR-diff delivery to the brutalist-mcp subprocess. A large diff in an env
+  // var trips MAX_ARG_STRLEN (~128 KB) and throws `spawn E2BIG` at SDK init,
+  // killing the whole review (bobnetsec/core PR #12). The diff must travel via
+  // a temp FILE; the inline env var is kept only for small diffs (back-compat).
+  describe('PR-diff delivery (E2BIG guard)', () => {
+    const SMALL_DIFF = 'diff --git a/s.ts b/s.ts\n@@ -1 +1 @@\n-a\n+b';
+
+    it('routes a large diff via a temp FILE, never inline, and cleans it up', async () => {
+      const bigDiff = 'diff --git a/big.ts b/big.ts\n@@ -1 +1 @@\n-x\n+' + 'y'.repeat(200 * 1024);
+      let existedDuringRun = false;
+      let contentDuringRun = '';
+      let filePathDuringRun = '';
+      mockQuery.mockReturnValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'system' as const };
+          // The diff file exists for the lifetime of the query drain.
+          filePathDuringRun = capturedQueryOptions.mcpServers.brutalist.env.BRUTALIST_PR_DIFF_FILE;
+          existedDuringRun = existsSync(filePathDuringRun);
+          contentDuringRun = readFileSync(filePathDuringRun, 'utf-8');
+          await capturedHandler!(FIXTURE_OK);
+          yield { type: 'result' as const };
+        },
+      });
+
+      await run({ repoPath: '/tmp/repo', oauthToken: 'x', focus: bigDiff });
+
+      const env = capturedQueryOptions.mcpServers.brutalist.env;
+      expect(env.BRUTALIST_PR_DIFF_FILE).toBeTruthy();
+      expect(env.BRUTALIST_PR_DIFF).toBeUndefined(); // large diff is NEVER inline
+      expect(existedDuringRun).toBe(true);
+      expect(contentDuringRun).toBe(bigDiff); // full diff, no truncation
+      expect(existsSync(filePathDuringRun)).toBe(false); // unlinked in finally
+    });
+
+    it('also passes a small diff inline (back-compat) alongside the file', async () => {
+      mockQuery.mockReturnValue(
+        makeMessageStream(async () => {
+          await capturedHandler!(FIXTURE_OK);
+        }),
+      );
+
+      await run({ repoPath: '/tmp/repo', oauthToken: 'x', focus: SMALL_DIFF });
+
+      const env = capturedQueryOptions.mcpServers.brutalist.env;
+      expect(env.BRUTALIST_PR_DIFF_FILE).toBeTruthy();
+      expect(env.BRUTALIST_PR_DIFF).toBe(SMALL_DIFF);
+    });
+
+    it('sets neither diff var when focus is not a unified diff', async () => {
+      mockQuery.mockReturnValue(
+        makeMessageStream(async () => {
+          await capturedHandler!(FIXTURE_OK);
+        }),
+      );
+
+      await run({ repoPath: '/tmp/repo', oauthToken: 'x', focus: 'review the architecture please' });
+
+      const env = capturedQueryOptions.mcpServers.brutalist.env;
+      expect(env.BRUTALIST_PR_DIFF_FILE).toBeUndefined();
+      expect(env.BRUTALIST_PR_DIFF).toBeUndefined();
+    });
   });
 
   it('inherits PATH/HOME from process.env into spawned subprocesses', async () => {

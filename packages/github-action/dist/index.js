@@ -31923,6 +31923,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 `}function KS($,Q,X){if(Q!==void 0&&Q>0)return $.slice(X,X+Q);if(X>0)return $.slice(X);return $}function ZS($){return typeof $==="object"&&$!==null&&"type"in $&&$.type==="agent_metadata"}async function j6$($,Q){let X=DS(Q.dir),Y=M0(X),J=Q.offset??0,W=Q.limit;if($.listSessionSummaries){let q=await $.listSessionSummaries(Y),V=$.listSessions?new Map((await $.listSessions(Y)).map((w)=>[w.sessionId,w])):void 0,B=[];for(let w of q){let O=V?.get(w.sessionId);if(V&&!O)continue;let D=O!==void 0&&w.mtime<O.mtime;B.push({sessionId:w.sessionId,mtime:D?O.mtime:w.mtime,info:D?void 0:JN(w,X)})}if(V){let w=new Set(q.map((O)=>O.sessionId));for(let[O,D]of V)if(!w.has(O))B.push({sessionId:O,mtime:D.mtime})}else K$("listSessionSummaries without listSessions: gap-fill skipped; sessions lacking a sidecar will be omitted");B.sort((w,O)=>O.mtime-w.mtime);let z=KS(B,W,J),N=z.filter((w)=>w.info===void 0);if(N.length>0){let w=await qS($,N,Q.dir,X),O=new Map(w.map((D)=>[D.sessionId,D]));for(let D of z)if(D.info===void 0)D.info=O.get(D.sessionId)??null}return z.flatMap((w)=>w.info?[w.info]:[])}if(!$.listSessions)throw Error("sessionStore.listSessions is not implemented -- cannot list sessions. Provide a store with a listSessions() method.");let U=(await $.listSessions(Y)).slice().sort((q,V)=>V.mtime-q.mtime),H=KS(U,W,J);return qS($,H,Q.dir,X)}async function qS($,Q,X,Y){return(await Promise.allSettled(Q.map(async(W)=>{let G=await LS($,W.sessionId,X);if(!G)return null;let U=C8(W.sessionId,MS(G,W.mtime),Y);return U?{...U,lastModified:W.mtime}:null}))).flatMap((W,G)=>{let U=Q[G];if(W.status==="fulfilled")return W.value?[W.value]:[];return[{sessionId:U.sessionId,summary:"",lastModified:U.mtime}]})}function MS($,Q){let X=Buffer.from($,"utf-8"),Y=X.length,J=X.subarray(0,U4).toString("utf-8"),W=Y>U4?X.subarray(Y-U4).toString("utf-8"):J;return{mtime:Q,size:Y,head:J,tail:W}}function A6$($){let Q=$.trimEnd(),X=Q.slice(Q.lastIndexOf(`
 `)+1);try{let Y=l$(X);if(typeof Y==="object"&&Y!==null&&"timestamp"in Y&&typeof Y.timestamp==="string"){let J=Date.parse(Y.timestamp);if(!Number.isNaN(J))return J}}catch{}return Date.now()}async function LS($,Q,X){let Y=X4(X),J=await $.load({projectKey:Y,sessionId:Q});if(!J||J.length===0)return null;return FS(J)}async function I6$($,Q,X){if(!L$(Q))return[];let Y=X4(X.dir),J=await $.load({projectKey:Y,sessionId:Q});if(!J||J.length===0)return[];return NZ(J,{limit:X.limit,offset:X.offset,includeSystemMessages:X.includeSystemMessages})}async function R6$($,Q,X){if(!L$(Q))return;let Y=await LS($,Q,X.dir);if(!Y)return;let J=MS(Y,A6$(Y));return C8(Q,J)??void 0}async function P6$($,Q,X,Y){if(!L$(Q))throw Error(`Invalid sessionId: ${Q}`);if(!X.trim())throw Error("title must be non-empty");let J=X4(Y);await $.append({projectKey:J,sessionId:Q},[{type:"custom-title",customTitle:X.trim(),sessionId:Q,uuid:dz(),timestamp:new Date().toISOString()}])}async function E6$($,Q,X,Y){if(!L$(Q))throw Error(`Invalid sessionId: ${Q}`);if(X!==null){let W=F0(X).trim();if(!W)throw Error("tag must be non-empty (use null to clear)");X=W}let J=X4(Y);await $.append({projectKey:J,sessionId:Q},[{type:"tag",tag:X??"",sessionId:Q,uuid:dz(),timestamp:new Date().toISOString()}])}async function b6$($,Q,X){if(!L$(Q))throw Error(`Invalid sessionId: ${Q}`);if(X.upToMessageId&&!L$(X.upToMessageId))throw Error(`Invalid upToMessageId: ${X.upToMessageId}`);let Y=X4(X.dir),J=await $.load({projectKey:Y,sessionId:Q});if(!J||J.length===0)throw Error(`Session ${Q} not found`);let{entries:W,forkedSessionId:G}=SZ(J,Q,X);return await $.append({projectKey:Y,sessionId:G},W),{sessionId:G}}async function S6$($,Q,X){if(!L$(Q))return[];if(!$.listSubkeys)throw Error("sessionStore.listSubkeys is not implemented -- cannot list subagents. Provide a store with a listSubkeys() method.");let Y=X4(X),J=await $.listSubkeys({projectKey:Y,sessionId:Q}),W=new Set;for(let G of J){if(!G.startsWith("subagents/"))continue;let U=G.split("/").at(-1);if(U.startsWith("agent-"))W.add(U.slice(6))}return[...W]}async function _6$($,Q,X,Y){if(!L$(Q))return[];if(!X)return[];let J=X4(Y.dir),W=`subagents/agent-${X}`;if($.listSubkeys){let H=await $.listSubkeys({projectKey:J,sessionId:Q}),q=`agent-${X}`,V=H.find((B)=>B.startsWith("subagents/")&&B.split("/").at(-1)===q);if(!V)return[];W=V}let G=await $.load({projectKey:J,sessionId:Q,subpath:W});if(!G||G.length===0)return[];let U=G.filter((H)=>!ZS(H));if(U.length===0)return[];return hH(Buffer.from(FS(U)),{limit:Y.limit,offset:Y.offset})}function VS($,Q){let X=(0,external_path_.relative)(Q,$),Y=X.split(external_path_.sep);if(Y[0]===".."||(0,external_path_.isAbsolute)(X))return null;if(Y.length<2)return null;let J=Y[0],W=Y[1];if(Y.length===2&&W.endsWith(".jsonl"))return{projectKey:J,sessionId:W.replace(/\.jsonl$/,"")};if(Y.length>=4){let G=Y.slice(2),U=G.length-1;return G[U]=G.at(-1).replace(/\.jsonl$/,""),{projectKey:J,sessionId:W,subpath:G.join("/")}}return null}
 
+;// CONCATENATED MODULE: external "node:fs/promises"
+const external_node_fs_promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
+// EXTERNAL MODULE: external "node:fs"
+var external_node_fs_ = __nccwpck_require__(3024);
+// EXTERNAL MODULE: external "node:crypto"
+var external_node_crypto_ = __nccwpck_require__(7598);
 ;// CONCATENATED MODULE: ../orchestrator/node_modules/zod/v4/core/core.js
 var _a;
 /** A special constant with type `never` */
@@ -39825,6 +39831,11 @@ You are not posting to GitHub. You are not editing files. You are not summarizin
 
 
 
+
+
+
+
+
 // MCP tool naming convention used by Claude Agent SDK: `mcp__<server>__<tool>`.
 const BRUTALIST_MCP_SERVER_NAME = 'brutalist';
 const ORCHESTRATOR_MCP_SERVER_NAME = 'orchestrator';
@@ -39892,11 +39903,31 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 // re-read or retry. 50 restores generous slack while staying a non-trivial
 // finite cap; the wall-clock budget (timeoutMs) remains the real seatbelt.
 const DEFAULT_MAX_TURNS = 50;
+/**
+ * Upper bound on how large a diff we will still pass INLINE in the
+ * `BRUTALIST_PR_DIFF` env var (back-compat with an older brutalist-mcp that
+ * only reads the inline form). A single env-var string — like a single argv
+ * string — is hard-capped by the OS at MAX_ARG_STRLEN (≈128 KB on Linux);
+ * spawning the brutalist-mcp subprocess with a diff larger than that inline
+ * throws `spawn E2BIG` and kills the whole review before any critic runs
+ * (this is the bobnetsec/core PR #12 failure). Above this threshold the diff
+ * travels ONLY via the temp file (`BRUTALIST_PR_DIFF_FILE`). 96 KB leaves
+ * comfortable headroom under the 128 KB ceiling.
+ */
+const SAFE_ENV_DIFF_BYTES = 96 * 1024;
+/** True when `focus` is a unified diff (PR-review path). */
+function focusIsUnifiedDiff(focus) {
+    return !!focus && (/diff --git /.test(focus) || /(^|\n)@@ .+ @@/.test(focus));
+}
 async function run(options) {
     // Closure-scoped capture for the structured output. The submit_findings
     // tool's handler writes here; run() reads after query() drains.
     let captured;
     let submitCount = 0;
+    // Path to the temp file holding the PR diff, when one is written (see
+    // SAFE_ENV_DIFF_BYTES). Cleaned up in the query finally regardless of
+    // outcome. Declared here so it is in scope for that cleanup.
+    let diffFilePath;
     const submitFindings = Gs(SUBMIT_FINDINGS_TOOL_NAME, 'Submit the final structured findings extracted from per-CLI brutalist output. Call this exactly once as the terminal action of the analysis. Calling more than once is an error.', OrchestratorResultSchema.shape, async (args) => {
         // Refuse the second-and-beyond *successful* invocation. The guard
         // gates on `captured !== undefined` rather than a counter so that
@@ -39969,6 +40000,41 @@ async function run(options) {
     // composition; partial env objects are not "additive" with most
     // child_process.spawn implementations, they're complete replacements.
     const inheritedEnv = filterUndefined(process.env);
+    // Hand the PR diff to the brutalist-mcp subprocess via a temp FILE rather
+    // than inline in the spawn env. `max-diff-chars` defaults to 2,000,000, and
+    // a diff that large in an env var trips the OS per-string limit
+    // (MAX_ARG_STRLEN ≈ 128 KB on Linux applies to env, not just argv), so the
+    // SDK's `spawn('brutalist-mcp', …, { env })` throws `spawn E2BIG` at init —
+    // killing the entire review before a single critic runs. Writing the diff
+    // to disk and passing only the (tiny) path keeps the spawn env small for
+    // any diff size. Failure to write the file is non-fatal: we fall through to
+    // the inline path, which the brain can still relay via the roast `context`.
+    const diffFocus = focusIsUnifiedDiff(options.focus) ? options.focus : undefined;
+    if (diffFocus) {
+        try {
+            const candidate = (0,external_node_path_.join)((0,external_node_os_namespaceObject.tmpdir)(), `brutalist-pr-diff-${(0,external_node_crypto_.randomBytes)(16).toString('hex')}.diff`);
+            // Secure create (mirrors brutalist-mcp's writeClaudeMcpConfigSecure):
+            // O_EXCL refuses a pre-existing path and O_NOFOLLOW refuses a symlink, so
+            // a planted symlink in the shared tmpdir can't redirect the (possibly
+            // secret-bearing) diff. 0600 keeps it owner-only.
+            const O_NOFOLLOW = external_node_fs_.constants.O_NOFOLLOW ?? 0;
+            const handle = await (0,external_node_fs_promises_namespaceObject.open)(candidate, external_node_fs_.constants.O_WRONLY | external_node_fs_.constants.O_CREAT | external_node_fs_.constants.O_EXCL | O_NOFOLLOW, 0o600);
+            try {
+                await handle.writeFile(diffFocus, { encoding: 'utf-8' });
+            }
+            catch (e) {
+                await (0,external_node_fs_promises_namespaceObject.unlink)(candidate).catch(() => { });
+                throw e;
+            }
+            finally {
+                await handle.close().catch(() => { });
+            }
+            diffFilePath = candidate;
+        }
+        catch {
+            diffFilePath = undefined;
+        }
+    }
     const brutalistConfig = {
         type: 'stdio',
         command: options.brutalistMcpCommand ?? 'brutalist-mcp',
@@ -40000,10 +40066,16 @@ async function run(options) {
             // rather than relying on the brain to relay it verbatim in the roast
             // `context` arg. constructUserPrompt folds this in so every critic —
             // especially agy, whose agentic loop otherwise audits the whole repo
-            // and hits the per-critic timeout — scopes to the changed files. Only
-            // set when `focus` is actually a unified diff (the PR-review path).
-            ...(options.focus && (/diff --git /.test(options.focus) || /(^|\n)@@ .+ @@/.test(options.focus))
-                ? { BRUTALIST_PR_DIFF: options.focus }
+            // and hits the per-critic timeout — scopes to the changed files.
+            //
+            // Primary channel is the temp FILE (path is tiny → never E2BIGs the
+            // spawn). The inline env var is ALSO set for back-compat with an older
+            // brutalist-mcp that predates BRUTALIST_PR_DIFF_FILE — but ONLY when the
+            // diff is small enough to be safe inline. Large diffs travel via the
+            // file alone; never inline (that is the crash this fix removes).
+            ...(diffFilePath ? { BRUTALIST_PR_DIFF_FILE: diffFilePath } : {}),
+            ...(diffFocus && Buffer.byteLength(diffFocus, 'utf-8') <= SAFE_ENV_DIFF_BYTES
+                ? { BRUTALIST_PR_DIFF: diffFocus }
                 : {}),
         },
     };
@@ -40133,6 +40205,13 @@ async function run(options) {
     }
     finally {
         clearTimeout(timeoutHandle);
+        // Best-effort cleanup of the PR-diff temp file. The OS would reap it
+        // from tmpdir eventually, but we unlink eagerly so a long-lived runner
+        // doesn't accumulate multi-MB diffs (and so the diff content — which can
+        // carry secrets — lingers no longer than the run).
+        if (diffFilePath) {
+            await (0,external_node_fs_promises_namespaceObject.unlink)(diffFilePath).catch(() => { });
+        }
     }
     if (!captured) {
         // Fail loud rather than returning an empty-but-valid result. An
@@ -41520,10 +41599,6 @@ function truncateDiff(diff, maxChars) {
     return { text, didTruncate: true, originalChars: diff.length, keptChars: cut };
 }
 
-// EXTERNAL MODULE: external "node:crypto"
-var external_node_crypto_ = __nccwpck_require__(7598);
-// EXTERNAL MODULE: external "node:fs"
-var external_node_fs_ = __nccwpck_require__(3024);
 ;// CONCATENATED MODULE: ./src/oauth-provisioning.ts
 /**
  * OAuth credential provisioning for the Codex and Antigravity (`agy`) CLIs.

@@ -14,6 +14,9 @@ import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals
 import { EventEmitter } from 'events';
 import { CLIAgentOrchestrator, CLIAgentOptions } from '../../src/cli-agents.js';
 import { spawn } from 'child_process';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -311,6 +314,62 @@ describe('CLI Provider Command Construction', () => {
       const prompt = findPromptArg(result.args);
       expect(prompt).not.toContain('defensive pre-merge code review');
       expect(prompt).toContain('Analyze this idea');
+    });
+
+    // ARG_MAX guard. agy --print can only take the prompt on argv (no stdin),
+    // and a single argv string is hard-capped at ~128 KB on Linux. A large PR
+    // diff folded into the prompt would make spawn() throw E2BIG and kill the
+    // agy critic — so above ~96 KB the prompt is spilled to a file in agy's
+    // scratch dir and the argv carries only a short pointer. "No critic should
+    // die."
+    describe('oversized-prompt argv guard', () => {
+      it('keeps the inline argv prompt for normal-sized prompts (no spill)', async () => {
+        const result = await buildAgy(DIFF_PROMPT, { workingDirectory: '/work/repo' });
+        expect(result.tempPromptPath).toBeUndefined();
+        const prompt = findPromptArg(result.args);
+        expect(prompt).toContain('Be brutal');
+        expect(prompt).toContain('diff --git');
+      });
+
+      it('spills a >96KB prompt to a scratch file and passes only a short argv pointer', async () => {
+        const tmpData = mkdtempSync(join(tmpdir(), 'agy-spill-'));
+        const prev = process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR;
+        process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR = tmpData;
+        try {
+          // DIFF_PROMPT carries the `diff --git` marker (orientation fires);
+          // pad it well past the 96 KB threshold.
+          const huge = DIFF_PROMPT + '\n+' + 'x'.repeat(200 * 1024);
+          const result = await buildAgy(huge, { workingDirectory: '/work/repo' });
+
+          // The prompt was spilled to a file under <appDataDir>/scratch.
+          expect(result.tempPromptPath).toBeTruthy();
+          expect(result.tempPromptPath).toContain(join(tmpData, 'scratch'));
+          expect(existsSync(result.tempPromptPath as string)).toBe(true);
+
+          // CRITICAL: agy's subprocess must resolve <scratch> to the SAME
+          // appDataDir we wrote to. createSecureEnvironment strips
+          // ANTIGRAVITY_EXECUTABLE_DATA_DIR, so the adapter must forward it —
+          // otherwise agy reads the DEFAULT scratch and never finds this file
+          // (the critic would die on oversized prompts).
+          expect(result.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR).toBe(tmpData);
+
+          // The file holds the FULL prompt: system persona + diff body.
+          const spilled = readFileSync(result.tempPromptPath as string, 'utf-8');
+          expect(spilled).toContain('Be brutal');
+          expect(spilled).toContain('x'.repeat(1000));
+
+          // argv carries only a short pointer to that file — NOT the diff body.
+          const printIdx = result.args.indexOf('--print');
+          const promptArg = result.args[printIdx + 1] as string;
+          expect(promptArg).toContain(result.tempPromptPath);
+          expect(Buffer.byteLength(promptArg, 'utf-8')).toBeLessThan(96 * 1024);
+          expect(promptArg).not.toContain('x'.repeat(1000));
+        } finally {
+          try { rmSync(tmpData, { recursive: true, force: true }); } catch { /* best-effort */ }
+          if (prev === undefined) delete process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR;
+          else process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR = prev;
+        }
+      });
     });
   });
 

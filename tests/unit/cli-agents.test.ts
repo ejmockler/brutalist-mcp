@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { tmpdir } from 'os';
+import { writeFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
 import { CLIAgentOrchestrator, BrutalistPromptType } from '../../src/cli-agents.js';
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
@@ -284,6 +286,59 @@ describe('CLIAgentOrchestrator', () => {
       it('keeps the whole-repo default when no diff is present anywhere (non-PR roast)', () => {
         const p = (orchestrator as any).constructUserPrompt('codebase', '/repo');
         expect(p).toContain('Analyze the codebase directory');
+      });
+    });
+
+    // The orchestrator now hands the diff out-of-band via a FILE
+    // (BRUTALIST_PR_DIFF_FILE) so a multi-MB diff never rides in an env var
+    // (which would throw `spawn E2BIG` when THIS subprocess is spawned —
+    // the bobnetsec/core PR #12 failure). constructUserPrompt must read it,
+    // and prefer it over the legacy inline BRUTALIST_PR_DIFF.
+    describe('BRUTALIST_PR_DIFF_FILE (file-based diff injection)', () => {
+      const DIFF = 'diff --git a/x.ts b/x.ts\n@@ -1 +1 @@\n-safe\n+eval(x)';
+      let diffPath: string;
+      beforeEach(() => {
+        diffPath = join(tmpdir(), `brutalist-test-diff-${Date.now()}-${Math.random().toString(16).slice(2)}.diff`);
+      });
+      afterEach(() => {
+        delete process.env.BRUTALIST_PR_DIFF_FILE;
+        delete process.env.BRUTALIST_PR_DIFF;
+        try { unlinkSync(diffPath); } catch { /* best-effort */ }
+      });
+
+      it('reads the diff from the file and folds it into the prompt', () => {
+        writeFileSync(diffPath, DIFF, 'utf-8');
+        process.env.BRUTALIST_PR_DIFF_FILE = diffPath;
+        const p = (orchestrator as any).constructUserPrompt('codebase', '/repo', 'Please review the recent change to x.ts');
+        expect(p).toContain('scope your review to what the change touches');
+        expect(p).toContain('diff --git');
+        expect(p).not.toContain('Analyze the codebase directory');
+      });
+
+      it('prefers the FILE over the inline env var when both are present', () => {
+        writeFileSync(diffPath, 'diff --git a/f.ts b/f.ts\n@@ -1 +1 @@\n-x\n+FILE_WINS', 'utf-8');
+        process.env.BRUTALIST_PR_DIFF_FILE = diffPath;
+        process.env.BRUTALIST_PR_DIFF = 'diff --git a/i.ts b/i.ts\n@@ -1 +1 @@\n-x\n+INLINE_LOSES';
+        const p = (orchestrator as any).constructUserPrompt('codebase', '/repo', 'review');
+        expect(p).toContain('FILE_WINS');
+        expect(p).not.toContain('INLINE_LOSES');
+      });
+
+      it('falls back to the inline env var when the file is unreadable', () => {
+        process.env.BRUTALIST_PR_DIFF_FILE = join(tmpdir(), 'brutalist-nonexistent-zzz.diff');
+        process.env.BRUTALIST_PR_DIFF = DIFF;
+        const p = (orchestrator as any).constructUserPrompt('codebase', '/repo', 'review');
+        expect(p).toContain('diff --git');
+        expect(p).toContain('eval(x)');
+      });
+
+      it('handles a large (multi-MB) diff via the file without truncation', () => {
+        const bigDiff = 'diff --git a/big.ts b/big.ts\n@@ -1 +1 @@\n-x\n+' + 'y'.repeat(2_000_000);
+        writeFileSync(diffPath, bigDiff, 'utf-8');
+        process.env.BRUTALIST_PR_DIFF_FILE = diffPath;
+        const p = (orchestrator as any).constructUserPrompt('codebase', '/repo', 'review');
+        expect(p).toContain('diff --git');
+        expect(p.length).toBeGreaterThan(2_000_000);
       });
     });
   });

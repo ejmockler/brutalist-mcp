@@ -97,6 +97,10 @@ export interface CLIProvider {
     // (`_executeCLI`) cleans up via `cleanupTempConfig` in its
     // `finally` block. Undefined when MCP is disabled.
     tempMcpConfigPath?: string;
+    // Set when the adapter spilled an oversized prompt to a temp file
+    // (agy's argv ARG_MAX guard). Caller (`_executeCLI`) unlinks it in
+    // its `finally` block. Undefined for the common inline path.
+    tempPromptPath?: string;
     // Resolved model name. Surfaced for downstream attribution
     // (per-CLI section headers, orchestrator finding extraction).
     // Undefined when the CLI runs against its own configured default

@@ -1,5 +1,5 @@
 import { spawn, exec } from 'child_process';
-import { promises as fs, realpathSync } from 'fs';
+import { promises as fs, realpathSync, readFileSync } from 'fs';
 import { promisify } from 'util';
 import path from 'path';
 import { logger } from './logger.js';
@@ -885,7 +885,7 @@ export class CLIAgentOrchestrator {
     userPrompt: string,
     systemPromptSpec: string,
     options: CLIAgentOptions = {},
-    commandBuilder: (userPrompt: string, systemPromptSpec: string, options: CLIAgentOptions) => Promise<{ command: string; args: string[]; env?: Record<string, string>; input?: string; tempMcpConfigPath?: string; model?: string }>
+    commandBuilder: (userPrompt: string, systemPromptSpec: string, options: CLIAgentOptions) => Promise<{ command: string; args: string[]; env?: Record<string, string>; input?: string; tempMcpConfigPath?: string; tempPromptPath?: string; model?: string }>
   ): Promise<CLIAgentResponse> {
     const startTime = Date.now();
     const workingDir = options.workingDirectory || this.defaultWorkingDir;
@@ -1232,6 +1232,12 @@ export class CLIAgentOrchestrator {
       if (tempMcpConfigPath) {
         await cleanupTempConfig(tempMcpConfigPath);
       }
+      // Clean up the agy oversized-prompt spill file (scratch dir). Reuses
+      // cleanupTempConfig's ENOENT-tolerant unlink. `built` is hoisted, so
+      // this runs whether the spawn succeeded, failed, or threw.
+      if (built?.tempPromptPath) {
+        await cleanupTempConfig(built.tempPromptPath);
+      }
     }
   }
 
@@ -1532,15 +1538,35 @@ export class CLIAgentOrchestrator {
     // Trust CLI tools to handle their own security
     const sanitizedContent = primaryContent;
 
-    // Deterministic diff scoping. The orchestrator injects the PR diff via
-    // BRUTALIST_PR_DIFF on our subprocess env (it has the diff and controls
-    // our spawn env), so scoping does NOT depend on the brain relaying the
-    // diff verbatim in the roast `context` arg. Without this, a brain that
-    // paraphrases the diff leaves critics — especially agy's agentic loop —
-    // auditing the WHOLE repo until the per-critic timeout (observed: agy
-    // hit the 900s cap on a one-file change). If the brain already supplied
-    // a diff in `context`, keep it; otherwise fold in the injected one.
-    const injectedDiff = (process.env.BRUTALIST_PR_DIFF || '').trim();
+    // Deterministic diff scoping. The orchestrator injects the PR diff so
+    // scoping does NOT depend on the brain relaying the diff verbatim in the
+    // roast `context` arg. Without this, a brain that paraphrases the diff
+    // leaves critics — especially agy's agentic loop — auditing the WHOLE
+    // repo until the per-critic timeout (observed: agy hit the 900s cap on a
+    // one-file change). If the brain already supplied a diff in `context`,
+    // keep it; otherwise fold in the injected one.
+    //
+    // Channel preference: BRUTALIST_PR_DIFF_FILE (a path) over the legacy
+    // BRUTALIST_PR_DIFF (inline). The file form exists because a large diff
+    // (max-diff-chars defaults to 2,000,000) cannot ride in an env var — a
+    // single env string is OS-capped at ~128 KB (MAX_ARG_STRLEN), so an
+    // inline multi-MB diff makes the spawn of THIS very subprocess throw
+    // `spawn E2BIG`. Reading it from a file sidesteps that ceiling. The
+    // inline var remains a fallback for small diffs / older orchestrators.
+    let injectedDiff = '';
+    const injectedDiffFile = (process.env.BRUTALIST_PR_DIFF_FILE || '').trim();
+    if (injectedDiffFile) {
+      try {
+        injectedDiff = readFileSync(injectedDiffFile, 'utf-8').trim();
+      } catch (e) {
+        this.emitLog().warn('Failed to read BRUTALIST_PR_DIFF_FILE; falling back to inline diff', {
+          code: (e as NodeJS.ErrnoException)?.code ?? 'unknown',
+        });
+      }
+    }
+    if (!injectedDiff) {
+      injectedDiff = (process.env.BRUTALIST_PR_DIFF || '').trim();
+    }
     const contextHasDiff = !!context && (/diff --git /.test(context) || /(^|\n)@@ .+ @@/.test(context));
     const effectiveContext = (!contextHasDiff && injectedDiff)
       ? (context ? `${context}\n\n${injectedDiff}` : injectedDiff)

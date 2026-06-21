@@ -41,8 +41,9 @@
  * agy auto-fires (cgroup-based, see affordance map) and switches to the
  * file-token-storage path on its own — no env var needed on our side.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, openSync, closeSync, constants as fsConstants } from 'node:fs';
 import { homedir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { logger as rootLogger } from '../logger.js';
 import type { StructuredLogger } from '../logger.js';
@@ -212,6 +213,10 @@ export class AgyAdapter implements CLIProvider {
     input: string;
     env: Record<string, string>;
     tempMcpConfigPath?: string;
+    // Set when the prompt exceeded the argv limit and was spilled to a file
+    // in agy's scratch dir. Caller (`_executeCLI`) unlinks it in its
+    // `finally`. Undefined for the common inline-argv path.
+    tempPromptPath?: string;
     model?: string;
   }> {
     const log = options.log ?? rootLogger;
@@ -258,17 +263,71 @@ export class AgyAdapter implements CLIProvider {
       ? `${systemPrompt}\n\n---\n\n${taskBlock}`
       : taskBlock;
 
-    // Soft-warn at 100KB; hard ARG_MAX is ~128KB on Linux. Brutalist's
-    // own prompts (system + code excerpt) typically run 5-30KB.
-    if (combinedPrompt.length > 100_000) {
-      log.warn('Agy prompt approaching argv ARG_MAX', {
-        promptBytes: combinedPrompt.length,
-      });
+    // ARG_MAX guard. agy --print takes the prompt on argv (it never reads
+    // stdin — see file header), and a SINGLE argv string is hard-capped by
+    // the kernel at MAX_ARG_STRLEN (≈128 KB on Linux). A large PR diff folded
+    // into the prompt (max-diff-chars defaults to 2,000,000) would make
+    // spawn() throw `E2BIG` and kill this critic. Above a safe byte threshold
+    // we spill the whole prompt to a file in agy's scratch dir — which is
+    // readable under --sandbox per agy's permission table — and hand agy a
+    // short pointer prompt instead. Small prompts (the overwhelming common
+    // case: system + code excerpt ≈ 5-30 KB) keep the reliable inline path.
+    const SAFE_ARGV_BYTES = 96 * 1024;
+    const promptBytes = Buffer.byteLength(combinedPrompt, 'utf-8');
+    // agy's appData dir, resolved identically to how agy resolves it at
+    // runtime: the ANTIGRAVITY_EXECUTABLE_DATA_DIR override if set, else the
+    // default. We both write the spill file under here AND forward the
+    // override into agy's env (below) so the two never diverge.
+    const agyAppDataDir = process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR
+      || path.join(homedir(), '.gemini', 'antigravity-cli');
+    let tempPromptPath: string | undefined;
+    let effectivePrompt = combinedPrompt;
+    if (promptBytes > SAFE_ARGV_BYTES) {
+      try {
+        // Scratch dir = <appDataDir>/scratch (default ~/.gemini/antigravity-cli).
+        // --sandbox grants read+write here, so agy can read the spilled file
+        // without --add-dir (whose interaction with --sandbox is unverified).
+        // IMPORTANT: the env block below forwards ANTIGRAVITY_EXECUTABLE_DATA_DIR
+        // into agy's subprocess so agy resolves <scratch> to THIS same dir.
+        // Without that, createSecureEnvironment strips the override and agy would
+        // read from the DEFAULT scratch while we wrote to the override path —
+        // and the critic would die on oversized prompts.
+        const scratchDir = path.join(agyAppDataDir, 'scratch');
+        mkdirSync(scratchDir, { recursive: true });
+        const candidate = path.join(scratchDir, `brutalist-review-${randomBytes(16).toString('hex')}.md`);
+        // Secure create (mirrors mcp-registry.writeClaudeMcpConfigSecure): O_EXCL
+        // refuses a pre-existing path and O_NOFOLLOW refuses a symlink, so a
+        // planted symlink can't redirect the (possibly secret-bearing) diff.
+        const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
+        const fd = openSync(
+          candidate,
+          fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | O_NOFOLLOW,
+          0o600,
+        );
+        try {
+          writeFileSync(fd, combinedPrompt, { encoding: 'utf-8' });
+        } finally {
+          closeSync(fd);
+        }
+        tempPromptPath = candidate;
+        effectivePrompt = `Your complete code-review task — the reviewer instructions, the orientation, and the full unified diff under review — has been written to this file because it is too large to pass inline:\n\n${candidate}\n\nRead that ENTIRE file FIRST using your file-reading tool, then carry out the review exactly as it instructs. Give your full critique in a single response. Do not look elsewhere for the task; everything you need is in that file.`;
+        log.info('Agy prompt exceeded argv limit; spilled to scratch file', { promptBytes });
+      } catch (e) {
+        // Could not write the spill file. Fall back to the inline prompt: it
+        // may still E2BIG, but that is caught per-critic in _executeCLI and
+        // is never fatal to the panel — strictly better than failing here.
+        tempPromptPath = undefined;
+        effectivePrompt = combinedPrompt;
+        log.warn('Agy scratch spill failed; falling back to inline prompt (may exceed argv limit)', {
+          code: (e as NodeJS.ErrnoException)?.code ?? 'unknown',
+          promptBytes,
+        });
+      }
     }
 
     const agyArgs = [
       '--print',
-      combinedPrompt,
+      effectivePrompt,
       // Internal polling hint; orchestrator's spawnAsync timeout
       // (CLIAgentOptions.timeout) is what actually bounds wall-clock.
       // 15m is comfortably above brutalist's per-CLI default but well
@@ -302,6 +361,16 @@ export class AgyAdapter implements CLIProvider {
       env.BRUTALIST_AGY_MODEL_PIN = modelPin;
       log.info('Agy model pin requested', { model: modelPin });
     }
+    // Forward agy's appDataDir override so the SUBPROCESS resolves <scratch>
+    // (and its token/config) to the SAME dir we computed for the spill file.
+    // createSecureEnvironment() does NOT allowlist this var, so without this
+    // forward agy falls back to the DEFAULT scratch while the adapter wrote to
+    // the override path — leaving agy unable to read its own task file (it
+    // would die on oversized prompts). Gated on the operator having set it;
+    // a no-op in the default deployment.
+    if (process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR) {
+      env.ANTIGRAVITY_EXECUTABLE_DATA_DIR = process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR;
+    }
 
     return {
       command,
@@ -309,6 +378,7 @@ export class AgyAdapter implements CLIProvider {
       // --print does not consume stdin; prompt is in argv.
       input: '',
       env,
+      tempPromptPath,
       model: modelPin || AGY_DEFAULT_MODEL,
     };
   }

@@ -19,6 +19,11 @@
 
 import { query, createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import type { Options, McpServerConfig, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { open, unlink } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import type { RunOptions, OrchestratorResult } from './schemas.js';
 import { OrchestratorResultSchema } from './schemas.js';
 import { ORCHESTRATOR_SYSTEM_PROMPT } from './system-prompt.js';
@@ -97,11 +102,34 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 // finite cap; the wall-clock budget (timeoutMs) remains the real seatbelt.
 const DEFAULT_MAX_TURNS = 50;
 
+/**
+ * Upper bound on how large a diff we will still pass INLINE in the
+ * `BRUTALIST_PR_DIFF` env var (back-compat with an older brutalist-mcp that
+ * only reads the inline form). A single env-var string — like a single argv
+ * string — is hard-capped by the OS at MAX_ARG_STRLEN (≈128 KB on Linux);
+ * spawning the brutalist-mcp subprocess with a diff larger than that inline
+ * throws `spawn E2BIG` and kills the whole review before any critic runs
+ * (this is the bobnetsec/core PR #12 failure). Above this threshold the diff
+ * travels ONLY via the temp file (`BRUTALIST_PR_DIFF_FILE`). 96 KB leaves
+ * comfortable headroom under the 128 KB ceiling.
+ */
+const SAFE_ENV_DIFF_BYTES = 96 * 1024;
+
+/** True when `focus` is a unified diff (PR-review path). */
+function focusIsUnifiedDiff(focus: string | undefined): focus is string {
+  return !!focus && (/diff --git /.test(focus) || /(^|\n)@@ .+ @@/.test(focus));
+}
+
 export async function run(options: RunOptions): Promise<OrchestratorResult> {
   // Closure-scoped capture for the structured output. The submit_findings
   // tool's handler writes here; run() reads after query() drains.
   let captured: OrchestratorResult | undefined;
   let submitCount = 0;
+
+  // Path to the temp file holding the PR diff, when one is written (see
+  // SAFE_ENV_DIFF_BYTES). Cleaned up in the query finally regardless of
+  // outcome. Declared here so it is in scope for that cleanup.
+  let diffFilePath: string | undefined;
 
   const submitFindings = tool(
     SUBMIT_FINDINGS_TOOL_NAME,
@@ -187,6 +215,44 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
   // composition; partial env objects are not "additive" with most
   // child_process.spawn implementations, they're complete replacements.
   const inheritedEnv = filterUndefined(process.env);
+
+  // Hand the PR diff to the brutalist-mcp subprocess via a temp FILE rather
+  // than inline in the spawn env. `max-diff-chars` defaults to 2,000,000, and
+  // a diff that large in an env var trips the OS per-string limit
+  // (MAX_ARG_STRLEN ≈ 128 KB on Linux applies to env, not just argv), so the
+  // SDK's `spawn('brutalist-mcp', …, { env })` throws `spawn E2BIG` at init —
+  // killing the entire review before a single critic runs. Writing the diff
+  // to disk and passing only the (tiny) path keeps the spawn env small for
+  // any diff size. Failure to write the file is non-fatal: we fall through to
+  // the inline path, which the brain can still relay via the roast `context`.
+  const diffFocus = focusIsUnifiedDiff(options.focus) ? options.focus : undefined;
+  if (diffFocus) {
+    try {
+      const candidate = joinPath(tmpdir(), `brutalist-pr-diff-${randomBytes(16).toString('hex')}.diff`);
+      // Secure create (mirrors brutalist-mcp's writeClaudeMcpConfigSecure):
+      // O_EXCL refuses a pre-existing path and O_NOFOLLOW refuses a symlink, so
+      // a planted symlink in the shared tmpdir can't redirect the (possibly
+      // secret-bearing) diff. 0600 keeps it owner-only.
+      const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
+      const handle = await open(
+        candidate,
+        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | O_NOFOLLOW,
+        0o600,
+      );
+      try {
+        await handle.writeFile(diffFocus, { encoding: 'utf-8' });
+      } catch (e) {
+        await unlink(candidate).catch(() => { /* best-effort */ });
+        throw e;
+      } finally {
+        await handle.close().catch(() => { /* best-effort */ });
+      }
+      diffFilePath = candidate;
+    } catch {
+      diffFilePath = undefined;
+    }
+  }
+
   const brutalistConfig: McpServerConfig = {
     type: 'stdio',
     command: options.brutalistMcpCommand ?? 'brutalist-mcp',
@@ -218,10 +284,16 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
       // rather than relying on the brain to relay it verbatim in the roast
       // `context` arg. constructUserPrompt folds this in so every critic —
       // especially agy, whose agentic loop otherwise audits the whole repo
-      // and hits the per-critic timeout — scopes to the changed files. Only
-      // set when `focus` is actually a unified diff (the PR-review path).
-      ...(options.focus && (/diff --git /.test(options.focus) || /(^|\n)@@ .+ @@/.test(options.focus))
-        ? { BRUTALIST_PR_DIFF: options.focus }
+      // and hits the per-critic timeout — scopes to the changed files.
+      //
+      // Primary channel is the temp FILE (path is tiny → never E2BIGs the
+      // spawn). The inline env var is ALSO set for back-compat with an older
+      // brutalist-mcp that predates BRUTALIST_PR_DIFF_FILE — but ONLY when the
+      // diff is small enough to be safe inline. Large diffs travel via the
+      // file alone; never inline (that is the crash this fix removes).
+      ...(diffFilePath ? { BRUTALIST_PR_DIFF_FILE: diffFilePath } : {}),
+      ...(diffFocus && Buffer.byteLength(diffFocus, 'utf-8') <= SAFE_ENV_DIFF_BYTES
+        ? { BRUTALIST_PR_DIFF: diffFocus }
         : {}),
     },
   };
@@ -349,6 +421,13 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
     throw err;
   } finally {
     clearTimeout(timeoutHandle);
+    // Best-effort cleanup of the PR-diff temp file. The OS would reap it
+    // from tmpdir eventually, but we unlink eagerly so a long-lived runner
+    // doesn't accumulate multi-MB diffs (and so the diff content — which can
+    // carry secrets — lingers no longer than the run).
+    if (diffFilePath) {
+      await unlink(diffFilePath).catch(() => { /* best-effort temp cleanup */ });
+    }
   }
 
   if (!captured) {

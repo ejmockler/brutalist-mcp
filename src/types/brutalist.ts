@@ -10,6 +10,7 @@ export interface BrutalistServerConfig {
 
 export interface CLIAgentResponse {
   agent: 'claude' | 'codex' | 'agy';
+  clientId?: string;
   success: boolean;
   output?: string;
   error?: string;

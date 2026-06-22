@@ -13,7 +13,8 @@
  */
 import { logger as rootLogger } from '../logger.js';
 import type { StructuredLogger } from '../logger.js';
-import type { CLIAgentOptions } from '../cli-agents.js';
+import type { CLIAgentOptions, CLIClientSpec } from '../cli-agents.js';
+import { classifyRouting, isRoutedClient } from '../cli-agents.js';
 import type { ModelResolver } from '../model-resolver.js';
 import type { CLIProvider, CLIBuilderConfig, CLIName, DecodeResult } from './index.js';
 import { parseNDJSON } from './shared.js';
@@ -99,6 +100,66 @@ const CLAUDE_CONFIG: CLIBuilderConfig = {
   },
 };
 
+/**
+ * Build the Claude-provider environment overlay for a critic process. This
+ * is the SOLE source of ANTHROPIC_* and CLAUDE_CODE_OAUTH_TOKEN in the spawned
+ * env — the base `secureEnv` whitelist excludes all provider auth — so
+ * isolation is total and ambient routing vars can never leak in:
+ *   - native critic / non-routed client: inherits ONLY the native auth
+ *     pair (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN); NEVER ambient
+ *     ANTHROPIC_BASE_URL/MODEL/SMALL_FAST_MODEL/CONFIG_DIR — those would
+ *     silently misroute a trusted critic (A1).
+ *   - routed client: isolated by default — only its own endpoint, token,
+ *     model, small-fast-model, and config dir; native auth ONLY on an
+ *     explicit includeProcessAuth:true opt-in (A2).
+ * Trusts normalizeClaudeClient()'s resolved fields when present; falls back
+ * to classifyRouting() for raw (un-normalized) specs so direct adapter
+ * unit tests stay correct (INV-10).
+ */
+export function buildClaudeProviderEnv(
+  client: CLIClientSpec | undefined,
+  procEnv: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  const mode = client?.routingMode ?? classifyRouting(client);
+  const inheritNativeAuth =
+    mode === 'native'
+      ? true
+      : (client?.inheritNativeAuth ?? client?.includeProcessAuth === true);
+
+  if (inheritNativeAuth) {
+    if (procEnv.ANTHROPIC_API_KEY) out.ANTHROPIC_API_KEY = procEnv.ANTHROPIC_API_KEY;
+    if (procEnv.CLAUDE_CODE_OAUTH_TOKEN) out.CLAUDE_CODE_OAUTH_TOKEN = procEnv.CLAUDE_CODE_OAUTH_TOKEN;
+  }
+
+  if (mode === 'routed' && client) {
+    if (client.baseUrl) out.ANTHROPIC_BASE_URL = client.baseUrl;
+    const token =
+      client.resolvedAuthToken ??
+      client.authToken ??
+      (client.authTokenEnv ? procEnv[client.authTokenEnv] : undefined);
+    if (token) out.ANTHROPIC_AUTH_TOKEN = token;
+    const sfm = client.resolvedSmallFastModel ?? client.smallFastModel ?? client.model;
+    if (sfm) out.ANTHROPIC_SMALL_FAST_MODEL = sfm;
+    const cfg = client.resolvedConfigDir ?? client.configDir;
+    if (cfg) out.CLAUDE_CONFIG_DIR = cfg;
+  } else if (client) {
+    // Native / non-routed client: explicit per-client small-fast-model and
+    // config dir are honored, but NEVER inherited from ambient env.
+    if (client.smallFastModel) out.ANTHROPIC_SMALL_FAST_MODEL = client.smallFastModel;
+    if (client.configDir) out.CLAUDE_CONFIG_DIR = client.configDir;
+  }
+
+  // Model is always taken from the client's own pin (routed or plain),
+  // never inherited from ambient ANTHROPIC_MODEL.
+  if (client?.model) out.ANTHROPIC_MODEL = client.model;
+
+  // Explicit per-client env wins last (INV-8).
+  if (client?.env) Object.assign(out, client.env);
+
+  return out;
+}
+
 export class ClaudeAdapter implements CLIProvider {
   readonly name: CLIName = 'claude';
 
@@ -125,11 +186,20 @@ export class ClaudeAdapter implements CLIProvider {
   }> {
     const log = options.log ?? rootLogger;
     const config = CLAUDE_CONFIG;
-    const mcpEnabled = options.mcpServers && options.mcpServers.length > 0;
+    const client = options.activeClient;
+    // Containment (B): a routed (custom-endpoint) client is hardened by
+    // default — the routed model chooses tool calls under
+    // bypassPermissions, so a third-party gateway must not get web egress
+    // (B2) or MCP (B3). 'standard' opts back into the full native tool
+    // surface for an endpoint you fully trust.
+    const routed = isRoutedClient(client);
+    const hardened = client?.containment === 'hardened' || (routed && client?.containment !== 'standard');
+    const mcpEnabled = !hardened && !!options.mcpServers && options.mcpServers.length > 0;
 
     // Build args
     const args = [...config.defaultArgs];
-    const resolvedModel = modelResolver.resolveModel('claude', options.models?.claude);
+    const requestedModel = client?.model ?? options.models?.claude;
+    const resolvedModel = modelResolver.resolveModel('claude', requestedModel);
     if (resolvedModel) {
       args.push(config.modelArgName, resolvedModel);
     }
@@ -147,7 +217,12 @@ export class ClaudeAdapter implements CLIProvider {
     // the Edit/Write/NotebookEdit barrier. MCP wiring below remains gated on
     // mcpEnabled.
     if (config.mcpSupport) {
-      args.push(config.mcpSupport.writeProtection.flag, config.mcpSupport.writeProtection.value);
+      const denied = config.mcpSupport.writeProtection.value.split(',');
+      // B2: deny web egress for hardened (routed) clients so prompt
+      // injection in untrusted reviewed content can't exfiltrate file
+      // contents via WebFetch/WebSearch. Native critics keep web tools.
+      if (hardened) denied.push('WebFetch', 'WebSearch');
+      args.push(config.mcpSupport.writeProtection.flag, denied.join(','));
       args.push('--permission-mode', 'bypassPermissions');
     }
 
@@ -201,15 +276,12 @@ export class ClaudeAdapter implements CLIProvider {
     // Add CLI-specific env
     const env = { ...secureEnv };
 
-    // Forward auth credentials. ANTHROPIC_API_KEY is the long-standing
-    // path; CLAUDE_CODE_OAUTH_TOKEN supports OAuth-mode (claude.ai
-    // session) auth which the @brutalist/orchestrator wires up so a
-    // single token covers both the orchestrator brain and the inner
-    // claude critic. Either suffices for the claude CLI.
-    const claudeAuthVars = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
-    for (const key of claudeAuthVars) {
-      if (process.env[key]) env[key] = process.env[key]!;
-    }
+    // Forward Claude provider auth + routing as a single isolated overlay.
+    // buildClaudeProviderEnv is the SOLE source of ANTHROPIC_*/OAuth in the
+    // spawned env: native critics inherit only the native auth pair and
+    // never ambient routing vars (A1); routed clients are isolated by
+    // default (A2). See buildClaudeProviderEnv for the full contract.
+    Object.assign(env, buildClaudeProviderEnv(client, process.env));
 
     // Clean up MPC env vars that could cause deadlock -- SKIP when MCP is enabled
     if (!mcpEnabled && config.mpcEnvCleanup) {
@@ -393,8 +465,14 @@ export class ClaudeAdapter implements CLIProvider {
         errorClass: errorClass ?? 'unknown',
         reason,
       });
-      if (reason === 'quota') {
-        return { kind: 'refused', reason: 'quota', detail: errorClass };
+      if (reason === 'quota' || reason === 'auth') {
+        return { kind: 'refused', reason, detail: errorClass };
+      }
+      if (reason === 'model') {
+        // Unknown/unsupported model at the gateway is a config defect, not
+        // a retryable refusal — surface as a structured error so the
+        // operator sees a model problem rather than a generic failure.
+        return { kind: 'error', reason: 'unknown', detail: 'model' };
       }
       return { kind: 'error', reason: 'unknown', detail: errorClass };
     }
@@ -423,28 +501,54 @@ export class ClaudeAdapter implements CLIProvider {
  * assistant prose. Returns 'quota' for known quota markers, 'unknown'
  * otherwise so the caller can decide between `refused` and `error` kinds.
  *
- * Anchored markers chosen against Anthropic's stable error vocabulary:
- *   - "usage limit reached"      — Claude Pro/Max 5-hour cap
- *   - "rate_limit_exceeded"      — API error type string
- *   - "rate limit"               — only inside the known-error envelope
- *   - "429"                      — HTTP status (envelope contains it on
- *                                  API-layer 429 propagation)
- *   - "5-hour limit"             — Anthropic subscription cap phrase
- *   - "Limit reached"            — CLI direct-quote refusal line
+ * The claude binary is now a gateway client for arbitrary Anthropic-
+ * compatible backends (e.g. GLM/Z.AI), so markers cover OpenAI-compatible
+ * and gateway error shapes alongside Anthropic's own. Categories (checked
+ * in order auth → model → quota):
+ *   - 'auth'  — invalid/expired credentials (401/403). The gateway
+ *               rejected the token; surfaced as a refusal so it is
+ *               attributed, not mistaken for an empty critique.
+ *   - 'model' — unknown/unsupported model id at the gateway. A config
+ *               defect, not a retryable refusal → caller maps to error.
+ *   - 'quota' — rate limit / usage cap (Anthropic + gateway vocab).
+ *   - 'unknown' otherwise — let the orchestrator surface a structured
+ *               error rather than fabricating a classification.
  *
- * No fallthrough to loose substrings — if none of these match, return
- * 'unknown' and let the orchestrator surface a structured error rather
- * than fabricating a refusal classification.
+ * No fallthrough to loose substrings; all markers are anchored and only
+ * ever run against the known-error envelope, never assistant prose.
  */
-function classifyClaudeErrorReason(envelope: string | undefined): 'quota' | 'unknown' {
+export function classifyClaudeErrorReason(
+  envelope: string | undefined,
+): 'quota' | 'auth' | 'model' | 'unknown' {
   if (!envelope) return 'unknown';
-  const markers = [
+  const authMarkers = [
+    /invalid_api_key/i,
+    /invalid_authentication/i,
+    /authentication_error/i,
+    /\bunauthorized\b/i,
+    /\b401\b/,
+    /\b403\b/,
+  ];
+  if (authMarkers.some((p) => p.test(envelope))) return 'auth';
+  const modelMarkers = [
+    /model_not_found/i,
+    /\bunknown model\b/i,
+    /\bunsupported model\b/i,
+    /does not exist[\s\S]{0,20}model/i,
+    /invalid_request_error[\s\S]{0,40}model/i,
+  ];
+  if (modelMarkers.some((p) => p.test(envelope))) return 'model';
+  const quotaMarkers = [
     /usage limit reached/i,
     /rate_limit_exceeded/i,
     /\brate limit\b/i,
     /\b429\b/,
     /5-hour limit/i,
     /\blimit reached\b/i,
+    /insufficient_quota/i,
+    /quota_exceeded/i,
+    /too many requests/i,
   ];
-  return markers.some((p) => p.test(envelope)) ? 'quota' : 'unknown';
+  if (quotaMarkers.some((p) => p.test(envelope))) return 'quota';
+  return 'unknown';
 }

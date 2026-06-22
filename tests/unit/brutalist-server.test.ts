@@ -8,6 +8,7 @@ import { defaultTestConfig, httpTestConfig } from '../fixtures/test-configs.js';
 import type { CallToolResult, ServerRequest, ServerNotification } from '@modelcontextprotocol/sdk/types.js';
 import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import { z } from 'zod';
 import type { ZodRawShape } from 'zod';
 
 // Tool parameter types for proper typing
@@ -271,6 +272,36 @@ describe('BrutalistServer', () => {
         // Should have optional parameters
         expect(schema).toHaveProperty('context');
       }
+    });
+
+    // Boundary regression (C1/C2): the MCP SDK validates incoming args with
+    // z.object(shape).parse(), which STRIPS undeclared keys. The live `roast`
+    // tool's inline schema must therefore declare `clients` (else the entire
+    // routing feature is silently unreachable) and accept clis:[] (the
+    // override hatch). This drives the REGISTERED schema, not the orchestrator.
+    it('roast tool schema accepts clients[] and clis:[] at the SDK boundary', () => {
+      new BrutalistServer();
+      const roastCall = mockTool.mock.calls.find(call => call[0] === 'roast');
+      const obj = z.object(roastCall![2] as ZodRawShape);
+
+      // clients[] survives parsing (is declared, not stripped)
+      const withClients = obj.parse({
+        domain: 'codebase',
+        target: '.',
+        clients: [{ id: 'glm', provider: 'claude', baseUrl: 'https://glm.x', authToken: 't', model: 'glm-5.1' }],
+      }) as any;
+      expect(withClients.clients).toHaveLength(1);
+      expect(withClients.clients[0].id).toBe('glm');
+
+      // clis:[] is the override hatch — must parse (inline was .min(1))
+      const withEmptyClis = obj.parse({ domain: 'codebase', target: '.', clis: [] }) as any;
+      expect(withEmptyClis.clis).toEqual([]);
+
+      // C2 enforced at the live boundary: codex client carrying endpoint fields rejected
+      expect(() => obj.parse({
+        domain: 'codebase', target: '.',
+        clients: [{ id: 'x', provider: 'codex', baseUrl: 'https://e.x' }],
+      })).toThrow();
     });
   });
 

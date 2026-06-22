@@ -178,6 +178,40 @@ describe('CLI Provider Command Construction', () => {
       expect(result.env.BRUTALIST_SUBPROCESS).toBe('1');
     });
 
+    it('should route a named Claude client through custom endpoint env without inheriting process auth', async () => {
+      const origOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      const origToken = process.env.GLM_AUTH_TOKEN;
+      try {
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = 'native-oauth';
+        process.env.GLM_AUTH_TOKEN = 'glm-token';
+        const result = await buildCommand('claude', {
+          activeClient: {
+            id: 'glm',
+            provider: 'claude',
+            baseUrl: 'https://glm.example/api/anthropic',
+            authTokenEnv: 'GLM_AUTH_TOKEN',
+            model: 'glm-5.1',
+            smallFastModel: 'glm-4.5-air',
+            configDir: '/tmp/brutalist-glm-claude',
+            includeProcessAuth: false,
+          },
+        });
+        expect(result.env.ANTHROPIC_BASE_URL).toBe('https://glm.example/api/anthropic');
+        expect(result.env.ANTHROPIC_AUTH_TOKEN).toBe('glm-token');
+        expect(result.env.ANTHROPIC_MODEL).toBe('glm-5.1');
+        expect(result.env.ANTHROPIC_SMALL_FAST_MODEL).toBe('glm-4.5-air');
+        expect(result.env.CLAUDE_CONFIG_DIR).toBe('/tmp/brutalist-glm-claude');
+        expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+        const modelIdx = result.args.indexOf('--model');
+        expect(result.args[modelIdx + 1]).toBe('glm-5.1');
+      } finally {
+        if (origOauth === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+        else process.env.CLAUDE_CODE_OAUTH_TOKEN = origOauth;
+        if (origToken === undefined) delete process.env.GLM_AUTH_TOKEN;
+        else process.env.GLM_AUTH_TOKEN = origToken;
+      }
+    });
+
     it('should clean up MPC env vars when MCP is NOT enabled', async () => {
       // Set env vars that should be cleaned
       process.env.CLAUDE_MCP_CONFIG = 'test';

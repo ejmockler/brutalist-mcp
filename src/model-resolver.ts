@@ -135,7 +135,14 @@ export class ModelResolver {
   }
 
   private async loadClaudeConfig(): Promise<void> {
-    const configPath = path.join(os.homedir(), '.claude', 'settings.json');
+    // Honor CLAUDE_CONFIG_DIR so default-model discovery reads the same
+    // settings.json the claude binary reads (A4). Best-effort metadata
+    // only — resolveModel('claude', undefined) still returns undefined for
+    // the native critic, so this never gates argv routing.
+    const baseDir = process.env.CLAUDE_CONFIG_DIR?.trim()
+      ? process.env.CLAUDE_CONFIG_DIR.trim()
+      : path.join(os.homedir(), '.claude');
+    const configPath = path.join(baseDir, 'settings.json');
     try {
       const raw = await fs.readFile(configPath, 'utf-8');
       const settings = JSON.parse(raw);

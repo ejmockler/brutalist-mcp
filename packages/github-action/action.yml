@@ -76,21 +76,45 @@ inputs:
     default: 'low'
   max-diff-chars:
     description: |
-      Maximum diff size in characters passed to the orchestrator. Diffs
-      above this threshold are truncated at a file boundary and a warning
-      is emitted. The default is deliberately large: coding-agent PRs are
-      routinely huge (tens of thousands of changed lines), and silently
-      dropping most of the diff produces a review that looks complete but
-      isn't.
-
-      Default: 2000000 (~500K tokens — fits Claude's 1M-token context with
-      headroom for the system prompt and critic output). The diff is also
-      forwarded to each CLI critic; Codex/agy have smaller context windows,
-      so on multi-megabyte diffs those critics may still truncate
-      internally. Lower this only if you hit context-budget errors; raise
-      it for monorepo PRs that exceed even 2M characters.
+      Total safety cap on diff size in characters. Diffs above this are
+      truncated at a file boundary with a warning. This is the OUTER bound on
+      cost — the diff is chunked (see context-window-tokens) so the whole diff
+      up to this cap is reviewed, not just the first context-window worth.
+      Default: 2000000.
     required: false
     default: '2000000'
+  model:
+    description: |
+      Model for the orchestrator brain and the Claude critic. Defaults to the
+      most capable model. The Claude critic picks it up via ~/.claude/settings.json
+      (written by the action); the brain uses it directly via the Agent SDK.
+      Default: claude-opus-4-8.
+    required: false
+    default: 'claude-opus-4-8'
+  context-window-tokens:
+    description: |
+      Governing context window (in tokens) used to size diff chunks. Set this
+      to the SMALLEST context window among the participating models so every
+      critic can review every chunk. Under OAuth/subscription auth the usable
+      window is ~200K even for 1M-capable models; raise this only if you have
+      auth (e.g. an API key) that unlocks a larger usable window.
+      Default: 200000.
+    required: false
+    default: '200000'
+  context-headroom-pct:
+    description: |
+      Percentage of the context window reserved as working room for the agent
+      (reasoning, tool round-trips, output). A diff chunk uses at most
+      (100 − this)% of the window. Default: 40 (chunks ≤ 60% of the window).
+    required: false
+    default: '40'
+  chunk-concurrency:
+    description: |
+      Maximum number of chunk reviews to run in parallel for diffs that span
+      multiple chunks. Higher is faster but more likely to hit subscription
+      rate limits. Default: 2.
+    required: false
+    default: '2'
 runs:
   using: 'node24'
   main: 'dist/index.js'

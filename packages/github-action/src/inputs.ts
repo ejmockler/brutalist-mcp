@@ -37,8 +37,40 @@ export interface ActionInputs {
   agyOauthToken?: string;
   workingDirectory: string;
   minimumSeverity: SeverityFilter;
-  /** Soft cap on diff size passed to the orchestrator. */
+  /** Total safety cap on diff size; the diff is truncated beyond this. */
   maxDiffChars: number;
+  /** Model for the orchestrator brain (and the claude critic via settings.json). */
+  model: string;
+  /** Governing (smallest participant) context window, in tokens. */
+  contextWindowTokens: number;
+  /** Working headroom reserved for the agent, as a percentage (0–90). */
+  contextHeadroomPct: number;
+  /**
+   * Max chars per diff chunk — derived from contextWindowTokens, the
+   * headroom, and a conservative chars-per-token ratio. Each chunk is
+   * reviewed by an independent orchestrator run so a diff larger than the
+   * context window can still be reviewed in full.
+   */
+  maxChunkChars: number;
+  /** Max concurrent chunk reviews (bounded parallelism). */
+  chunkConcurrency: number;
+}
+
+/**
+ * Conservative chars-per-token estimate used to convert the usable token
+ * budget into a character budget for splitting. Deliberately LOW: code
+ * diffs run ~3–4 chars/token, so assuming 3 keeps each chunk's real token
+ * count at or under budget even for token-dense content.
+ */
+const CHARS_PER_TOKEN = 3;
+
+function parseIntInput(name: string, fallback: string, min: number, max: number): number {
+  const raw = core.getInput(name) || fallback;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < min || n > max) {
+    throw new Error(`Invalid ${name} "${raw}" — must be an integer between ${min} and ${max}.`);
+  }
+  return n;
 }
 
 export function readInputs(): ActionInputs {
@@ -68,13 +100,20 @@ export function readInputs(): ActionInputs {
     );
   }
 
-  const maxDiffCharsRaw = core.getInput('max-diff-chars') || '2000000';
-  const maxDiffChars = parseInt(maxDiffCharsRaw, 10);
-  if (!Number.isFinite(maxDiffChars) || maxDiffChars < 1000) {
-    throw new Error(
-      `Invalid max-diff-chars "${maxDiffCharsRaw}" — must be an integer ≥ 1000.`,
-    );
-  }
+  const maxDiffChars = parseIntInput('max-diff-chars', '2000000', 1000, 50_000_000);
+
+  // Best model by default. Brain uses this directly; the claude critic picks
+  // it up from ~/.claude/settings.json (written by the action before invoke).
+  const model = (core.getInput('model') || 'claude-opus-4-8').trim();
+
+  // Context-window-aware chunking. The diff is split so each chunk fits the
+  // governing (smallest) participant window minus working headroom, letting
+  // every critic — not just the 1M-context ones — review every chunk.
+  const contextWindowTokens = parseIntInput('context-window-tokens', '200000', 10_000, 2_000_000);
+  const contextHeadroomPct = parseIntInput('context-headroom-pct', '40', 0, 90);
+  const chunkConcurrency = parseIntInput('chunk-concurrency', '2', 1, 16);
+  const usableTokens = Math.floor(contextWindowTokens * (1 - contextHeadroomPct / 100));
+  const maxChunkChars = Math.max(1000, usableTokens * CHARS_PER_TOKEN);
 
   return {
     // Trim the OAuth token: a trailing newline (common when a secret is
@@ -90,6 +129,11 @@ export function readInputs(): ActionInputs {
     workingDirectory: core.getInput('working-directory') || '.',
     minimumSeverity: minimumSeverityRaw as SeverityFilter,
     maxDiffChars,
+    model,
+    contextWindowTokens,
+    contextHeadroomPct,
+    maxChunkChars,
+    chunkConcurrency,
   };
 }
 

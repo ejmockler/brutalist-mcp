@@ -27,6 +27,7 @@ import { randomBytes } from 'node:crypto';
 import type { RunOptions, OrchestratorResult } from './schemas.js';
 import { OrchestratorResultSchema } from './schemas.js';
 import { ORCHESTRATOR_SYSTEM_PROMPT } from './system-prompt.js';
+import { makeClientIdNormalizer, dedupePerCli } from './attribution.js';
 
 // MCP tool naming convention used by Claude Agent SDK: `mcp__<server>__<tool>`.
 const BRUTALIST_MCP_SERVER_NAME = 'brutalist';
@@ -134,6 +135,8 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
   // tool's handler writes here; run() reads after query() drains.
   let captured: OrchestratorResult | undefined;
   let submitCount = 0;
+  const normalizeClientId = makeClientIdNormalizer(options.knownClientIds);
+  let normalizedClientIds = 0;
 
   // Path to the temp file holding the PR diff, when one is written (see
   // SAFE_ENV_DIFF_BYTES). Cleaned up in the query finally regardless of
@@ -172,6 +175,28 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
       // undefined and the agent can retry with a corrected payload.
       const parsed = OrchestratorResultSchema.parse(args);
 
+      // Clamp brain-emitted clientIds to the provisioned set ∪ native cli
+      // names. Unknown ids are dropped to native (undefined) so drift and
+      // hallucination in parallel chunk runs don't pollute attribution.
+      const clampClientId = <T extends { cli: string; clientId?: string }>(f: T): T => {
+        const next = normalizeClientId(f.cli, f.clientId);
+        if (f.clientId && next !== f.clientId) normalizedClientIds++;
+        return { ...f, clientId: next };
+      };
+      parsed.findings = parsed.findings.map(clampClientId);
+      parsed.outOfDiff = parsed.outOfDiff.map(clampClientId);
+      parsed.perCli = parsed.perCli.map(clampClientId);
+
+      // Dedupe perCli by (clientId ?? cli), keep-first. Clamping can collapse a
+      // hallucinated {cli:'claude', clientId:'phantom'} row to
+      // {cli:'claude', clientId:undefined}, which is then byte-identical to a
+      // genuine native {cli:'claude'} row — surfacing two identical native rows
+      // on the single-chunk action path (which skips chunk-diff.ts's
+      // mergePerCli). dedupePerCli mirrors mergePerCli's key so single-chunk and
+      // multi-chunk paths agree. (Extracted so it's unit-testable with static
+      // imports — run() itself needs the SDK-mock dynamic-import seam.)
+      parsed.perCli = dedupePerCli(parsed.perCli);
+
       // Reject empty payloads as terminal action. A run where the agent
       // failed every roast call but still submitted is operationally
       // identical to "no issues" — that's exactly the wrong signal.
@@ -203,7 +228,9 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
         content: [
           {
             type: 'text',
-            text: `Findings submitted: ${captured.findings.length} inline, ${captured.outOfDiff.length} out-of-diff.`,
+            text:
+              `Findings submitted: ${captured.findings.length} inline, ${captured.outOfDiff.length} out-of-diff.` +
+              `${normalizedClientIds ? ` (${normalizedClientIds} unknown clientId(s) normalized to native cli.)` : ''}`,
           },
         ],
       };

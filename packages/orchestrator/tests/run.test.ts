@@ -411,4 +411,148 @@ describe('orchestrator.run()', () => {
     expect(firstError).toBeDefined();
     expect(result.synthesis).toBe('all clear');
   });
+
+  describe('submit_findings clientId clamping (knownClientIds)', () => {
+    function findingWith(cli: string, clientId?: string) {
+      return {
+        cli,
+        clientId,
+        path: 'src/a.ts',
+        side: 'RIGHT' as const,
+        severity: 'high' as const,
+        category: 'security',
+        title: 'T',
+        body: 'B',
+        verbatimQuote: 'x',
+      };
+    }
+
+    it('drops a phantom clientId to undefined (unknown id → native)', async () => {
+      const fixture = {
+        schemaVersion: 1 as const,
+        findings: [findingWith('claude', 'phantom')],
+        perCli: [{ cli: 'claude' as const, clientId: 'phantom', success: true, executionTimeMs: 100, summary: 's' }],
+        synthesis: 'test',
+        outOfDiff: [],
+      };
+      mockQuery.mockReturnValue(makeMessageStream(async () => { await capturedHandler!(fixture); }));
+      const result = await run({ repoPath: '/tmp/repo', oauthToken: 'tok', knownClientIds: ['glm'] });
+      expect(result.findings[0].clientId).toBeUndefined();
+      expect(result.perCli[0].clientId).toBeUndefined();
+    });
+
+    it('preserves a known provisioned clientId (glm)', async () => {
+      const fixture = {
+        schemaVersion: 1 as const,
+        findings: [findingWith('claude', 'glm')],
+        perCli: [{ cli: 'claude' as const, clientId: 'glm', success: true, executionTimeMs: 100, summary: 's' }],
+        synthesis: 'test',
+        outOfDiff: [],
+      };
+      mockQuery.mockReturnValue(makeMessageStream(async () => { await capturedHandler!(fixture); }));
+      const result = await run({ repoPath: '/tmp/repo', oauthToken: 'tok', knownClientIds: ['glm'] });
+      expect(result.findings[0].clientId).toBe('glm');
+      expect(result.perCli[0].clientId).toBe('glm');
+    });
+
+    it('native finding (no clientId) stays undefined and is distinct from glm', async () => {
+      const fixture = {
+        schemaVersion: 1 as const,
+        findings: [findingWith('claude', undefined), findingWith('claude', 'glm')],
+        perCli: [],
+        synthesis: 'test',
+        outOfDiff: [],
+      };
+      mockQuery.mockReturnValue(makeMessageStream(async () => { await capturedHandler!(fixture); }));
+      const result = await run({ repoPath: '/tmp/repo', oauthToken: 'tok', knownClientIds: ['glm'] });
+      expect(result.findings[0].clientId).toBeUndefined();
+      expect(result.findings[1].clientId).toBe('glm');
+    });
+
+    it('back-compat: knownClientIds omitted => no change (no normalization counter)', async () => {
+      // Without knownClientIds, native ids pass through as-is; non-native still dropped.
+      const fixture = {
+        schemaVersion: 1 as const,
+        findings: [findingWith('claude', undefined)],
+        perCli: [],
+        synthesis: 'back-compat',
+        outOfDiff: [],
+      };
+      mockQuery.mockReturnValue(makeMessageStream(async () => { await capturedHandler!(fixture); }));
+      const result = await run({ repoPath: '/tmp/repo', oauthToken: 'tok' });
+      expect(result.synthesis).toBe('back-compat');
+      expect(result.findings[0].clientId).toBeUndefined();
+    });
+
+    it('dedupes perCli after clamping: native + phantom-clamped claude rows collapse to one', async () => {
+      // The brain emits a genuine native {cli:'claude'} row AND a hallucinated
+      // {cli:'claude', clientId:'phantom'} row. The phantom clamps to
+      // clientId:undefined, making it byte-identical to the native row. The
+      // single-chunk action path skips chunk-diff.ts's mergePerCli, so without
+      // an explicit dedupe here two identical native rows would surface. Keying
+      // on (clientId ?? cli) keep-first must collapse them to one — matching
+      // mergePerCli so single-chunk and multi-chunk paths agree.
+      const fixture = {
+        schemaVersion: 1 as const,
+        findings: [],
+        perCli: [
+          { cli: 'claude' as const, success: true, executionTimeMs: 100, summary: 'native' },
+          { cli: 'claude' as const, clientId: 'phantom', success: true, executionTimeMs: 200, summary: 'phantom' },
+        ],
+        synthesis: 'dedupe test',
+        outOfDiff: [],
+      };
+      mockQuery.mockReturnValue(makeMessageStream(async () => { await capturedHandler!(fixture); }));
+      const result = await run({ repoPath: '/tmp/repo', oauthToken: 'tok', knownClientIds: ['glm'] });
+      // Both rows clamp to native claude (clientId undefined) and collapse.
+      expect(result.perCli).toHaveLength(1);
+      expect(result.perCli[0].cli).toBe('claude');
+      expect(result.perCli[0].clientId).toBeUndefined();
+      // Keep-first: the genuine native row (summary 'native') survives.
+      expect(result.perCli[0].summary).toBe('native');
+    });
+
+    it('keeps distinct perCli rows when a known clientId survives clamping', async () => {
+      // A native claude row and a glm-attributed row are genuinely distinct
+      // (keys 'claude' vs 'glm'); dedupe must NOT collapse them.
+      const fixture = {
+        schemaVersion: 1 as const,
+        findings: [],
+        perCli: [
+          { cli: 'claude' as const, success: true, executionTimeMs: 100, summary: 'native' },
+          { cli: 'claude' as const, clientId: 'glm', success: true, executionTimeMs: 200, summary: 'glm-row' },
+        ],
+        synthesis: 'distinct test',
+        outOfDiff: [],
+      };
+      mockQuery.mockReturnValue(makeMessageStream(async () => { await capturedHandler!(fixture); }));
+      const result = await run({ repoPath: '/tmp/repo', oauthToken: 'tok', knownClientIds: ['glm'] });
+      expect(result.perCli).toHaveLength(2);
+      expect(result.perCli.map((e) => e.clientId)).toEqual([undefined, 'glm']);
+    });
+
+    it('appends normalization count to the success message when phantom ids were dropped', async () => {
+      // We verify via the success tool-result text returned by the handler.
+      let successText = '';
+      mockQuery.mockReturnValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'system' as const };
+          const fixture = {
+            schemaVersion: 1 as const,
+            findings: [findingWith('claude', 'phantom')],
+            perCli: [],
+            synthesis: 'test',
+            outOfDiff: [],
+          };
+          const res = await capturedHandler!(fixture);
+          if (!('isError' in res)) {
+            successText = res.content[0].text;
+          }
+          yield { type: 'result' as const };
+        },
+      });
+      await run({ repoPath: '/tmp/repo', oauthToken: 'tok', knownClientIds: ['glm'] });
+      expect(successText).toMatch(/unknown clientId/);
+    });
+  });
 });

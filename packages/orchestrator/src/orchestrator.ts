@@ -103,6 +103,15 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_MAX_TURNS = 50;
 
 /**
+ * Default model for the orchestrator brain — the most capable available.
+ * Opus 4.8 is 1M-context-capable; under OAuth/subscription auth the usable
+ * window is ~200K (the action chunks the diff to fit), but the model is
+ * still the strongest reasoner for synthesis + quote verification.
+ * Overridable via RunOptions.model.
+ */
+const DEFAULT_BRAIN_MODEL = 'claude-opus-4-8';
+
+/**
  * Upper bound on how large a diff we will still pass INLINE in the
  * `BRUTALIST_PR_DIFF` env var (back-compat with an older brutalist-mcp that
  * only reads the inline form). A single env-var string — like a single argv
@@ -323,6 +332,8 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
   const queryOptions: Options = {
     abortController,
     cwd: options.repoPath,
+    // Run the brain on the most capable model by default (overridable).
+    model: options.model ?? DEFAULT_BRAIN_MODEL,
     mcpServers: {
       [BRUTALIST_MCP_SERVER_NAME]: brutalistConfig,
       [ORCHESTRATOR_MCP_SERVER_NAME]: orchestratorMcp,

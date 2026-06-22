@@ -171,4 +171,14 @@ export interface RunOptions {
    * (timeoutMs) remains the real seatbelt; this just bounds turn count.
    */
   maxTurns?: number;
+
+  /**
+   * Model the orchestrator BRAIN (the SDK `query()` loop) runs on.
+   * Defaults to the most capable model (DEFAULT_BRAIN_MODEL =
+   * `claude-opus-4-8`). Passed straight to the Agent SDK's `model`
+   * option. The claude CRITIC's model is set separately by the action
+   * (via ~/.claude/settings.json `model`), which both the claude CLI and
+   * brutalist's ModelResolver read.
+   */
+  model?: string;
 }

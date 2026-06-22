@@ -12,9 +12,13 @@
  */
 
 import * as path from 'node:path';
+import * as os from 'node:os';
+import { promises as fs } from 'node:fs';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { run as runOrchestrator } from '@brutalist/orchestrator';
+import type { OrchestratorResult } from '@brutalist/orchestrator';
+import { chunkDiff, mergeResults, runWithConcurrency } from './chunk-diff.js';
 import { readInputs } from './inputs.js';
 import { fetchPullRequestContext, getPullRequestRef } from './diff.js';
 import { resolveFindings } from './resolver.js';
@@ -80,7 +84,11 @@ async function main(): Promise<void> {
       `PR diff exceeded max-diff-chars (${inputs.maxDiffChars}) — truncated from ${truncated.originalChars} to ${truncated.keptChars} chars. Findings on omitted regions will be missed; raise max-diff-chars or split the PR.`,
     );
   }
-  const focus = `Pull request #${pull.number} diff (commentable lines only):\n\n${truncated.text}`;
+  // Best model by default: write ~/.claude/settings.json `model` so the
+  // claude CRITIC (spawned by brutalist-mcp) runs on inputs.model. The brain
+  // gets the model directly via runOrchestrator({ model }). Merges with any
+  // existing settings so unrelated keys are preserved.
+  await ensureClaudeSettingsModel(inputs.model);
 
   // Resolve working-directory against process.cwd(). The runner sets
   // cwd to $GITHUB_WORKSPACE (the checked-out repo root); the input
@@ -89,21 +97,71 @@ async function main(): Promise<void> {
   const repoPath = path.resolve(process.cwd(), inputs.workingDirectory);
   core.info(`Orchestrator repoPath resolved to ${repoPath}`);
 
-  core.info('Invoking @brutalist/orchestrator...');
-  const result = await runOrchestrator({
-    repoPath,
-    focus,
-    contextHints: [
-      `PR base SHA: ${pull.baseSha}`,
-      `PR head SHA: ${pull.headSha}`,
-      `Working directory: ${inputs.workingDirectory}`,
-    ],
-    oauthToken: inputs.anthropicOauthToken,
-    // Pin the claude executable from the preflight result so the SDK
-    // doesn't fall back to bundle-internal native package lookup,
-    // which isn't available in the ncc-bundled action runtime.
-    claudeCodeExecutablePath: preflight.claude.resolvedPath,
-  });
+  const contextHints = [
+    `PR base SHA: ${pull.baseSha}`,
+    `PR head SHA: ${pull.headSha}`,
+    `Working directory: ${inputs.workingDirectory}`,
+  ];
+
+  // Context-window-aware chunking. A diff larger than the usable context
+  // window can't be reviewed in one pass (the brain + every critic would hit
+  // "Prompt is too long"), so split it to fit and review each chunk with an
+  // independent orchestrator run, then merge into one review.
+  const { chunks, truncatedHunks } = chunkDiff(truncated.text, inputs.maxChunkChars);
+  if (truncatedHunks > 0) {
+    core.warning(
+      `${truncatedHunks} oversized hunk(s) were truncated to fit the per-chunk budget (${inputs.maxChunkChars} chars); findings on truncated regions may be missed.`,
+    );
+  }
+  core.info(
+    `Diff split into ${chunks.length} chunk(s) of ≤${inputs.maxChunkChars} chars ` +
+      `(window ${inputs.contextWindowTokens} tok − ${inputs.contextHeadroomPct}% headroom). Brain model: ${inputs.model}.`,
+  );
+
+  const runChunk = (chunk: string, i: number): Promise<OrchestratorResult> =>
+    runOrchestrator({
+      repoPath,
+      focus:
+        `Pull request #${pull.number} diff ` +
+        `(${chunks.length > 1 ? `chunk ${i + 1}/${chunks.length}, ` : ''}commentable lines only):\n\n${chunk}`,
+      contextHints,
+      oauthToken: inputs.anthropicOauthToken,
+      // Pin the claude executable from the preflight result so the SDK
+      // doesn't fall back to bundle-internal native package lookup,
+      // which isn't available in the ncc-bundled action runtime.
+      claudeCodeExecutablePath: preflight.claude.resolvedPath,
+      model: inputs.model,
+    });
+
+  let result: OrchestratorResult;
+  if (chunks.length <= 1) {
+    core.info('Invoking @brutalist/orchestrator...');
+    result = await runChunk(chunks[0] ?? truncated.text, 0);
+  } else {
+    core.info(
+      `Invoking @brutalist/orchestrator across ${chunks.length} chunks (concurrency ${inputs.chunkConcurrency})...`,
+    );
+    const settled = await runWithConcurrency(chunks, inputs.chunkConcurrency, runChunk);
+    const ok: OrchestratorResult[] = [];
+    let failedCount = 0;
+    for (const r of settled) {
+      if (r.ok) {
+        ok.push(r.value);
+      } else {
+        failedCount++;
+        const msg = r.error instanceof Error ? r.error.message : String(r.error);
+        core.warning(`Chunk ${r.index + 1}/${chunks.length} review failed: ${msg}`);
+      }
+    }
+    if (ok.length === 0) {
+      // Every chunk failed — surface a hard failure rather than an empty review.
+      const firstErr = settled.find((r) => !r.ok) as { error: unknown } | undefined;
+      const e = firstErr?.error;
+      throw e instanceof Error ? e : new Error(`All ${chunks.length} chunk reviews failed.`);
+    }
+    result = mergeResults(ok);
+    core.info(`Merged ${ok.length}/${chunks.length} chunk reviews (${failedCount} failed).`);
+  }
   core.info(
     `Orchestrator returned ${result.findings.length} findings + ${result.outOfDiff.length} out-of-diff. perCli=${result.perCli.length}.`,
   );
@@ -270,4 +328,34 @@ export function redactSecrets(message: string, secrets: readonly string[]): stri
     out = out.split(secret).join('[REDACTED]');
   }
   return out;
+}
+
+/**
+ * Write `model` into ~/.claude/settings.json so the claude CRITIC (spawned
+ * by brutalist-mcp via the claude CLI) defaults to it — the CLI and
+ * brutalist's ModelResolver both read this file, and createSecureEnvironment
+ * would strip an env-var approach. Merges with any existing settings.
+ * Best-effort: a write failure degrades to the CLI's own default model, not
+ * a hard error.
+ */
+async function ensureClaudeSettingsModel(model: string): Promise<void> {
+  try {
+    const dir = path.join(os.homedir(), '.claude');
+    await fs.mkdir(dir, { recursive: true });
+    const file = path.join(dir, 'settings.json');
+    let settings: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(await fs.readFile(file, 'utf-8'));
+      if (parsed && typeof parsed === 'object') settings = parsed as Record<string, unknown>;
+    } catch {
+      /* no existing settings / unparseable — start fresh */
+    }
+    settings.model = model;
+    await fs.writeFile(file, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8');
+    core.info(`Claude critic model set via ~/.claude/settings.json: ${model}`);
+  } catch (e) {
+    core.warning(
+      `Could not write ~/.claude/settings.json model (${e instanceof Error ? e.message : String(e)}); claude critic will use its default model.`,
+    );
+  }
 }

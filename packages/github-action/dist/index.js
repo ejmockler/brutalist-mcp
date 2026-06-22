@@ -31769,6 +31769,10 @@ __nccwpck_require__.d(__webpack_exports__, {
 
 // EXTERNAL MODULE: external "node:path"
 var external_node_path_ = __nccwpck_require__(6760);
+;// CONCATENATED MODULE: external "node:os"
+const external_node_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
+// EXTERNAL MODULE: external "node:fs"
+var external_node_fs_ = __nccwpck_require__(3024);
 // EXTERNAL MODULE: ../../node_modules/@actions/core/lib/core.js
 var lib_core = __nccwpck_require__(7184);
 // EXTERNAL MODULE: ../../node_modules/@actions/github/lib/github.js
@@ -31799,8 +31803,6 @@ var external_events_ = __nccwpck_require__(4434);
 const external_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("process");
 // EXTERNAL MODULE: external "util"
 var external_util_ = __nccwpck_require__(9023);
-;// CONCATENATED MODULE: external "node:os"
-const external_node_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
 ;// CONCATENATED MODULE: external "node:process"
 const external_node_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:process");
 ;// CONCATENATED MODULE: ../orchestrator/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
@@ -31925,8 +31927,6 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 
 ;// CONCATENATED MODULE: external "node:fs/promises"
 const external_node_fs_promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
-// EXTERNAL MODULE: external "node:fs"
-var external_node_fs_ = __nccwpck_require__(3024);
 // EXTERNAL MODULE: external "node:crypto"
 var external_node_crypto_ = __nccwpck_require__(7598);
 ;// CONCATENATED MODULE: ../orchestrator/node_modules/zod/v4/core/core.js
@@ -39904,6 +39904,14 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 // finite cap; the wall-clock budget (timeoutMs) remains the real seatbelt.
 const DEFAULT_MAX_TURNS = 50;
 /**
+ * Default model for the orchestrator brain — the most capable available.
+ * Opus 4.8 is 1M-context-capable; under OAuth/subscription auth the usable
+ * window is ~200K (the action chunks the diff to fit), but the model is
+ * still the strongest reasoner for synthesis + quote verification.
+ * Overridable via RunOptions.model.
+ */
+const DEFAULT_BRAIN_MODEL = 'claude-opus-4-8';
+/**
  * Upper bound on how large a diff we will still pass INLINE in the
  * `BRUTALIST_PR_DIFF` env var (back-compat with an older brutalist-mcp that
  * only reads the inline form). A single env-var string — like a single argv
@@ -40103,6 +40111,8 @@ async function run(options) {
     const queryOptions = {
         abortController,
         cwd: options.repoPath,
+        // Run the brain on the most capable model by default (overridable).
+        model: options.model ?? DEFAULT_BRAIN_MODEL,
         mcpServers: {
             [BRUTALIST_MCP_SERVER_NAME]: brutalistConfig,
             [ORCHESTRATOR_MCP_SERVER_NAME]: orchestratorMcp,
@@ -40275,6 +40285,208 @@ function buildUserPrompt(options) {
  */
 
 //# sourceMappingURL=index.js.map
+;// CONCATENATED MODULE: ./src/chunk-diff.ts
+/**
+ * Split `diffText` into chunks no larger than `maxChunkChars`.
+ * Returns a single chunk unchanged when the diff already fits.
+ */
+function chunkDiff(diffText, maxChunkChars) {
+    if (!Number.isFinite(maxChunkChars) || maxChunkChars < 1) {
+        throw new Error(`chunkDiff: maxChunkChars must be a positive integer, got ${maxChunkChars}`);
+    }
+    if (!diffText)
+        return { chunks: [], truncatedHunks: 0 };
+    if (diffText.length <= maxChunkChars)
+        return { chunks: [diffText], truncatedHunks: 0 };
+    const sections = splitOnLinePrefix(diffText, 'diff --git ');
+    const chunks = [];
+    let truncatedHunks = 0;
+    let current = '';
+    const flush = () => {
+        if (current.length > 0) {
+            chunks.push(current);
+            current = '';
+        }
+    };
+    for (const section of sections) {
+        if (section.length > maxChunkChars) {
+            // A single file is over budget — emit what we've packed, then split it.
+            flush();
+            const sub = splitFileByHunks(section, maxChunkChars);
+            truncatedHunks += sub.truncatedHunks;
+            for (const piece of sub.chunks)
+                chunks.push(piece);
+            continue;
+        }
+        if (current.length > 0 && current.length + section.length > maxChunkChars)
+            flush();
+        current += section;
+    }
+    flush();
+    return { chunks, truncatedHunks };
+}
+/**
+ * Split `text` into segments that each begin at a line whose content starts
+ * with `prefix`. Content before the first such line becomes the first
+ * segment. Index-based slicing preserves exact bytes (no newline rewriting).
+ */
+function splitOnLinePrefix(text, prefix) {
+    const starts = [];
+    if (text.startsWith(prefix))
+        starts.push(0);
+    for (let i = 0; i < text.length; i++) {
+        if (text[i] === '\n' && text.startsWith(prefix, i + 1))
+            starts.push(i + 1);
+    }
+    if (starts.length === 0)
+        return [text];
+    const segments = [];
+    if (starts[0] > 0)
+        segments.push(text.slice(0, starts[0]));
+    for (let s = 0; s < starts.length; s++) {
+        const end = s + 1 < starts.length ? starts[s + 1] : text.length;
+        segments.push(text.slice(starts[s], end));
+    }
+    return segments;
+}
+/** Sub-split one over-budget file section by its `@@` hunks. */
+function splitFileByHunks(section, maxChunkChars) {
+    const segs = splitOnLinePrefix(section, '@@ ');
+    // segs[0] is the file header unless the section itself starts with "@@ ".
+    const hasHeader = !section.startsWith('@@ ');
+    const header = hasHeader ? segs[0] : '';
+    const hunks = hasHeader ? segs.slice(1) : segs;
+    if (hunks.length === 0) {
+        // Binary file / pure rename with no hunks: truncate the section to fit.
+        return { chunks: [section.slice(0, maxChunkChars)], truncatedHunks: 1 };
+    }
+    const chunks = [];
+    let truncatedHunks = 0;
+    let current = header;
+    for (const hunk of hunks) {
+        if (header.length + hunk.length > maxChunkChars) {
+            // This single hunk can't fit even with just the header. Flush any
+            // packed hunks, then emit a truncated piece. Clamp the WHOLE piece to
+            // the budget so the invariant holds even when the header alone is
+            // >= maxChunkChars (room === 0).
+            if (current.length > header.length)
+                chunks.push(current);
+            const room = Math.max(0, maxChunkChars - header.length);
+            chunks.push((header + hunk.slice(0, room)).slice(0, maxChunkChars));
+            truncatedHunks++;
+            current = header;
+            continue;
+        }
+        if (current.length > header.length && current.length + hunk.length > maxChunkChars) {
+            chunks.push(current);
+            current = header + hunk;
+        }
+        else {
+            current += hunk;
+        }
+    }
+    if (current.length > header.length)
+        chunks.push(current);
+    return { chunks, truncatedHunks };
+}
+/**
+ * Run `fn` over `items` with at most `concurrency` in flight at once.
+ * Never rejects: each slot resolves to `{ ok, value | error, index }` so a
+ * failed chunk degrades coverage instead of failing the whole review.
+ */
+async function runWithConcurrency(items, concurrency, fn) {
+    const limit = Math.max(1, Math.floor(concurrency));
+    const results = [];
+    let next = 0;
+    async function worker() {
+        for (;;) {
+            const i = next++;
+            if (i >= items.length)
+                return;
+            try {
+                const value = await fn(items[i], i);
+                results.push({ index: i, ok: true, value });
+            }
+            catch (error) {
+                results.push({ index: i, ok: false, error });
+            }
+        }
+    }
+    const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
+    await Promise.all(workers);
+    results.sort((a, b) => a.index - b.index);
+    return results;
+}
+/**
+ * Merge per-chunk OrchestratorResults into one. Findings/outOfDiff are
+ * concatenated and de-duplicated; perCli is merged per critic (success OR-ed,
+ * execution time summed); synthesis is concatenated with chunk labels.
+ * Quotes are anchored to file+line downstream, so concatenating across chunks
+ * is sound — chunks are disjoint by file/hunk.
+ */
+function mergeResults(results) {
+    const findings = dedupeFindings(results.flatMap((r) => r.findings));
+    const outOfDiff = dedupeFindings(results.flatMap((r) => r.outOfDiff));
+    const perCli = mergePerCli(results.flatMap((r) => r.perCli));
+    // Trim BEFORE labeling so an empty-synthesis chunk is dropped entirely
+    // rather than emitting a bare "Chunk i/n:" label. Chunk index stays stable.
+    const synthesis = results
+        .map((r, i) => {
+        const s = (r.synthesis ?? '').trim();
+        if (!s)
+            return '';
+        return results.length > 1 ? `Chunk ${i + 1}/${results.length}: ${s}` : s;
+    })
+        .filter((s) => s.length > 0)
+        .join('\n\n');
+    // Carry the first non-empty contextId so the review's debug footer still
+    // has a breadcrumb on chunked runs (each chunk has its own; no resume logic
+    // depends on it).
+    const contextId = results.find((r) => r.contextId)?.contextId;
+    return { schemaVersion: 1, findings, perCli, synthesis, outOfDiff, ...(contextId ? { contextId } : {}) };
+}
+// Field separator for finding dedup keys: ASCII char code 0. It cannot occur
+// in a path, line number, verbatim source quote, or title, so field
+// boundaries are unambiguous — a single-space delimiter blurs on free-text
+// fields and could collapse two distinct findings into one (a lost finding).
+// Built via fromCharCode so no control byte appears in this source file.
+const FIELD_SEP = String.fromCharCode(0);
+function findingKey(f) {
+    // `side` is part of the key: LEFT vs RIGHT on the same line is a distinct
+    // finding (matches grouper.ts keying on path::line::side).
+    return [f.cli, f.path, f.side, f.lineHint ?? '', f.verbatimQuote, f.title].join(FIELD_SEP);
+}
+function dedupeFindings(findings) {
+    const seen = new Set();
+    const out = [];
+    for (const f of findings) {
+        const key = findingKey(f);
+        if (seen.has(key))
+            continue;
+        seen.add(key);
+        out.push(f);
+    }
+    return out;
+}
+function mergePerCli(entries) {
+    const byCli = new Map();
+    for (const e of entries) {
+        const existing = byCli.get(e.cli);
+        if (!existing) {
+            byCli.set(e.cli, { ...e });
+            continue;
+        }
+        existing.success = existing.success || e.success;
+        existing.executionTimeMs += e.executionTimeMs;
+        if (!existing.model && e.model)
+            existing.model = e.model;
+        if (e.summary && !existing.summary.includes(e.summary)) {
+            existing.summary = existing.summary ? `${existing.summary}\n\n${e.summary}` : e.summary;
+        }
+    }
+    return [...byCli.values()];
+}
+
 ;// CONCATENATED MODULE: ./src/inputs.ts
 /**
  * Action input parsing and validation. Fails fast with actionable
@@ -40288,6 +40500,21 @@ const SEVERITY_RANK = {
     low: 1,
     nit: 0,
 };
+/**
+ * Conservative chars-per-token estimate used to convert the usable token
+ * budget into a character budget for splitting. Deliberately LOW: code
+ * diffs run ~3–4 chars/token, so assuming 3 keeps each chunk's real token
+ * count at or under budget even for token-dense content.
+ */
+const CHARS_PER_TOKEN = 3;
+function parseIntInput(name, fallback, min, max) {
+    const raw = lib_core.getInput(name) || fallback;
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < min || n > max) {
+        throw new Error(`Invalid ${name} "${raw}" — must be an integer between ${min} and ${max}.`);
+    }
+    return n;
+}
 function readInputs() {
     const anthropicOauthToken = lib_core.getInput('anthropic-oauth-token', { required: true });
     if (!anthropicOauthToken.trim()) {
@@ -40306,11 +40533,18 @@ function readInputs() {
     if (!(minimumSeverityRaw in SEVERITY_RANK)) {
         throw new Error(`Invalid minimum-severity "${minimumSeverityRaw}". Valid: ${Object.keys(SEVERITY_RANK).join(', ')}.`);
     }
-    const maxDiffCharsRaw = lib_core.getInput('max-diff-chars') || '2000000';
-    const maxDiffChars = parseInt(maxDiffCharsRaw, 10);
-    if (!Number.isFinite(maxDiffChars) || maxDiffChars < 1000) {
-        throw new Error(`Invalid max-diff-chars "${maxDiffCharsRaw}" — must be an integer ≥ 1000.`);
-    }
+    const maxDiffChars = parseIntInput('max-diff-chars', '2000000', 1000, 50_000_000);
+    // Best model by default. Brain uses this directly; the claude critic picks
+    // it up from ~/.claude/settings.json (written by the action before invoke).
+    const model = (lib_core.getInput('model') || 'claude-opus-4-8').trim();
+    // Context-window-aware chunking. The diff is split so each chunk fits the
+    // governing (smallest) participant window minus working headroom, letting
+    // every critic — not just the 1M-context ones — review every chunk.
+    const contextWindowTokens = parseIntInput('context-window-tokens', '200000', 10_000, 2_000_000);
+    const contextHeadroomPct = parseIntInput('context-headroom-pct', '40', 0, 90);
+    const chunkConcurrency = parseIntInput('chunk-concurrency', '2', 1, 16);
+    const usableTokens = Math.floor(contextWindowTokens * (1 - contextHeadroomPct / 100));
+    const maxChunkChars = Math.max(1000, usableTokens * CHARS_PER_TOKEN);
     return {
         // Trim the OAuth token: a trailing newline (common when a secret is
         // captured via `echo`/copy-paste) survives the non-empty check above
@@ -40325,6 +40559,11 @@ function readInputs() {
         workingDirectory: lib_core.getInput('working-directory') || '.',
         minimumSeverity: minimumSeverityRaw,
         maxDiffChars,
+        model,
+        contextWindowTokens,
+        contextHeadroomPct,
+        maxChunkChars,
+        chunkConcurrency,
     };
 }
 /**
@@ -41839,6 +42078,9 @@ const FILE_PERMS_OWNER_RW = external_node_fs_.constants.S_IRUSR | external_node_
 
 
 
+
+
+
 async function main() {
     const inputs = readInputs();
     // Preflight: fail fast with an actionable error if `brutalist-mcp` or
@@ -41884,28 +42126,73 @@ async function main() {
     if (truncated.didTruncate) {
         lib_core.warning(`PR diff exceeded max-diff-chars (${inputs.maxDiffChars}) — truncated from ${truncated.originalChars} to ${truncated.keptChars} chars. Findings on omitted regions will be missed; raise max-diff-chars or split the PR.`);
     }
-    const focus = `Pull request #${pull.number} diff (commentable lines only):\n\n${truncated.text}`;
+    // Best model by default: write ~/.claude/settings.json `model` so the
+    // claude CRITIC (spawned by brutalist-mcp) runs on inputs.model. The brain
+    // gets the model directly via runOrchestrator({ model }). Merges with any
+    // existing settings so unrelated keys are preserved.
+    await ensureClaudeSettingsModel(inputs.model);
     // Resolve working-directory against process.cwd(). The runner sets
     // cwd to $GITHUB_WORKSPACE (the checked-out repo root); the input
     // narrows from there. Absolute inputs are honored verbatim; relative
     // inputs (the common case, `.` or `./packages/api`) are rooted at cwd.
     const repoPath = external_node_path_.resolve(process.cwd(), inputs.workingDirectory);
     lib_core.info(`Orchestrator repoPath resolved to ${repoPath}`);
-    lib_core.info('Invoking @brutalist/orchestrator...');
-    const result = await run({
+    const contextHints = [
+        `PR base SHA: ${pull.baseSha}`,
+        `PR head SHA: ${pull.headSha}`,
+        `Working directory: ${inputs.workingDirectory}`,
+    ];
+    // Context-window-aware chunking. A diff larger than the usable context
+    // window can't be reviewed in one pass (the brain + every critic would hit
+    // "Prompt is too long"), so split it to fit and review each chunk with an
+    // independent orchestrator run, then merge into one review.
+    const { chunks, truncatedHunks } = chunkDiff(truncated.text, inputs.maxChunkChars);
+    if (truncatedHunks > 0) {
+        lib_core.warning(`${truncatedHunks} oversized hunk(s) were truncated to fit the per-chunk budget (${inputs.maxChunkChars} chars); findings on truncated regions may be missed.`);
+    }
+    lib_core.info(`Diff split into ${chunks.length} chunk(s) of ≤${inputs.maxChunkChars} chars ` +
+        `(window ${inputs.contextWindowTokens} tok − ${inputs.contextHeadroomPct}% headroom). Brain model: ${inputs.model}.`);
+    const runChunk = (chunk, i) => run({
         repoPath,
-        focus,
-        contextHints: [
-            `PR base SHA: ${pull.baseSha}`,
-            `PR head SHA: ${pull.headSha}`,
-            `Working directory: ${inputs.workingDirectory}`,
-        ],
+        focus: `Pull request #${pull.number} diff ` +
+            `(${chunks.length > 1 ? `chunk ${i + 1}/${chunks.length}, ` : ''}commentable lines only):\n\n${chunk}`,
+        contextHints,
         oauthToken: inputs.anthropicOauthToken,
         // Pin the claude executable from the preflight result so the SDK
         // doesn't fall back to bundle-internal native package lookup,
         // which isn't available in the ncc-bundled action runtime.
         claudeCodeExecutablePath: preflight.claude.resolvedPath,
+        model: inputs.model,
     });
+    let result;
+    if (chunks.length <= 1) {
+        lib_core.info('Invoking @brutalist/orchestrator...');
+        result = await runChunk(chunks[0] ?? truncated.text, 0);
+    }
+    else {
+        lib_core.info(`Invoking @brutalist/orchestrator across ${chunks.length} chunks (concurrency ${inputs.chunkConcurrency})...`);
+        const settled = await runWithConcurrency(chunks, inputs.chunkConcurrency, runChunk);
+        const ok = [];
+        let failedCount = 0;
+        for (const r of settled) {
+            if (r.ok) {
+                ok.push(r.value);
+            }
+            else {
+                failedCount++;
+                const msg = r.error instanceof Error ? r.error.message : String(r.error);
+                lib_core.warning(`Chunk ${r.index + 1}/${chunks.length} review failed: ${msg}`);
+            }
+        }
+        if (ok.length === 0) {
+            // Every chunk failed — surface a hard failure rather than an empty review.
+            const firstErr = settled.find((r) => !r.ok);
+            const e = firstErr?.error;
+            throw e instanceof Error ? e : new Error(`All ${chunks.length} chunk reviews failed.`);
+        }
+        result = mergeResults(ok);
+        lib_core.info(`Merged ${ok.length}/${chunks.length} chunk reviews (${failedCount} failed).`);
+    }
     lib_core.info(`Orchestrator returned ${result.findings.length} findings + ${result.outOfDiff.length} out-of-diff. perCli=${result.perCli.length}.`);
     // Resolve every finding against the head SHA. Drops fabricated quotes.
     const allFindings = [...result.findings, ...result.outOfDiff];
@@ -42046,6 +42333,36 @@ function redactSecrets(message, secrets) {
         out = out.split(secret).join('[REDACTED]');
     }
     return out;
+}
+/**
+ * Write `model` into ~/.claude/settings.json so the claude CRITIC (spawned
+ * by brutalist-mcp via the claude CLI) defaults to it — the CLI and
+ * brutalist's ModelResolver both read this file, and createSecureEnvironment
+ * would strip an env-var approach. Merges with any existing settings.
+ * Best-effort: a write failure degrades to the CLI's own default model, not
+ * a hard error.
+ */
+async function ensureClaudeSettingsModel(model) {
+    try {
+        const dir = external_node_path_.join(external_node_os_namespaceObject.homedir(), '.claude');
+        await external_node_fs_.promises.mkdir(dir, { recursive: true });
+        const file = external_node_path_.join(dir, 'settings.json');
+        let settings = {};
+        try {
+            const parsed = JSON.parse(await external_node_fs_.promises.readFile(file, 'utf-8'));
+            if (parsed && typeof parsed === 'object')
+                settings = parsed;
+        }
+        catch {
+            /* no existing settings / unparseable — start fresh */
+        }
+        settings.model = model;
+        await external_node_fs_.promises.writeFile(file, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8');
+        lib_core.info(`Claude critic model set via ~/.claude/settings.json: ${model}`);
+    }
+    catch (e) {
+        lib_core.warning(`Could not write ~/.claude/settings.json model (${e instanceof Error ? e.message : String(e)}); claude critic will use its default model.`);
+    }
 }
 
 var __webpack_exports__redactSecrets = __webpack_exports__.f;

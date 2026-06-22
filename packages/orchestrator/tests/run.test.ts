@@ -85,6 +85,26 @@ describe('orchestrator.run()', () => {
     expect(brutalistServer.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth-secret');
   });
 
+  it('defaults the brain to the most capable model (claude-opus-4-8)', async () => {
+    mockQuery.mockReturnValue(
+      makeMessageStream(async () => {
+        await capturedHandler!(FIXTURE_OK);
+      }),
+    );
+    await run({ repoPath: '/tmp/repo', oauthToken: 'x' });
+    expect(capturedQueryOptions.model).toBe('claude-opus-4-8');
+  });
+
+  it('lets an explicit model override the default', async () => {
+    mockQuery.mockReturnValue(
+      makeMessageStream(async () => {
+        await capturedHandler!(FIXTURE_OK);
+      }),
+    );
+    await run({ repoPath: '/tmp/repo', oauthToken: 'x', model: 'claude-sonnet-4-6' });
+    expect(capturedQueryOptions.model).toBe('claude-sonnet-4-6');
+  });
+
   // PR-diff delivery to the brutalist-mcp subprocess. A large diff in an env
   // var trips MAX_ARG_STRLEN (~128 KB) and throws `spawn E2BIG` at SDK init,
   // killing the whole review (bobnetsec/core PR #12). The diff must travel via

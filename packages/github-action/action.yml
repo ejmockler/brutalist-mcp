@@ -91,6 +91,66 @@ inputs:
       Default: claude-opus-4-8.
     required: false
     default: 'claude-opus-4-8'
+  claude-critic-model:
+    description: |
+      Native Claude Code critic model. Defaults to model. This only affects the
+      inner Brutalist Claude critic; the orchestrator brain uses model.
+    required: false
+  custom-claude-client-id:
+    description: |
+      Display id for an additional Claude Code critic routed through a custom
+      Anthropic-compatible endpoint. Default: custom-claude.
+    required: false
+    default: 'custom-claude'
+  custom-claude-base-url:
+    description: |
+      Optional ANTHROPIC_BASE_URL for an additional Claude Code critic. Use this
+      for Anthropic-compatible gateways such as GLM/Z.AI routes.
+    required: false
+  custom-claude-auth-token:
+    description: |
+      Optional bearer token for the custom Claude Code critic
+      (ANTHROPIC_AUTH_TOKEN). Store as a repository secret.
+    required: false
+  custom-claude-model:
+    description: |
+      Model name for the custom Claude Code critic, e.g. glm-5.1.
+    required: false
+  custom-claude-small-fast-model:
+    description: |
+      Optional ANTHROPIC_SMALL_FAST_MODEL for the custom Claude Code critic,
+      e.g. glm-4.5-air.
+    required: false
+  custom-claude-clients:
+    description: |
+      JSON array routing an ARBITRARY number of additional Claude Code critics
+      (up to 16) through custom Anthropic-compatible endpoints, in one review.
+      Each entry: {id, baseUrl, authToken, model, smallFastModel?,
+      contextWindow?, containment?}. ADDITIVE to the native critics. Works
+      ALONGSIDE the singular custom-claude-* inputs above: if that trio is set
+      it appends ONE more client (deduped by id, keep-first — a custom-claude-
+      clients entry wins on collision). containment defaults to "hardened";
+      set "standard" to restore web/MCP tools for an endpoint you fully trust.
+      Each entry's authToken is moved into a dedicated env var and referenced via
+      authTokenEnv — raw tokens are never inlined into the forwarded
+      BRUTALIST_CLAUDE_CLIENTS. Every client gets an isolated config dir
+      (~/.brutalist/claude-clients/<id>, mode 0700) and is isolated + hardened
+      by default (no native creds, no WebFetch/WebSearch/MCP). The diff chunker
+      sizes chunks to the SMALLEST participant contextWindow. Example:
+      custom-claude-clients: |
+        [
+          { "id": "glm", "baseUrl": "https://glm.example/v1",
+            "authToken": "${{ secrets.GLM_TOKEN }}", "model": "glm-5.1",
+            "contextWindow": 128000 }
+        ]
+    required: false
+  custom-claude-context-window:
+    description: |
+      Context window (tokens) of the custom Claude-routed critic model, e.g.
+      128000 for GLM-4.5. The diff chunker sizes chunks to the SMALLEST
+      participant window, so set this when the routed model's window is below
+      context-window-tokens to avoid 'prompt too long'.
+    required: false
   context-window-tokens:
     description: |
       Governing context window (in tokens) used to size diff chunks. Set this

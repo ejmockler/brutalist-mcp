@@ -10,6 +10,16 @@ import { ModelResolver } from './model-resolver.js';
 import { cleanupTempConfig } from './mcp-registry.js';
 import { getProvider, parseNDJSON } from './cli-adapters/index.js';
 import type { CLIName } from './cli-adapters/index.js';
+import {
+  classifyRouting,
+  isRoutedClient,
+  isReservedCustomClientId,
+  ROUTING_FIELDS,
+} from './cli-adapters/routing.js';
+// Re-export the routing predicates that used to live here (consumers + tests
+// import them from cli-agents); the defs moved to the leaf module to break the
+// cli-agents ↔ cli-adapters value cycle.
+export { classifyRouting, isRoutedClient };
 import { AGY_BINARY } from './cli-adapters/agy-adapter.js';
 import type { MetricsRegistry } from './metrics/index.js';
 import { CLI_SPAWN_LABELS, safeMetric } from './metrics/index.js';
@@ -70,7 +80,7 @@ export function sanitizeClientId(id: string): string {
  * is untouched.
  */
 function sanitizeMarkerField(value: string): string {
-  return value.replace(/-->/g, '--&gt;').replace(/[\r\n]+/g, ' ');
+  return value.replace(/-->/g, '--&gt;').replace(/"/g, '&quot;').replace(/[\r\n]+/g, ' ');
 }
 
 /**
@@ -111,9 +121,24 @@ export function parseDefaultClientsFromEnv(log: StructuredLogger): CLIClientSpec
         );
         continue;
       }
+      const sanitizedId = sanitizeClientId(candidate.id);
+      if (isReservedCustomClientId(sanitizedId)) {
+        log.warn(
+          'Dropping BRUTALIST_CLAUDE_CLIENTS entry: id collides with a native CLI name or is path-unsafe',
+          { id: candidate.id, sanitized: sanitizedId },
+        );
+        continue;
+      }
+      // Validate string field types before trusting the cast (operator JSON).
+      const badField = (['baseUrl', 'authToken', 'authTokenEnv', 'model', 'smallFastModel', 'configDir'] as const)
+        .find((f) => candidate[f] !== undefined && typeof candidate[f] !== 'string');
+      if (badField) {
+        log.warn('Dropping BRUTALIST_CLAUDE_CLIENTS entry: non-string field', { id: candidate.id, field: badField });
+        continue;
+      }
       clients.push({
         ...candidate,
-        id: sanitizeClientId(candidate.id),
+        id: sanitizedId,
         provider,
       } as CLIClientSpec);
     }
@@ -135,48 +160,6 @@ export function parseDefaultClientsFromEnv(log: StructuredLogger): CLIClientSpec
 // Custom-endpoint routing fields that are only meaningful for the claude
 // provider (the claude binary is the only Anthropic-API gateway client).
 // Used to fail-fast (schema) / warn-and-strip (env) for codex/agy clients.
-const ROUTING_FIELDS = [
-  'model',
-  'smallFastModel',
-  'baseUrl',
-  'authToken',
-  'authTokenEnv',
-  'configDir',
-  'env',
-  'includeProcessAuth',
-  'containment',
-] as const;
-
-/**
- * Routing classification for a Claude-provider client. A client is "routed"
- * — pointed at a custom Anthropic-compatible endpoint such as a GLM gateway
- * — when it carries ANY routing signal: a base URL (typed field or via
- * env.ANTHROPIC_BASE_URL), a bearer token, or an explicit opt-out of
- * process-auth inheritance. Routed clients are isolated-by-default (no
- * native credential inheritance) and hardened-by-default (no web egress /
- * MCP). Everything else is "native". One predicate gates BOTH auth
- * isolation and tool containment so a client can never be isolated-for-auth
- * but not-hardened-for-tools (or vice versa).
- */
-export function classifyRouting(c?: CLIClientSpec): 'native' | 'routed' {
-  if (!c) return 'native';
-  if (
-    c.baseUrl ||
-    c.authToken ||
-    c.authTokenEnv ||
-    c.env?.ANTHROPIC_BASE_URL ||
-    c.env?.ANTHROPIC_AUTH_TOKEN ||
-    c.includeProcessAuth === false
-  ) {
-    return 'routed';
-  }
-  return 'native';
-}
-
-export function isRoutedClient(c?: CLIClientSpec): boolean {
-  return classifyRouting(c) === 'routed';
-}
-
 /** Per-client isolated CLAUDE_CONFIG_DIR under the user's home. */
 function defaultConfigDirFor(id: string): string {
   return path.join(os.homedir(), '.brutalist', 'claude-clients', sanitizeClientId(id));
@@ -1743,10 +1726,15 @@ export class CLIAgentOrchestrator {
     const userPrompt = this.constructUserPrompt(analysisType, primaryContent, context);
 
     const explicitClients = options.clients && options.clients.length > 0
-      ? options.clients.map((client) => ({
-          ...client,
-          id: sanitizeClientId(client.id),
-        }))
+      ? options.clients.map((client) => {
+          const id = sanitizeClientId(client.id);
+          if (isReservedCustomClientId(id)) {
+            throw new Error(
+              `Invalid custom client id "${client.id}": collides with a native CLI name (claude/codex/agy) or is path-unsafe ('.'/'..').`,
+            );
+          }
+          return { ...client, id };
+        })
       : undefined;
     const envClients = explicitClients ? [] : parseDefaultClientsFromEnv(this.emitLog());
 
@@ -1799,6 +1787,15 @@ export class CLIAgentOrchestrator {
 
     if (dedupedSpecs.length === 0) {
       throw new Error('No CLI agents available for analysis');
+    }
+
+    // Validate per-client working directories: an external spec can override
+    // options.workingDirectory (validated above), and the override reaches the
+    // spawn path — so each must pass the same path check before normalization.
+    for (const spec of dedupedSpecs) {
+      if (spec.workingDirectory) {
+        await asyncValidatePath(spec.workingDirectory, `clients[${spec.id}].workingDirectory`);
+      }
     }
 
     // A4: normalize routing once (auth isolation, small-fast-model, config

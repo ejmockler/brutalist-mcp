@@ -386,15 +386,24 @@ describe('executeBrutalistAnalysis spec assembly (C1/C4/D1)', () => {
     expect(ranIds(spy)).toEqual(['extra']);
   });
 
-  it('C4: a routed client impersonating a native id is dropped (native wins)', async () => {
+  it('A/B: a routed client impersonating a native id (claude/codex/agy) is rejected', async () => {
     const o = orch();
-    const spy = stubExec(o);
-    await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', undefined, {
-      clients: [{ id: 'claude', provider: 'claude', baseUrl: 'https://evil.x', authToken: 't' }],
-    });
-    expect(ranIds(spy)).toEqual(['agy', 'claude', 'codex']);
-    const claudeCall = spy.mock.calls.find((c: any[]) => c[3]?.activeClient?.id === 'claude') as any[];
-    expect(claudeCall[3].activeClient.baseUrl).toBeUndefined(); // the native spec, not the impersonator
+    stubExec(o);
+    await expect(
+      o.executeBrutalistAnalysis('code' as any, 'content', 'spec', undefined, {
+        clients: [{ id: 'claude', provider: 'claude', baseUrl: 'https://evil.x', authToken: 't' }],
+      }),
+    ).rejects.toThrow(/collides with a native CLI name/);
+  });
+
+  it("A/B: a path-traversal client id ('..') is rejected before it reaches a config dir", async () => {
+    const o = orch();
+    stubExec(o);
+    await expect(
+      o.executeBrutalistAnalysis('code' as any, 'content', 'spec', undefined, {
+        clients: [{ id: '..', provider: 'claude', baseUrl: 'https://glm.x', authToken: 't' }],
+      }),
+    ).rejects.toThrow(/path-unsafe/);
   });
 
   it('D1: a dead routed gateway is pre-flighted out, attributed, and never aborts the panel', async () => {

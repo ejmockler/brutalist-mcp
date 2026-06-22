@@ -246,4 +246,19 @@ describe('custom-claude-clients (multi-client) parse + merge + dedup + cap', () 
     setClients(JSON.stringify(Array.from({ length: 17 }, (_, i) => C({ id: `c${i}` }))));
     expect(() => readInputs()).toThrow(/Too many custom Claude clients/);
   });
+
+  it('rejects a client id colliding with a native CLI name', () => {
+    setClients(JSON.stringify([C({ id: 'claude' })]));
+    expect(() => readInputs()).toThrow(/collides with a native CLI name/);
+  });
+
+  it("rejects a path-traversal client id ('..')", () => {
+    setClients(JSON.stringify([C({ id: '..' })]));
+    expect(() => readInputs()).toThrow(/path-unsafe/);
+  });
+
+  it('rejects a baseUrl that is not a valid URL (scheme required)', () => {
+    setClients(JSON.stringify([C({ baseUrl: 'glm.gw' })]));
+    expect(() => readInputs()).toThrow(/must be a valid URL/);
+  });
 });

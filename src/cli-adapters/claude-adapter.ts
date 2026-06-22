@@ -14,7 +14,7 @@
 import { logger as rootLogger } from '../logger.js';
 import type { StructuredLogger } from '../logger.js';
 import type { CLIAgentOptions, CLIClientSpec } from '../cli-agents.js';
-import { classifyRouting, isRoutedClient } from '../cli-agents.js';
+import { classifyRouting, isRoutedClient } from './routing.js';
 import type { ModelResolver } from '../model-resolver.js';
 import type { CLIProvider, CLIBuilderConfig, CLIName, DecodeResult } from './index.js';
 import { parseNDJSON } from './shared.js';
@@ -541,10 +541,12 @@ export function classifyClaudeErrorReason(
   const quotaMarkers = [
     /usage limit reached/i,
     /rate_limit_exceeded/i,
+    /rate_limit_error/i,        // Anthropic error type, echoed by gateways (e.g. GLM/Z.AI)
     /\brate limit\b/i,
     /\b429\b/,
     /5-hour limit/i,
     /\blimit reached\b/i,
+    /\blimit exhausted\b/i,     // GLM/Z.AI: "Weekly/Monthly Limit Exhausted"
     /insufficient_quota/i,
     /quota_exceeded/i,
     /too many requests/i,

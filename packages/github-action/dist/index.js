@@ -40680,6 +40680,27 @@ const SEVERITY_RANK = {
 };
 /** Max custom Claude-routed critics — matches the roast clients[] schema cap. */
 const MAX_CUSTOM_CLAUDE_CLIENTS = 16;
+/** Native CLI provider names a custom client may not claim. */
+const NATIVE_CLI_IDS = ['claude', 'codex', 'agy'];
+/**
+ * A custom client id is reserved/unsafe if (after sanitization) it collides
+ * with a native CLI name (attribution corruption) or is a path-traversal
+ * basename ('.'/'..') that escapes the per-client `claude-clients/<id>` leaf.
+ */
+function isReservedClientId(rawId) {
+    const id = sanitizeClientId(rawId);
+    return NATIVE_CLI_IDS.includes(id) || id === '.' || id === '..';
+}
+/** Throw unless `value` parses as a URL (matches the MCP tool's z.string().url()). */
+function assertUrl(value, label) {
+    try {
+        // eslint-disable-next-line no-new
+        new URL(value);
+    }
+    catch {
+        throw new Error(`${label} must be a valid URL (got "${value}").`);
+    }
+}
 const CUSTOM_CLIENT_FIELDS = new Set([
     'id', 'baseUrl', 'authToken', 'model', 'smallFastModel', 'contextWindow', 'containment',
 ]);
@@ -40720,10 +40741,14 @@ function parseCustomClaudeClients(raw) {
             }
             return v.trim();
         };
+        const baseUrl = reqStr('baseUrl');
+        assertUrl(baseUrl, `custom-claude-clients[${i}] "baseUrl"`);
+        const authToken = reqStr('authToken');
+        lib_core.setSecret(authToken); // mask before any later per-entry validation can throw
         const client = {
             id: reqStr('id'),
-            baseUrl: reqStr('baseUrl'),
-            authToken: reqStr('authToken'),
+            baseUrl,
+            authToken,
             model: reqStr('model'),
         };
         if (e.smallFastModel !== undefined) {
@@ -40796,6 +40821,8 @@ function readInputs() {
         (!customClaudeBaseUrl || !customClaudeAuthToken || !customClaudeModel)) {
         throw new Error('custom Claude routing requires custom-claude-base-url, custom-claude-auth-token, and custom-claude-model.');
     }
+    if (customClaudeBaseUrl)
+        assertUrl(customClaudeBaseUrl, 'custom-claude-base-url');
     const customClaudeContextWindow = lib_core.getInput('custom-claude-context-window')
         ? parseIntInput('custom-claude-context-window', '0', 10_000, 2_000_000)
         : undefined;
@@ -40818,6 +40845,9 @@ function readInputs() {
     const customClaudeClients = [];
     const seenClientIds = new Set();
     for (const c of [...pluralClients, ...singularClients]) {
+        if (isReservedClientId(c.id)) {
+            throw new Error(`Custom Claude client id "${c.id}" collides with a native CLI name (claude/codex/agy) or is path-unsafe ('.'/'..').`);
+        }
         // Mask EVERY parsed token at the earliest point — before dedup — so a
         // token dropped on an id collision (which never reaches provisioning) is
         // still registered with the runner's secret masker.

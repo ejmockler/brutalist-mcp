@@ -112,15 +112,15 @@ describe('dedupePerCli (single-chunk submit_findings dedupe)', () => {
     expect(deduped.map((r) => r.clientId)).toEqual([undefined, 'glm']);
   });
 
-  it('matches mergePerCli keying: rows keyed by (clientId ?? cli)', () => {
-    // Same key (clientId 'glm') from two cli values still collapses keep-first,
-    // mirroring chunk-diff.ts mergePerCli's `e.clientId ?? e.cli`.
+  it('namespaces by (cli, clientId): same clientId under a different cli stays DISTINCT', () => {
+    // The composite (cli, clientId) key (mirrored in chunk-diff.ts mergePerCli)
+    // keeps these as two rows — the old bare-clientId key wrongly collapsed them,
+    // letting one critic's breakdown shadow another's across cli boundaries.
     const rows = [
       { cli: 'claude', clientId: 'glm', success: true, executionTimeMs: 1, summary: 'a' },
       { cli: 'codex', clientId: 'glm', success: true, executionTimeMs: 2, summary: 'b' },
     ];
     const deduped = dedupePerCli(rows);
-    expect(deduped).toHaveLength(1);
-    expect(deduped[0].summary).toBe('a');
+    expect(deduped).toHaveLength(2);
   });
 });

@@ -261,4 +261,9 @@ describe('custom-claude-clients (multi-client) parse + merge + dedup + cap', () 
     setClients(JSON.stringify([C({ baseUrl: 'glm.gw' })]));
     expect(() => readInputs()).toThrow(/must be a valid URL/);
   });
+
+  it('rejects a baseUrl with a non-http(s) scheme (SSRF/exfil footgun)', () => {
+    setClients(JSON.stringify([C({ baseUrl: 'file:///etc/passwd' })]));
+    expect(() => readInputs()).toThrow(/must use http/);
+  });
 });

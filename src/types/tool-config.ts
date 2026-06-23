@@ -54,7 +54,10 @@ export const BASE_ROAST_SCHEMA = {
     provider: z.enum(["claude", "codex", "agy"]).default("claude").describe("Underlying CLI provider."),
     model: z.string().optional().describe("Per-client model override."),
     smallFastModel: z.string().optional().describe("Claude Code small/fast model override for ANTHROPIC_SMALL_FAST_MODEL. Defaults to `model` for routed clients so a gateway never sees Claude's built-in haiku name."),
-    baseUrl: z.string().url().optional().describe("Claude-compatible endpoint base URL for ANTHROPIC_BASE_URL. Presence marks the client 'routed': isolated from native credentials and hardened (no web egress/MCP) by default."),
+    baseUrl: z.string().url().refine(
+      (u) => { try { const p = new URL(u).protocol; return p === 'https:' || p === 'http:'; } catch { return false; } },
+      { message: "baseUrl must use http(s) — the prompt, diff, and token are sent there." },
+    ).optional().describe("Claude-compatible endpoint base URL for ANTHROPIC_BASE_URL (http(s) only). Presence marks the client 'routed': isolated from native credentials and hardened (no web egress/MCP) by default."),
     authToken: z.string().optional().describe("Bearer token for ANTHROPIC_AUTH_TOKEN. Prefer authTokenEnv for shared configs."),
     authTokenEnv: z.string().optional().describe("Environment variable name containing the bearer token."),
     configDir: z.string().optional().describe("Per-client CLAUDE_CONFIG_DIR for Claude Code state isolation. Defaults to ~/.brutalist/claude-clients/<id> for routed clients."),

@@ -225,7 +225,9 @@ function dedupeFindings(findings: Finding[]): Finding[] {
 function mergePerCli(entries: CliBreakdown[]): CliBreakdown[] {
   const byCli = new Map<string, CliBreakdown>();
   for (const e of entries) {
-    const key = e.clientId ?? e.cli;
+    // Namespace by (cli, clientId) — MUST match dedupePerCli/perCliKey in the
+    // orchestrator's attribution.ts so single-chunk and multi-chunk agree.
+    const key = `${e.cli} ${e.clientId ?? ''}`;
     const existing = byCli.get(key);
     if (!existing) {
       byCli.set(key, { ...e });

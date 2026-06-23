@@ -195,7 +195,18 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
       // mergePerCli). dedupePerCli mirrors mergePerCli's key so single-chunk and
       // multi-chunk paths agree. (Extracted so it's unit-testable with static
       // imports — run() itself needs the SDK-mock dynamic-import seam.)
+      const perCliBeforeDedup = parsed.perCli.length;
       parsed.perCli = dedupePerCli(parsed.perCli);
+      const perCliCollapsed = perCliBeforeDedup - parsed.perCli.length;
+      if (perCliCollapsed > 0) {
+        // Telemetry: a collapse can be a benign hallucination-dedup OR a real
+        // critic's breakdown being shadowed by native (omitted/colliding
+        // clientId marker). Surface it so attribution loss is never silent.
+        console.warn(
+          `[brutalist] attribution: ${perCliCollapsed} per-CLI row(s) collapsed during dedup ` +
+            `— a routed critic may be shadowing/shadowed by native (omitted or colliding clientId marker).`,
+        );
+      }
 
       // Reject empty payloads as terminal action. A run where the agent
       // failed every roast call but still submitted is operationally
@@ -230,7 +241,8 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
             type: 'text',
             text:
               `Findings submitted: ${captured.findings.length} inline, ${captured.outOfDiff.length} out-of-diff.` +
-              `${normalizedClientIds ? ` (${normalizedClientIds} unknown clientId(s) normalized to native cli.)` : ''}`,
+              `${normalizedClientIds ? ` (${normalizedClientIds} unknown clientId(s) normalized to native cli.)` : ''}` +
+              `${perCliCollapsed ? ` (${perCliCollapsed} per-CLI row(s) collapsed during attribution dedup.)` : ''}`,
           },
         ],
       };

@@ -39839,21 +39839,33 @@ function makeClientIdNormalizer(knownClientIds) {
     return (cli, clientId) => !clientId || clientId === cli ? undefined : known.has(clientId) ? clientId : undefined;
 }
 /**
- * Dedupe per-CLI breakdown rows by (clientId ?? cli), keep-first.
+ * Composite (cli, clientId) key for per-CLI dedup. ` ` cannot appear in a
+ * cli name or a sanitized clientId, so it is a safe separator. MUST stay in
+ * sync with mergePerCli's key in the github-action's chunk-diff.ts (kept as an
+ * independent copy so chunk-diff doesn't import this ESM package).
+ */
+function perCliKey(row) {
+    return `${row.cli} ${row.clientId ?? ''}`;
+}
+/**
+ * Dedupe per-CLI breakdown rows by the (cli, clientId) composite key, keep-first.
  *
- * The submit_findings clamp can collapse a hallucinated
+ * Namespacing by cli (not the bare `clientId ?? cli`) means a custom client
+ * whose clientId equals a DIFFERENT native cli name can't collapse into that
+ * native row. The submit_findings clamp can still collapse a hallucinated
  * {cli:'claude', clientId:'phantom'} row to {cli:'claude', clientId:undefined},
- * making it byte-identical to a genuine native {cli:'claude'} row. The
- * single-chunk action path skips chunk-diff.ts's mergePerCli, so without this
- * the brain emitting both a native and a phantom-clamped row would surface two
- * identical native rows. The key MUST match mergePerCli's `e.clientId ?? e.cli`
- * so the single-chunk and multi-chunk paths agree.
+ * making it identical to a genuine native {cli:'claude'} row — and a custom row
+ * whose marker the brain OMITTED is indistinguishable from native, so it also
+ * collapses. Neither can be repaired here (the rows are byte-identical), so the
+ * orchestrator surfaces the collapse COUNT as telemetry rather than dropping
+ * attribution silently. The single-chunk action path skips mergePerCli, so this
+ * keeps the single-chunk and multi-chunk paths in agreement.
  */
 function dedupePerCli(rows) {
     const seen = new Set();
     const out = [];
     for (const row of rows) {
-        const key = row.clientId ?? row.cli;
+        const key = perCliKey(row);
         if (seen.has(key))
             continue;
         seen.add(key);
@@ -40039,7 +40051,16 @@ async function run(options) {
         // mergePerCli). dedupePerCli mirrors mergePerCli's key so single-chunk and
         // multi-chunk paths agree. (Extracted so it's unit-testable with static
         // imports — run() itself needs the SDK-mock dynamic-import seam.)
+        const perCliBeforeDedup = parsed.perCli.length;
         parsed.perCli = dedupePerCli(parsed.perCli);
+        const perCliCollapsed = perCliBeforeDedup - parsed.perCli.length;
+        if (perCliCollapsed > 0) {
+            // Telemetry: a collapse can be a benign hallucination-dedup OR a real
+            // critic's breakdown being shadowed by native (omitted/colliding
+            // clientId marker). Surface it so attribution loss is never silent.
+            console.warn(`[brutalist] attribution: ${perCliCollapsed} per-CLI row(s) collapsed during dedup ` +
+                `— a routed critic may be shadowing/shadowed by native (omitted or colliding clientId marker).`);
+        }
         // Reject empty payloads as terminal action. A run where the agent
         // failed every roast call but still submitted is operationally
         // identical to "no issues" — that's exactly the wrong signal.
@@ -40068,7 +40089,8 @@ async function run(options) {
                 {
                     type: 'text',
                     text: `Findings submitted: ${captured.findings.length} inline, ${captured.outOfDiff.length} out-of-diff.` +
-                        `${normalizedClientIds ? ` (${normalizedClientIds} unknown clientId(s) normalized to native cli.)` : ''}`,
+                        `${normalizedClientIds ? ` (${normalizedClientIds} unknown clientId(s) normalized to native cli.)` : ''}` +
+                        `${perCliCollapsed ? ` (${perCliCollapsed} per-CLI row(s) collapsed during attribution dedup.)` : ''}`,
                 },
             ],
         };
@@ -40552,7 +40574,9 @@ function dedupeFindings(findings) {
 function mergePerCli(entries) {
     const byCli = new Map();
     for (const e of entries) {
-        const key = e.clientId ?? e.cli;
+        // Namespace by (cli, clientId) — MUST match dedupePerCli/perCliKey in the
+        // orchestrator's attribution.ts so single-chunk and multi-chunk agree.
+        const key = `${e.cli} ${e.clientId ?? ''}`;
         const existing = byCli.get(key);
         if (!existing) {
             byCli.set(key, { ...e });
@@ -40691,14 +40715,23 @@ function isReservedClientId(rawId) {
     const id = sanitizeClientId(rawId);
     return NATIVE_CLI_IDS.includes(id) || id === '.' || id === '..';
 }
-/** Throw unless `value` parses as a URL (matches the MCP tool's z.string().url()). */
+/**
+ * Throw unless `value` is a valid http(s) URL. The scheme MUST be http or
+ * https: this becomes ANTHROPIC_BASE_URL — where the critic's prompt + PR diff
+ * + bearer token are sent — so non-network schemes (file:, data:, ftp:, …) are
+ * an SSRF/exfil footgun and are rejected. https is strongly recommended (http
+ * sends the token in cleartext).
+ */
 function assertUrl(value, label) {
+    let u;
     try {
-        // eslint-disable-next-line no-new
-        new URL(value);
+        u = new URL(value);
     }
     catch {
         throw new Error(`${label} must be a valid URL (got "${value}").`);
+    }
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+        throw new Error(`${label} must use http(s); "${u.protocol}" is not allowed.`);
     }
 }
 const CUSTOM_CLIENT_FIELDS = new Set([

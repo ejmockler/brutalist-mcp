@@ -43,13 +43,22 @@ function isReservedClientId(rawId: string): boolean {
   return NATIVE_CLI_IDS.includes(id) || id === '.' || id === '..';
 }
 
-/** Throw unless `value` parses as a URL (matches the MCP tool's z.string().url()). */
+/**
+ * Throw unless `value` is a valid http(s) URL. The scheme MUST be http or
+ * https: this becomes ANTHROPIC_BASE_URL — where the critic's prompt + PR diff
+ * + bearer token are sent — so non-network schemes (file:, data:, ftp:, …) are
+ * an SSRF/exfil footgun and are rejected. https is strongly recommended (http
+ * sends the token in cleartext).
+ */
 function assertUrl(value: string, label: string): void {
+  let u: URL;
   try {
-    // eslint-disable-next-line no-new
-    new URL(value);
+    u = new URL(value);
   } catch {
     throw new Error(`${label} must be a valid URL (got "${value}").`);
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+    throw new Error(`${label} must use http(s); "${u.protocol}" is not allowed.`);
   }
 }
 

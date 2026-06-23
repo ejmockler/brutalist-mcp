@@ -29,6 +29,10 @@ export const FindingSchema = z.object({
   cli: CliNameSchema.describe(
     'Which CLI critic emitted the underlying observation. Surfaced in the PR comment as a badge.',
   ),
+  clientId: z
+    .string()
+    .optional()
+    .describe('Optional named client id when multiple clients share one CLI provider, e.g. glm over Claude Code.'),
   path: z
     .string()
     .min(1)
@@ -77,6 +81,10 @@ export type Finding = z.infer<typeof FindingSchema>;
 
 export const CliBreakdownSchema = z.object({
   cli: CliNameSchema,
+  clientId: z
+    .string()
+    .optional()
+    .describe('Optional named client id when multiple clients share one CLI provider.'),
   success: z.boolean(),
   model: z
     .string()
@@ -181,4 +189,14 @@ export interface RunOptions {
    * brutalist's ModelResolver read.
    */
   model?: string;
+
+  /**
+   * Harness-provisioned client ids. submit_findings clamps each
+   * brain-emitted clientId to this set ∪ native cli names
+   * ('claude','codex','agy'); an id not in the set is dropped to native
+   * (undefined). Omitted => only native cli names are accepted: with no
+   * provisioned custom clients, any custom clientId the brain emits is a
+   * hallucination and is dropped to native.
+   */
+  knownClientIds?: string[];
 }

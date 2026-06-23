@@ -311,6 +311,56 @@ Codex uses the Codex CLI's configured/default model by default. The server delib
 
 Set `BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true` only if you explicitly want Brutalist to pass `models.codex` through as `codex exec --model ...`. When that opt-in is enabled, deprecated Codex model names are still resolved through the migration table discovered from the Codex CLI config.
 
+### Custom Claude Code Routes
+
+Brutalist can run named Claude Code clients in parallel, including Anthropic-compatible endpoints such as GLM gateways. `clients[]` is **additive** — the named clients run *alongside* the native critics:
+
+```js
+roast(
+  domain="codebase",
+  target="/src",
+  clients=[
+    {
+      id: "glm",
+      provider: "claude",
+      baseUrl: "https://immersivecommons13.tail5da903.ts.net",
+      authTokenEnv: "GLM_ANTHROPIC_AUTH_TOKEN",
+      model: "glm-5.1"
+    }
+  ]
+)
+```
+
+Set `GLM_ANTHROPIC_AUTH_TOKEN` in the environment before starting `brutalist-mcp`. The example above runs `claude` + `codex` + `agy` (native) **and** the routed `glm` critic. To run *only* the named clients, pass an explicit empty `clis: []`.
+
+A client is **routed** as soon as it sets `baseUrl` (or `authToken`/`authTokenEnv`). Routed clients are hardened by default:
+
+- **Isolated credentials.** A routed client never inherits the host's native `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN` — only its own endpoint + token reach the gateway process. Set `includeProcessAuth: true` to opt back into inheriting native auth. (Conversely, the native critic never inherits an ambient `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`, so a `GLM` export in your shell can't silently reroute the trusted critic.)
+- **Isolated state.** `configDir` maps to `CLAUDE_CONFIG_DIR`; if omitted, a per-client dir under `~/.brutalist/claude-clients/<id>` is created (mode `0700`).
+- **`smallFastModel`** defaults to `model` so a gateway never receives Claude's built-in haiku model name.
+- **Hardened tools.** The routed model decides tool calls under `--permission-mode bypassPermissions`, so a routed critic additionally denies `WebFetch`/`WebSearch` and suppresses MCP servers — closing the prompt-injection exfiltration channel. Set `containment: "standard"` to restore the full tool surface for an endpoint you fully trust.
+
+Custom-endpoint fields (`baseUrl`, `authToken`, `model`, `containment`, …) are only valid for `provider: "claude"`; a `codex`/`agy` client carrying them is rejected. Up to **16** named clients may run in one roast (`clients[]` cap). `roast_cli_debate` does not support `clients`.
+
+#### Many routes at once (GitHub Action)
+
+The GitHub Action wires the same multi-client surface. Pass a JSON array via `custom-claude-clients` to route an arbitrary number of Claude critics (each through its own endpoint + secret) in one review:
+
+```yaml
+- uses: ejmockler/brutalist-mcp/packages/github-action@v1
+  with:
+    anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+    custom-claude-clients: |
+      [
+        { "id": "glm",   "baseUrl": "https://glm.example/v1",   "authToken": "${{ secrets.GLM_TOKEN }}",   "model": "glm-5.1",   "contextWindow": 128000 },
+        { "id": "kimi",  "baseUrl": "https://kimi.example/v1",  "authToken": "${{ secrets.KIMI_TOKEN }}",  "model": "kimi-k2",   "contextWindow": 200000 }
+      ]
+```
+
+Each entry's token is placed in a dedicated env var and referenced via `authTokenEnv` — raw tokens are never inlined into the forwarded `BRUTALIST_CLAUDE_CLIENTS`. Every client gets an isolated `~/.brutalist/claude-clients/<id>` config dir (mode `0700`), and is **isolated + hardened by default** (no native creds, no `WebFetch`/`WebSearch`/MCP) exactly like the `roast` `clients[]` above. The diff chunker sizes chunks to the **smallest** participant window, so set each client's `contextWindow` when its model's usable window is below `context-window-tokens`.
+
+The singular `custom-claude-*` inputs remain supported for the one-client case and are **backward-compatible** — they work *alongside* `custom-claude-clients` (the singular trio, if set, appends one more client; deduped by id, keep-first on collision). Add `"containment": "standard"` to an entry to restore web/MCP tools for an endpoint you fully trust. The array cap matches the tool: **16** clients.
+
 ## Why Multiple Perspectives
 
 Each CLI agent brings a different approach to analysis:

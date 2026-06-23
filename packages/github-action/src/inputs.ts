@@ -4,6 +4,7 @@
  */
 
 import * as core from '@actions/core';
+import { sanitizeClientId } from './custom-claude.js';
 
 export type SeverityFilter = 'critical' | 'high' | 'medium' | 'low' | 'nit';
 
@@ -14,6 +15,129 @@ const SEVERITY_RANK: Record<SeverityFilter, number> = {
   low: 1,
   nit: 0,
 };
+
+/** One custom Claude-routed critic parsed from the `custom-claude-clients` JSON array. */
+export interface ParsedCustomClient {
+  id: string;
+  baseUrl: string;
+  authToken: string;
+  model: string;
+  smallFastModel?: string;
+  contextWindow?: number;
+  containment?: 'hardened' | 'standard';
+}
+
+/** Max custom Claude-routed critics — matches the roast clients[] schema cap. */
+const MAX_CUSTOM_CLAUDE_CLIENTS = 16;
+
+/** Native CLI provider names a custom client may not claim. */
+const NATIVE_CLI_IDS = ['claude', 'codex', 'agy'];
+
+/**
+ * A custom client id is reserved/unsafe if (after sanitization) it collides
+ * with a native CLI name (attribution corruption) or is a path-traversal
+ * basename ('.'/'..') that escapes the per-client `claude-clients/<id>` leaf.
+ */
+function isReservedClientId(rawId: string): boolean {
+  const id = sanitizeClientId(rawId);
+  return NATIVE_CLI_IDS.includes(id) || id === '.' || id === '..';
+}
+
+/**
+ * Throw unless `value` is a valid http(s) URL. The scheme MUST be http or
+ * https: this becomes ANTHROPIC_BASE_URL — where the critic's prompt + PR diff
+ * + bearer token are sent — so non-network schemes (file:, data:, ftp:, …) are
+ * an SSRF/exfil footgun and are rejected. https is strongly recommended (http
+ * sends the token in cleartext).
+ */
+function assertUrl(value: string, label: string): void {
+  let u: URL;
+  try {
+    u = new URL(value);
+  } catch {
+    throw new Error(`${label} must be a valid URL (got "${value}").`);
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+    throw new Error(`${label} must use http(s); "${u.protocol}" is not allowed.`);
+  }
+}
+
+const CUSTOM_CLIENT_FIELDS = new Set([
+  'id', 'baseUrl', 'authToken', 'model', 'smallFastModel', 'contextWindow', 'containment',
+]);
+
+/**
+ * Parse + validate the `custom-claude-clients` input (a JSON array string).
+ * Fails fast with an actionable, entry-indexed error; returns [] for empty.
+ * Does NOT dedup or merge the singular inputs — readInputs() does that.
+ */
+function parseCustomClaudeClients(raw: string): ParsedCustomClient[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (err) {
+    throw new Error(
+      `custom-claude-clients must be a JSON array, e.g. '[{"id":"glm","baseUrl":"https://glm.gw","authToken":"<secret>","model":"glm-5.1"}]'. Parse error: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('custom-claude-clients must be a JSON array.');
+  }
+  const out: ParsedCustomClient[] = [];
+  parsed.forEach((entry, i) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`custom-claude-clients[${i}] must be an object.`);
+    }
+    const e = entry as Record<string, unknown>;
+    for (const key of Object.keys(e)) {
+      if (!CUSTOM_CLIENT_FIELDS.has(key)) {
+        throw new Error(
+          `custom-claude-clients[${i}] has unknown field "${key}". Allowed: id, baseUrl, authToken, model, smallFastModel, contextWindow, containment.`,
+        );
+      }
+    }
+    const reqStr = (field: string): string => {
+      const v = e[field];
+      if (typeof v !== 'string' || !v.trim()) {
+        throw new Error(`custom-claude-clients[${i}] requires a non-empty string "${field}".`);
+      }
+      return v.trim();
+    };
+    const baseUrl = reqStr('baseUrl');
+    assertUrl(baseUrl, `custom-claude-clients[${i}] "baseUrl"`);
+    const authToken = reqStr('authToken');
+    core.setSecret(authToken); // mask before any later per-entry validation can throw
+    const client: ParsedCustomClient = {
+      id: reqStr('id'),
+      baseUrl,
+      authToken,
+      model: reqStr('model'),
+    };
+    if (e.smallFastModel !== undefined) {
+      if (typeof e.smallFastModel !== 'string' || !e.smallFastModel.trim()) {
+        throw new Error(`custom-claude-clients[${i}] "smallFastModel" must be a non-empty string when set.`);
+      }
+      client.smallFastModel = e.smallFastModel.trim();
+    }
+    if (e.contextWindow !== undefined) {
+      const w = e.contextWindow;
+      if (typeof w !== 'number' || !Number.isInteger(w) || w < 10_000 || w > 2_000_000) {
+        throw new Error(`custom-claude-clients[${i}] "contextWindow" must be an integer in [10000, 2000000].`);
+      }
+      client.contextWindow = w;
+    }
+    if (e.containment !== undefined) {
+      if (e.containment !== 'hardened' && e.containment !== 'standard') {
+        throw new Error(`custom-claude-clients[${i}] "containment" must be "hardened" or "standard".`);
+      }
+      client.containment = e.containment;
+    }
+    out.push(client);
+  });
+  return out;
+}
 
 export interface ActionInputs {
   anthropicOauthToken: string;
@@ -41,6 +165,17 @@ export interface ActionInputs {
   maxDiffChars: number;
   /** Model for the orchestrator brain (and the claude critic via settings.json). */
   model: string;
+  /** Optional model for the native Claude critic. Defaults to model. */
+  claudeCriticModel: string;
+  customClaudeBaseUrl?: string;
+  customClaudeAuthToken?: string;
+  customClaudeModel?: string;
+  customClaudeSmallFastModel?: string;
+  customClaudeClientId: string;
+  /** Context window (tokens) of the custom Claude-routed critic, if smaller than contextWindowTokens. */
+  customClaudeContextWindow?: number;
+  /** All custom Claude-routed critics — the plural `custom-claude-clients` array merged with the singular shorthand. */
+  customClaudeClients: ParsedCustomClient[];
   /** Governing (smallest participant) context window, in tokens. */
   contextWindowTokens: number;
   /** Working headroom reserved for the agent, as a percentage (0–90). */
@@ -105,11 +240,80 @@ export function readInputs(): ActionInputs {
   // Best model by default. Brain uses this directly; the claude critic picks
   // it up from ~/.claude/settings.json (written by the action before invoke).
   const model = (core.getInput('model') || 'claude-opus-4-8').trim();
+  const claudeCriticModel = (core.getInput('claude-critic-model') || model).trim();
+  const customClaudeBaseUrl = (core.getInput('custom-claude-base-url') || '').trim() || undefined;
+  const customClaudeAuthToken = (core.getInput('custom-claude-auth-token') || '').trim() || undefined;
+  const customClaudeModel = (core.getInput('custom-claude-model') || '').trim() || undefined;
+  const customClaudeSmallFastModel = (core.getInput('custom-claude-small-fast-model') || '').trim() || undefined;
+  const customClaudeClientId = (core.getInput('custom-claude-client-id') || 'custom-claude').trim();
+  if ((customClaudeBaseUrl || customClaudeAuthToken || customClaudeModel || customClaudeSmallFastModel) &&
+      (!customClaudeBaseUrl || !customClaudeAuthToken || !customClaudeModel)) {
+    throw new Error(
+      'custom Claude routing requires custom-claude-base-url, custom-claude-auth-token, and custom-claude-model.',
+    );
+  }
+  if (customClaudeBaseUrl) assertUrl(customClaudeBaseUrl, 'custom-claude-base-url');
+
+  const customClaudeContextWindow = core.getInput('custom-claude-context-window')
+    ? parseIntInput('custom-claude-context-window', '0', 10_000, 2_000_000)
+    : undefined;
+
+  // Merge the plural `custom-claude-clients` JSON array with the singular
+  // custom-claude-* shorthand (the singular trio, if complete, appends ONE
+  // client at the end). Dedup by SANITIZED id (the dir/attribution key), keep-
+  // first — so an explicit plural entry wins over the legacy singular on a
+  // collision. With no plural input, this is exactly [singular] (or []).
+  const pluralClients = parseCustomClaudeClients(core.getInput('custom-claude-clients') || '');
+  const singularClients: ParsedCustomClient[] =
+    customClaudeBaseUrl && customClaudeAuthToken && customClaudeModel
+      ? [{
+          id: customClaudeClientId,
+          baseUrl: customClaudeBaseUrl,
+          authToken: customClaudeAuthToken,
+          model: customClaudeModel,
+          smallFastModel: customClaudeSmallFastModel,
+          contextWindow: customClaudeContextWindow,
+        }]
+      : [];
+  const customClaudeClients: ParsedCustomClient[] = [];
+  const seenClientIds = new Set<string>();
+  for (const c of [...pluralClients, ...singularClients]) {
+    if (isReservedClientId(c.id)) {
+      throw new Error(
+        `Custom Claude client id "${c.id}" collides with a native CLI name (claude/codex/agy) or is path-unsafe ('.'/'..').`,
+      );
+    }
+    // Mask EVERY parsed token at the earliest point — before dedup — so a
+    // token dropped on an id collision (which never reaches provisioning) is
+    // still registered with the runner's secret masker.
+    core.setSecret(c.authToken);
+    const key = sanitizeClientId(c.id);
+    if (seenClientIds.has(key)) {
+      core.warning(
+        `Duplicate custom Claude client id "${c.id}" (sanitizes to "${key}") — keeping the first, dropping this one.`,
+      );
+      continue;
+    }
+    seenClientIds.add(key);
+    customClaudeClients.push(c);
+  }
+  if (customClaudeClients.length > MAX_CUSTOM_CLAUDE_CLIENTS) {
+    throw new Error(
+      `Too many custom Claude clients: ${customClaudeClients.length} (max ${MAX_CUSTOM_CLAUDE_CLIENTS}).`,
+    );
+  }
 
   // Context-window-aware chunking. The diff is split so each chunk fits the
   // governing (smallest) participant window minus working headroom, letting
-  // every critic — not just the 1M-context ones — review every chunk.
-  const contextWindowTokens = parseIntInput('context-window-tokens', '200000', 10_000, 2_000_000);
+  // every critic — not just the 1M-context ones — review every chunk. Fold
+  // EVERY participating custom client's window into the min (only runnable
+  // clients are in customClaudeClients, so an unused window can't shrink it).
+  const configuredWindow = parseIntInput('context-window-tokens', '200000', 10_000, 2_000_000);
+  const participantWindows = [configuredWindow];
+  for (const c of customClaudeClients) {
+    if (c.contextWindow) participantWindows.push(c.contextWindow);
+  }
+  const contextWindowTokens = Math.min(...participantWindows);
   const contextHeadroomPct = parseIntInput('context-headroom-pct', '40', 0, 90);
   const chunkConcurrency = parseIntInput('chunk-concurrency', '2', 1, 16);
   const usableTokens = Math.floor(contextWindowTokens * (1 - contextHeadroomPct / 100));
@@ -130,6 +334,14 @@ export function readInputs(): ActionInputs {
     minimumSeverity: minimumSeverityRaw as SeverityFilter,
     maxDiffChars,
     model,
+    claudeCriticModel,
+    customClaudeBaseUrl,
+    customClaudeAuthToken,
+    customClaudeModel,
+    customClaudeSmallFastModel,
+    customClaudeClientId,
+    customClaudeContextWindow,
+    customClaudeClients,
     contextWindowTokens,
     contextHeadroomPct,
     maxChunkChars,

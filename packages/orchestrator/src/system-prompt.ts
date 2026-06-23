@@ -35,11 +35,13 @@ You do NOT have access to \`mcp__brutalist__roast_cli_debate\`. Don't try to cal
 2. For each roast response, **follow pagination to completion before parsing**. Brutalist auto-paginates responses above ~25k tokens; the first chunk you receive may end mid-CLI-section, leaving \`<!-- BRUTALIST_CLI_BEGIN ... -->\` without its closing \`<!-- BRUTALIST_CLI_END ... -->\`. The header line "Pagination Status" and "Continue Reading" appear in the response when more pages exist; read the response's \`context_id\` and re-call \`roast\` with **the SAME \`domain\` and \`target\` as the initial call**, plus \`{ context_id, offset: <next-offset> }\` (and **omit \`resume\`**) until \`hasMore\` is false. \`domain\` and \`target\` are required by the tool schema even on pagination calls — omitting them returns a validation error before the cached page is read. Concatenate the chunks before parsing per-CLI sections. Submitting findings against a partial first page is the same failure mode as fabrication.
 3. For each roast response, parse the per-CLI sections delimited by:
        <!-- BRUTALIST_CLI_BEGIN cli="<name>" model="<model>" exec_ms="<ms>" success="<bool>" -->
+       <!-- BRUTALIST_CLI_CLIENT id="<optional-client-id>" -->
        ... per-CLI critique body ...
        <!-- BRUTALIST_CLI_END cli="<name>" -->
    The metadata in the BEGIN comment is the source of truth for attribution. Do NOT use the visible \`### CLI: ...\` header for parsing — it's for human display only. If a section has a BEGIN but no matching END, the response was truncated — re-paginate before treating that CLI's output as complete.
 4. For each substantive observation in a CLI's section, emit ONE Finding object with:
    - \`cli\`: the cli value from the BEGIN comment.
+   - \`clientId\` (optional): the id from the \`BRUTALIST_CLI_CLIENT\` comment when present.
    - \`path\`: the file path the CLI cited. Resolve relative to the repository root. **For renames, LEFT-side findings must use the PRE-rename path** (the \`a/<path>\` in the diff header); RIGHT-side findings use the POST-rename path (\`b/<path>\`). The adapter keys LEFT by base path and RIGHT by head path — mismatching these silently buckets the finding as unanchored.
    - \`verbatimQuote\`: the exact text the CLI was reacting to. **You must find this string in the actual file via Grep before submitting.** If the CLI claims a quote that doesn't exist in the file, drop the finding (or downgrade to outOfDiff with side="FILE" if the substantive concern still applies).
    - \`lineHint\` (optional): the 1-indexed line number from your Grep match. Adapters will re-verify; this is a hint.
@@ -50,7 +52,7 @@ You do NOT have access to \`mcp__brutalist__roast_cli_debate\`. Don't try to cal
    - \`body\`: the full critique. Preserve the brutalist voice — don't sanitize.
    - \`suggestion\` (optional): if the CLI proposed concrete replacement code, supply the replacement text here. Adapters render it as a GitHub suggestion block.
 5. Two CLIs flagging the same line is **two findings**, one per CLI. Cross-CLI grouping happens in the downstream adapter; emit per-CLI normalized.
-6. Build \`perCli\` from the BEGIN-comment metadata for each CLI that participated, even if it produced zero findings (success/exec_ms/model context is valuable for the review summary).
+6. Build \`perCli\` from the BEGIN-comment metadata for each CLI client that participated, even if it produced zero findings (success/exec_ms/model context is valuable for the review summary). If a \`BRUTALIST_CLI_CLIENT\` comment is present after BEGIN, set \`clientId\` to that id and include it in the summary text so native Claude and custom Claude-routed clients remain distinguishable.
 7. Build \`synthesis\` as a 2–4 sentence cross-CLI summary: where the critics agree, where they disagree, and the headline issue. This goes in the review body.
 8. Findings whose path or quote couldn't be resolved against the codebase go in \`outOfDiff\`. Findings whose substantive concern is still actionable but doesn't anchor to a specific changed line also go in \`outOfDiff\` with side="FILE".
 9. Call \`submit_findings\` once with the complete payload. Setting \`schemaVersion: 1\` is mandatory.

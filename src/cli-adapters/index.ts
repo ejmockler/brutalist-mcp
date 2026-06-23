@@ -44,6 +44,13 @@ export interface CLIBuilderConfig {
   streamingArgs?: (options: CLIAgentOptions) => string[];
   mpcEnvCleanup?: string[];
   mcpSupport?: MCPSupportConfig;
+  /**
+   * Optional per-provider ceiling on the spawn timeout (ms). When set and
+   * lower than the otherwise-computed timeout, it caps this provider's run —
+   * a fail-fast backstop for a provider known to occasionally stall (agy),
+   * so a hang costs minutes instead of the full global BRUTALIST_TIMEOUT.
+   */
+  maxTimeoutMs?: number;
 }
 
 // ── DecodeResult ───────────────────────────────────────────────────────────

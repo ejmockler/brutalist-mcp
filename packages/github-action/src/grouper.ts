@@ -262,7 +262,8 @@ export function renderInlineCommentBody(findings: ResolvedFinding[], rollup: Sev
   lines.push('');
 
   for (const f of findings) {
-    const cliLabel = CLI_BADGE[f.cli] ?? f.cli;
+    const baseLabel = CLI_BADGE[f.cli] ?? f.cli;
+    const cliLabel = f.clientId && f.clientId !== f.cli ? `${f.clientId} (${baseLabel})` : baseLabel;
     lines.push(`**[${cliLabel} ${SEVERITY_BADGES[f.severity]}]** *${f.category}* — ${f.title}`);
     lines.push('');
     lines.push(f.body.trim());

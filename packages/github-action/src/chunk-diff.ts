@@ -166,9 +166,12 @@ export async function runWithConcurrency<T, R>(
 /**
  * Merge per-chunk OrchestratorResults into one. Findings/outOfDiff are
  * concatenated and de-duplicated; perCli is merged per critic (success OR-ed,
- * execution time summed); synthesis is concatenated with chunk labels.
- * Quotes are anchored to file+line downstream, so concatenating across chunks
- * is sound — chunks are disjoint by file/hunk.
+ * execution time is the per-critic MAX across chunks (chunks run in parallel
+ * via chunkConcurrency, so summing overcounts wall-clock; at chunkConcurrency=1
+ * this undercounts total work — an intentional latency-over-cost signal));
+ * synthesis is concatenated with chunk labels. Quotes are anchored to
+ * file+line downstream, so concatenating across chunks is sound — chunks are
+ * disjoint by file/hunk.
  */
 export function mergeResults(results: OrchestratorResult[]): OrchestratorResult {
   const findings = dedupeFindings(results.flatMap((r) => r.findings));
@@ -204,7 +207,7 @@ const FIELD_SEP = String.fromCharCode(0);
 function findingKey(f: Finding): string {
   // `side` is part of the key: LEFT vs RIGHT on the same line is a distinct
   // finding (matches grouper.ts keying on path::line::side).
-  return [f.cli, f.path, f.side, f.lineHint ?? '', f.verbatimQuote, f.title].join(FIELD_SEP);
+  return [f.clientId ?? f.cli, f.cli, f.path, f.side, f.lineHint ?? '', f.verbatimQuote, f.title].join(FIELD_SEP);
 }
 
 function dedupeFindings(findings: Finding[]): Finding[] {
@@ -222,13 +225,16 @@ function dedupeFindings(findings: Finding[]): Finding[] {
 function mergePerCli(entries: CliBreakdown[]): CliBreakdown[] {
   const byCli = new Map<string, CliBreakdown>();
   for (const e of entries) {
-    const existing = byCli.get(e.cli);
+    // Namespace by (cli, clientId) — MUST match dedupePerCli/perCliKey in the
+    // orchestrator's attribution.ts so single-chunk and multi-chunk agree.
+    const key = `${e.cli} ${e.clientId ?? ''}`;
+    const existing = byCli.get(key);
     if (!existing) {
-      byCli.set(e.cli, { ...e });
+      byCli.set(key, { ...e });
       continue;
     }
     existing.success = existing.success || e.success;
-    existing.executionTimeMs += e.executionTimeMs;
+    existing.executionTimeMs = Math.max(existing.executionTimeMs, e.executionTimeMs);
     if (!existing.model && e.model) existing.model = e.model;
     if (e.summary && !existing.summary.includes(e.summary)) {
       existing.summary = existing.summary ? `${existing.summary}\n\n${e.summary}` : e.summary;

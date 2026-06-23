@@ -13,6 +13,7 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { EventEmitter } from 'events';
 import { CLIAgentOrchestrator, CLIAgentOptions } from '../../src/cli-agents.js';
+import { getProvider } from '../../src/cli-adapters/index.js';
 import { spawn } from 'child_process';
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -178,6 +179,40 @@ describe('CLI Provider Command Construction', () => {
       expect(result.env.BRUTALIST_SUBPROCESS).toBe('1');
     });
 
+    it('should route a named Claude client through custom endpoint env without inheriting process auth', async () => {
+      const origOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      const origToken = process.env.GLM_AUTH_TOKEN;
+      try {
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = 'native-oauth';
+        process.env.GLM_AUTH_TOKEN = 'glm-token';
+        const result = await buildCommand('claude', {
+          activeClient: {
+            id: 'glm',
+            provider: 'claude',
+            baseUrl: 'https://glm.example/api/anthropic',
+            authTokenEnv: 'GLM_AUTH_TOKEN',
+            model: 'glm-5.1',
+            smallFastModel: 'glm-4.5-air',
+            configDir: '/tmp/brutalist-glm-claude',
+            includeProcessAuth: false,
+          },
+        });
+        expect(result.env.ANTHROPIC_BASE_URL).toBe('https://glm.example/api/anthropic');
+        expect(result.env.ANTHROPIC_AUTH_TOKEN).toBe('glm-token');
+        expect(result.env.ANTHROPIC_MODEL).toBe('glm-5.1');
+        expect(result.env.ANTHROPIC_SMALL_FAST_MODEL).toBe('glm-4.5-air');
+        expect(result.env.CLAUDE_CONFIG_DIR).toBe('/tmp/brutalist-glm-claude');
+        expect(result.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+        const modelIdx = result.args.indexOf('--model');
+        expect(result.args[modelIdx + 1]).toBe('glm-5.1');
+      } finally {
+        if (origOauth === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+        else process.env.CLAUDE_CODE_OAUTH_TOKEN = origOauth;
+        if (origToken === undefined) delete process.env.GLM_AUTH_TOKEN;
+        else process.env.GLM_AUTH_TOKEN = origToken;
+      }
+    });
+
     it('should clean up MPC env vars when MCP is NOT enabled', async () => {
       // Set env vars that should be cleaned
       process.env.CLAUDE_MCP_CONFIG = 'test';
@@ -314,6 +349,32 @@ describe('CLI Provider Command Construction', () => {
       const prompt = findPromptArg(result.args);
       expect(prompt).not.toContain('defensive pre-merge code review');
       expect(prompt).toContain('Analyze this idea');
+    });
+
+    it('passes a model pin via the native --model flag (1.0.10+), not the legacy settings.json swap', async () => {
+      const result = await buildAgy(DIFF_PROMPT, {
+        workingDirectory: '/work/repo',
+        models: { agy: 'Claude Opus 4.6 (Thinking)' },
+      });
+      const i = result.args.indexOf('--model');
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(result.args[i + 1]).toBe('Claude Opus 4.6 (Thinking)');
+      // Legacy env-swap pin is gone.
+      expect(result.env.BRUTALIST_AGY_MODEL_PIN).toBeUndefined();
+    });
+
+    it('freezes the agy binary version (AGY_CLI_DISABLE_AUTO_UPDATE) with or without a pin', async () => {
+      const pinned = await buildAgy(DIFF_PROMPT, { workingDirectory: '/work/repo', models: { agy: 'Gemini 3.5 Flash (High)' } });
+      const plain = await buildAgy(DIFF_PROMPT, { workingDirectory: '/work/repo' });
+      expect(pinned.env.AGY_CLI_DISABLE_AUTO_UPDATE).toBe('1');
+      expect(plain.env.AGY_CLI_DISABLE_AUTO_UPDATE).toBe('1');
+      expect(plain.args).not.toContain('--model');
+    });
+
+    it('exposes a fail-fast per-provider timeout ceiling (agy only; claude/codex use the global)', () => {
+      expect(getProvider('agy').getConfig().maxTimeoutMs).toBe(360_000);
+      expect(getProvider('claude').getConfig().maxTimeoutMs).toBeUndefined();
+      expect(getProvider('codex').getConfig().maxTimeoutMs).toBeUndefined();
     });
 
     // ARG_MAX guard. agy --print can only take the prompt on argv (no stdin),

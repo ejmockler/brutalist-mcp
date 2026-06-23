@@ -2,6 +2,7 @@ import { spawn, exec } from 'child_process';
 import { promises as fs, realpathSync, readFileSync } from 'fs';
 import { promisify } from 'util';
 import path from 'path';
+import os from 'os';
 import { logger } from './logger.js';
 import type { StructuredLogger } from './logger.js';
 import { CLIAgentResponse } from './types/brutalist.js';
@@ -9,6 +10,16 @@ import { ModelResolver } from './model-resolver.js';
 import { cleanupTempConfig } from './mcp-registry.js';
 import { getProvider, parseNDJSON } from './cli-adapters/index.js';
 import type { CLIName } from './cli-adapters/index.js';
+import {
+  classifyRouting,
+  isRoutedClient,
+  isReservedCustomClientId,
+  ROUTING_FIELDS,
+} from './cli-adapters/routing.js';
+// Re-export the routing predicates that used to live here (consumers + tests
+// import them from cli-agents); the defs moved to the leaf module to break the
+// cli-agents ↔ cli-adapters value cycle.
+export { classifyRouting, isRoutedClient };
 import { AGY_BINARY } from './cli-adapters/agy-adapter.js';
 import type { MetricsRegistry } from './metrics/index.js';
 import { CLI_SPAWN_LABELS, safeMetric } from './metrics/index.js';
@@ -37,6 +48,221 @@ interface ChildProcessError extends Error {
   code?: number;
   stdout?: string;
   stderr?: string;
+}
+
+/**
+ * Sanitize a caller-supplied client id into a stable attribution key.
+ *
+ * CONTRACT — the CORE transform (trim → slice(0,80) → replace
+ * /[^a-zA-Z0-9._:-]/g with '-') MUST stay byte-for-byte identical to
+ * packages/github-action/src/index.ts's sanitizeClientId. The end-to-end
+ * attribution depends on it: the action sanitizes the id into both
+ * knownClientIds AND BRUTALIST_CLAUDE_CLIENTS[].id, the mcp-server (here)
+ * re-sanitizes and emits it, and the orchestrator clamps the emitted id
+ * against the known set. Any divergence in the CORE transform silently
+ * breaks clientId attribution. The two implementations intentionally
+ * differ ONLY in the empty-result fallback (mcp-server → 'client',
+ * action → 'custom-claude'); a characterization test in BOTH packages
+ * pins the shared transform table so drift breaks a test.
+ */
+export function sanitizeClientId(id: string): string {
+  const bounded = id.trim().slice(0, 80);
+  const sanitized = bounded.replace(/[^a-zA-Z0-9._:-]/g, '-');
+  return sanitized || 'client';
+}
+
+/**
+ * Make a value safe to embed in a BRUTALIST_CLI_* HTML-comment marker.
+ * A literal `-->` (or a CR/LF) in `model`/`error` would close the comment
+ * early and corrupt the marker stream the orchestrator brain parses. We
+ * neutralize `-->` (the only ASCII close-comment sequence) and collapse
+ * any newline/CR run to a single space. Otherwise lossless — normal text
+ * is untouched.
+ */
+function sanitizeMarkerField(value: string): string {
+  return value.replace(/-->/g, '--&gt;').replace(/"/g, '&quot;').replace(/[\r\n]+/g, ' ');
+}
+
+/**
+ * Cap on custom Claude clients accepted from the BRUTALIST_CLAUDE_CLIENTS env
+ * array — parity with the roast `clients[]` schema cap (tool-config.ts
+ * `.max(16)`) and the GitHub Action's MAX_CUSTOM_CLAUDE_CLIENTS. Guards against
+ * a runaway operator-supplied array spawning an unbounded number of processes.
+ */
+export const MAX_CLAUDE_CLIENTS = 16;
+
+export function parseDefaultClientsFromEnv(log: StructuredLogger): CLIClientSpec[] {
+  const raw = process.env.BRUTALIST_CLAUDE_CLIENTS;
+  if (!raw || !raw.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      log.warn('Ignoring BRUTALIST_CLAUDE_CLIENTS because it is not a JSON array');
+      return [];
+    }
+    const clients: CLIClientSpec[] = [];
+    for (const value of parsed) {
+      if (!value || typeof value !== 'object') continue;
+      const candidate = value as Partial<CLIClientSpec>;
+      if (typeof candidate.id !== 'string' || !candidate.id.trim()) continue;
+      const provider = candidate.provider ?? 'claude';
+      if (!['claude', 'codex', 'agy'].includes(provider)) continue;
+      // C2 (env path): custom-endpoint routing is claude-only. The Zod
+      // schema fails-fast for the tool-arg path; here (raw operator JSON,
+      // no user to return an error to) we warn-and-strip the offending
+      // entry rather than silently honoring fields the adapter ignores.
+      if (
+        provider !== 'claude' &&
+        ROUTING_FIELDS.some((f) => (candidate as Record<string, unknown>)[f] !== undefined)
+      ) {
+        log.warn(
+          'Dropping non-claude BRUTALIST_CLAUDE_CLIENTS entry carrying claude-only routing fields',
+          { id: candidate.id, provider },
+        );
+        continue;
+      }
+      const sanitizedId = sanitizeClientId(candidate.id);
+      if (isReservedCustomClientId(sanitizedId)) {
+        log.warn(
+          'Dropping BRUTALIST_CLAUDE_CLIENTS entry: id collides with a native CLI name or is path-unsafe',
+          { id: candidate.id, sanitized: sanitizedId },
+        );
+        continue;
+      }
+      // Validate string field types before trusting the cast (operator JSON).
+      const badField = (['baseUrl', 'authToken', 'authTokenEnv', 'model', 'smallFastModel', 'configDir'] as const)
+        .find((f) => candidate[f] !== undefined && typeof candidate[f] !== 'string');
+      if (badField) {
+        log.warn('Dropping BRUTALIST_CLAUDE_CLIENTS entry: non-string field', { id: candidate.id, field: badField });
+        continue;
+      }
+      clients.push({
+        ...candidate,
+        id: sanitizedId,
+        provider,
+      } as CLIClientSpec);
+    }
+    if (clients.length > MAX_CLAUDE_CLIENTS) {
+      log.warn(
+        `BRUTALIST_CLAUDE_CLIENTS has ${clients.length} entries; capping to ${MAX_CLAUDE_CLIENTS}.`,
+      );
+      return clients.slice(0, MAX_CLAUDE_CLIENTS);
+    }
+    return clients;
+  } catch (error) {
+    log.warn('Ignoring invalid BRUTALIST_CLAUDE_CLIENTS JSON', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
+// Custom-endpoint routing fields that are only meaningful for the claude
+// provider (the claude binary is the only Anthropic-API gateway client).
+// Used to fail-fast (schema) / warn-and-strip (env) for codex/agy clients.
+/** Per-client isolated CLAUDE_CONFIG_DIR under the user's home. */
+function defaultConfigDirFor(id: string): string {
+  return path.join(os.homedir(), '.brutalist', 'claude-clients', sanitizeClientId(id));
+}
+
+function resolveClientAuthToken(
+  c: CLIClientSpec,
+  procEnv: NodeJS.ProcessEnv,
+): string | undefined {
+  if (c.authToken) return c.authToken;
+  if (c.authTokenEnv) return procEnv[c.authTokenEnv];
+  return undefined;
+}
+
+/**
+ * Resolve a raw client spec into a normalized spec the claude adapter can
+ * consume branchlessly. Stamps routingMode + the auth-inheritance,
+ * small-fast-model, and config-dir decisions ONCE, so every consumer (the
+ * adapter env overlay, the pre-flight probe, and config-dir provisioning)
+ * shares a single source of truth. Non-claude providers pass through
+ * untouched; the function is idempotent for them.
+ */
+export function normalizeClaudeClient(
+  c: CLIClientSpec,
+  procEnv: NodeJS.ProcessEnv,
+  log: StructuredLogger,
+): CLIClientSpec {
+  if (c.provider !== 'claude') return c;
+  if (classifyRouting(c) === 'native') {
+    return { ...c, routingMode: 'native', inheritNativeAuth: true };
+  }
+  // Routed: isolated by default. Native auth only on explicit opt-in.
+  const inheritNativeAuth = c.includeProcessAuth === true;
+  const resolvedAuthToken = resolveClientAuthToken(c, procEnv);
+  if (!resolvedAuthToken && !inheritNativeAuth) {
+    log.warn(
+      'Routed Claude client has no auth token (authToken/authTokenEnv unset, includeProcessAuth!==true)',
+      { clientId: c.id },
+    );
+  }
+  return {
+    ...c,
+    routingMode: 'routed',
+    inheritNativeAuth,
+    resolvedAuthToken,
+    // A3: never fall through to Claude's built-in haiku small-fast model
+    // name on a gateway that doesn't know it.
+    resolvedSmallFastModel: c.smallFastModel ?? c.model,
+    // A4: isolate state so concurrent claude processes never contend on
+    // the shared ~/.claude dir.
+    resolvedConfigDir: c.configDir ?? defaultConfigDirFor(c.id),
+  };
+}
+
+/**
+ * Pre-flight a routed Claude client's gateway: is the endpoint reachable
+ * and does the token authenticate? A read-only GET to <baseUrl>/v1/models,
+ * bounded by CLI_CHECK_TIMEOUT. Diff content is NEVER sent. Converts a
+ * dead/401 gateway from a full per-critic-timeout silent failure into an
+ * immediate attributed error (D1). Never throws into the panel. A non-
+ * auth HTTP response (incl. 404 from a gateway lacking /v1/models) counts
+ * as reachable so we don't false-fail a working endpoint.
+ */
+async function preflightRoutedClient(
+  client: CLIClientSpec,
+  log: StructuredLogger,
+): Promise<{ ok: true } | { ok: false; reason: 'auth' | 'unreachable' | 'unknown'; detail: string }> {
+  // Routed only via includeProcessAuth:false (no endpoint) — nothing to probe.
+  if (!client.baseUrl) return { ok: true };
+  // Feature-detect fetch + AbortSignal.timeout (Node 18+ / 17.3+). On an
+  // older runtime, skip the probe rather than let a missing global be caught
+  // below and masquerade as an 'unreachable' gateway (which would falsely
+  // kill every routed client). The real spawn still runs.
+  if (typeof fetch !== 'function' || typeof (AbortSignal as { timeout?: unknown })?.timeout !== 'function') {
+    return { ok: true };
+  }
+  const token = client.resolvedAuthToken ?? resolveClientAuthToken(client, process.env);
+  const url = `${client.baseUrl.replace(/\/+$/, '')}/v1/models`;
+  try {
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+      headers['x-api-key'] = token;
+    }
+    const res = await fetch(url, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(CLI_CHECK_TIMEOUT),
+    });
+    // Only treat 401/403 as a real auth failure when we actually PRESENTED a
+    // token. A client inheriting native auth (includeProcessAuth, no typed
+    // token) sends no header here, so a 401 just means "endpoint wants auth
+    // we didn't probe with" — not a failure; the real spawn authenticates via
+    // the inherited credential / CLAUDE_CONFIG_DIR.
+    if (token && (res.status === 401 || res.status === 403)) {
+      return { ok: false, reason: 'auth', detail: `gateway returned ${res.status}` };
+    }
+    return { ok: true };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    log.warn('Routed client pre-flight probe failed', { clientId: client.id, error: msg });
+    return { ok: false, reason: 'unreachable', detail: msg };
+  }
 }
 
 export type BrutalistPromptType =
@@ -540,6 +766,8 @@ export interface CLIAgentOptions {
   workingDirectory?: string;
   timeout?: number;
   clis?: ('claude' | 'codex' | 'agy')[];
+  clients?: CLIClientSpec[];
+  activeClient?: CLIClientSpec;
   analysisType?: BrutalistPromptType;
   models?: {
     claude?: string;
@@ -561,6 +789,40 @@ export interface CLIAgentOptions {
    * cli-adapters/index.ts.
    */
   log?: StructuredLogger;
+}
+
+export interface CLIClientSpec {
+  id: string;
+  provider: 'claude' | 'codex' | 'agy';
+  model?: string;
+  smallFastModel?: string;
+  baseUrl?: string;
+  authToken?: string;
+  authTokenEnv?: string;
+  configDir?: string;
+  env?: Record<string, string>;
+  includeProcessAuth?: boolean;
+  /**
+   * Tool/sandbox containment for a Claude-provider client. 'hardened'
+   * (the default for any routed client) additionally denies WebFetch,
+   * WebSearch, and all MCP servers — the routed model decides tool calls
+   * under bypassPermissions, so a third-party gateway must not get web
+   * egress. 'standard' restores the native tool surface (only for an
+   * endpoint you fully trust).
+   */
+  containment?: 'hardened' | 'standard';
+  workingDirectory?: string;
+  timeout?: number;
+  mcpServers?: string[];
+  // Resolved routing fields — populated by normalizeClaudeClient(). The
+  // claude adapter trusts these and does not recompute them. They are
+  // absent on raw (un-normalized) specs, where the adapter falls back to
+  // classifyRouting().
+  routingMode?: 'native' | 'routed';
+  inheritNativeAuth?: boolean;
+  resolvedAuthToken?: string;
+  resolvedSmallFastModel?: string;
+  resolvedConfigDir?: string;
 }
 
 /**
@@ -888,8 +1150,20 @@ export class CLIAgentOrchestrator {
     commandBuilder: (userPrompt: string, systemPromptSpec: string, options: CLIAgentOptions) => Promise<{ command: string; args: string[]; env?: Record<string, string>; input?: string; tempMcpConfigPath?: string; tempPromptPath?: string; model?: string }>
   ): Promise<CLIAgentResponse> {
     const startTime = Date.now();
-    const workingDir = options.workingDirectory || this.defaultWorkingDir;
-    const timeout = options.timeout || this.defaultTimeout;
+    const client = options.activeClient;
+    const clientId = client?.id;
+    const workingDir = client?.workingDirectory || options.workingDirectory || this.defaultWorkingDir;
+    let timeout = client?.timeout || options.timeout || this.defaultTimeout;
+    // Per-provider fail-fast ceiling: a provider (agy) may cap its spawn timeout
+    // below the global so a stall fails fast instead of burning BRUTALIST_TIMEOUT.
+    const providerMaxTimeout = getProvider(cliName).getConfig().maxTimeoutMs;
+    if (providerMaxTimeout && providerMaxTimeout < timeout) {
+      this.emitLog().info(`⏱️ Capping ${cliName} timeout to its adapter ceiling`, {
+        fromMs: timeout,
+        toMs: providerMaxTimeout,
+      });
+      timeout = providerMaxTimeout;
+    }
     let tempMcpConfigPath: string | undefined;
     // Hoisted so the catch branch can read `built?.model` for response
     // attribution. Undefined when commandBuilder itself threw before
@@ -912,7 +1186,7 @@ export class CLIAgentOrchestrator {
     let spawned = false;
 
     try {
-      this.emitLog().info(`🤖 Executing ${cliName.toUpperCase()} CLI`);
+      this.emitLog().info(`🤖 Executing ${clientId ? `${clientId} (${cliName.toUpperCase()})` : `${cliName.toUpperCase()} CLI`}`);
       this.emitLog().debug(`${cliName.toUpperCase()} prompt`, { promptLength: userPrompt.length });
 
       // Emit agent start event
@@ -939,8 +1213,12 @@ export class CLIAgentOrchestrator {
       // prompt). Log only bounded metadata — cliName for provider
       // identification, argCount for diagnostic shape, and
       // hasMcpConfig so operators can correlate MCP-enabled spawns
-      // with MCP registry entries.
-      const hasMcpConfig = !!(options.mcpServers && options.mcpServers.length > 0);
+      // with MCP registry entries. Derive it from what the adapter
+      // ACTUALLY wired (`tempMcpConfigPath`, set only when an
+      // --mcp-config was emitted) rather than from raw options: a
+      // hardened routed client invoked WITH mcpServers gets NO
+      // --mcp-config, and logging hasMcpConfig:true there would mislead.
+      const hasMcpConfig = tempMcpConfigPath !== undefined;
       this.emitLog().info('CLI spawn preparing', {
         cliName,
         argCount: args.length,
@@ -1043,6 +1321,35 @@ export class CLIAgentOrchestrator {
 
         return {
           agent: cliName,
+          clientId,
+          success: false,
+          output: '',
+          error: errorMsg,
+          executionTime: Date.now() - startTime,
+          command: `(redacted command for ${cliName})`,
+          workingDirectory: workingDir,
+          exitCode: 0,
+          model: built?.model
+        };
+      }
+
+      if (decoded.kind === 'error' && decoded.detail === 'model') {
+        // A routed gateway rejected the requested model (unknown/unsupported).
+        // This is a config defect, not analysis output — surface it as an
+        // attributed failure (D5) instead of passing the raw error envelope
+        // through as a "successful" critique.
+        const errorMsg = `${cliName.toUpperCase()} model not available at the configured endpoint (unknown/unsupported model).`;
+        this.emitLog().warn(`⚠️ ${errorMsg}`, { clientId });
+        const modelErrLabels: Record<(typeof CLI_SPAWN_LABELS)[number], string> = {
+          provider,
+          outcome: 'refused',
+        };
+        safeMetric(this.emitLog(), 'cliSpawnTotal.inc(refused:model)', () => {
+          this.metrics?.cliSpawnTotal.inc(modelErrLabels, 1);
+        });
+        return {
+          agent: cliName,
+          clientId,
           success: false,
           output: '',
           error: errorMsg,
@@ -1085,6 +1392,7 @@ export class CLIAgentOrchestrator {
 
       return {
         agent: cliName,
+        clientId,
         success: true,
         output: finalOutput,
         error: stderr || undefined,
@@ -1213,6 +1521,7 @@ export class CLIAgentOrchestrator {
 
       return {
         agent: cliName,
+        clientId,
         success: false,
         output: '',
         error: errorMsg,
@@ -1426,11 +1735,25 @@ export class CLIAgentOrchestrator {
     
     const userPrompt = this.constructUserPrompt(analysisType, primaryContent, context);
 
-    // Determine which CLIs to use
-    let clisToUse: ('claude' | 'codex' | 'agy')[];
+    const explicitClients = options.clients && options.clients.length > 0
+      ? options.clients.map((client) => {
+          const id = sanitizeClientId(client.id);
+          if (isReservedCustomClientId(id)) {
+            throw new Error(
+              `Invalid custom client id "${client.id}": collides with a native CLI name (claude/codex/agy) or is path-unsafe ('.'/'..').`,
+            );
+          }
+          return { ...client, id };
+        })
+      : undefined;
+    const envClients = explicitClients ? [] : parseDefaultClientsFromEnv(this.emitLog());
 
-    if (options.clis && options.clis.length > 0) {
-      // User specified which CLIs to use - validate they're available
+    // C1: native critic selection is computed INDEPENDENTLY of clients[].
+    // clients[] is ADDITIVE — to run only the named clients, pass an
+    // explicit empty clis:[]. Omitting clis => all available native CLIs.
+    let clisToUse: ('claude' | 'codex' | 'agy')[];
+    if (options.clis) {
+      // Explicit (possibly empty) native selection — validate availability.
       const unavailable = options.clis.filter(cli => !this.cliContext.availableCLIs.includes(cli));
       if (unavailable.length > 0) {
         throw new Error(
@@ -1438,26 +1761,105 @@ export class CLIAgentOrchestrator {
           `Available: ${this.cliContext.availableCLIs.join(', ')}`
         );
       }
-      // Deduplicate
       clisToUse = [...new Set(options.clis)];
-      this.emitLog().info(`🎯 Using user-specified CLIs: ${clisToUse.join(', ')}`);
     } else {
-      // Default: use all available CLIs
       clisToUse = [...this.cliContext.availableCLIs];
-      this.emitLog().info(`📋 Using all available CLIs: ${clisToUse.join(', ')}`);
     }
 
-    if (clisToUse.length === 0) {
+    const executionSpecs: CLIClientSpec[] = [
+      ...clisToUse.map((cli) => ({ id: cli, provider: cli } as CLIClientSpec)),
+      ...(explicitClients ?? []),
+      ...envClients,
+    ];
+
+    // C4: dedup by id, keep-first. Guards against a routed client
+    // impersonating a native one (e.g. {id:'claude', baseUrl:...}) — the
+    // real native critic wins and the duplicate is dropped.
+    const seenIds = new Set<string>();
+    const dedupedSpecs = executionSpecs.filter((s) => {
+      if (seenIds.has(s.id)) {
+        this.emitLog().warn(`Dropping duplicate CLI client id: ${s.id}`);
+        return false;
+      }
+      seenIds.add(s.id);
+      return true;
+    });
+
+    const unavailableClients = dedupedSpecs.filter(
+      (client) => !this.cliContext.availableCLIs.includes(client.provider)
+    );
+    if (unavailableClients.length > 0) {
+      throw new Error(
+        `Requested CLI clients not available: ${unavailableClients.map(c => `${c.id} (${c.provider})`).join(', ')}. ` +
+        `Available: ${this.cliContext.availableCLIs.join(', ')}`
+      );
+    }
+
+    if (dedupedSpecs.length === 0) {
       throw new Error('No CLI agents available for analysis');
     }
 
-    const selectionMethod = options.clis ? 'user-specified' : 'all-available';
-    this.emitLog().info(`📊 Executing ${clisToUse.length} CLI(s): ${clisToUse.join(', ')} (${selectionMethod})`);
+    // Validate per-client working directories: an external spec can override
+    // options.workingDirectory (validated above), and the override reaches the
+    // spawn path — so each must pass the same path check before normalization.
+    for (const spec of dedupedSpecs) {
+      if (spec.workingDirectory) {
+        await asyncValidatePath(spec.workingDirectory, `clients[${spec.id}].workingDirectory`);
+      }
+    }
+
+    // A4: normalize routing once (auth isolation, small-fast-model, config
+    // dir) and provision per-client isolated config dirs so concurrent
+    // claude processes never contend on the shared ~/.claude state.
+    const normalizedSpecs = dedupedSpecs.map((s) => normalizeClaudeClient(s, process.env, this.emitLog()));
+    await Promise.all(
+      normalizedSpecs
+        .filter((s) => s.routingMode === 'routed' && s.resolvedConfigDir && !s.configDir)
+        .map((s) => fs.mkdir(s.resolvedConfigDir!, { recursive: true, mode: 0o700 }).catch((e) =>
+          this.emitLog().warn('Failed to provision client configDir', { clientId: s.id, error: String(e) })
+        ))
+    );
+
+    const selectionMethod = explicitClients ? 'client-specified' : (options.clis ? 'user-specified' : 'all-available');
+
+    // D1: pre-flight routed clients (reachability + auth) so a dead/401
+    // gateway fails fast WITH attribution instead of burning the full
+    // per-critic timeout — which in the action would repeat per diff chunk.
+    const probes = await Promise.all(
+      normalizedSpecs
+        .filter((s) => isRoutedClient(s))
+        .map(async (s) => ({ s, result: await preflightRoutedClient(s, this.emitLog()) }))
+    );
+    const deadProbes = probes.filter((p) => !p.result.ok);
+    const deadIds = new Set(deadProbes.map((p) => p.s.id));
+    const liveSpecs = normalizedSpecs.filter((s) => !deadIds.has(s.id));
+    const preflightFailures: CLIAgentResponse[] = deadProbes.map(({ s, result }) => ({
+      agent: s.provider,
+      clientId: s.id,
+      success: false,
+      output: '',
+      error: `pre-flight ${(result as { reason: string; detail: string }).reason}: ${(result as { detail: string }).detail}`,
+      executionTime: 0,
+      selectionMethod,
+      analysisType,
+    } as CLIAgentResponse));
+    if (deadProbes.length > 0) {
+      this.emitLog().warn(`⚠️ ${deadProbes.length} routed client(s) failed pre-flight: ${deadProbes.map(p => p.s.id).join(', ')}`);
+    }
+
+    this.emitLog().info(`📊 Executing ${liveSpecs.length} CLI client(s): ${liveSpecs.map(c => `${c.id}:${c.provider}`).join(', ')} (${selectionMethod})`);
 
     // Execute selected CLIs in parallel with allSettled for better error handling
-    const promises = clisToUse.map(async (cli) => {
+    const promises = liveSpecs.map(async (client) => {
+      const cli = client.provider;
       try {
-        const response = await this.executeSingleCLI(cli, userPrompt, systemPromptSpec, options);
+        const response = await this.executeSingleCLI(cli, userPrompt, systemPromptSpec, {
+          ...options,
+          activeClient: client,
+          workingDirectory: client.workingDirectory || options.workingDirectory,
+          timeout: client.timeout || options.timeout,
+          mcpServers: client.mcpServers || options.mcpServers,
+        });
         return {
           ...response,
           selectionMethod,
@@ -1467,6 +1869,7 @@ export class CLIAgentOrchestrator {
         this.emitLog().error(`❌ ${cli} execution failed:`, error);
         return {
           agent: cli,
+          clientId: client.id,
           success: false,
           output: '',
           error: error instanceof Error ? error.message : String(error),
@@ -1483,18 +1886,47 @@ export class CLIAgentOrchestrator {
       .filter(result => result.status === 'fulfilled')
       .map(result => (result as PromiseFulfilledResult<CLIAgentResponse>).value);
 
-    this.emitLog().info(`✅ CLI analysis complete: ${responses.filter(r => r.success).length}/${responses.length} successful`);
-    
-    return responses;
+    // Surface pre-flight failures as attributed failed critics alongside
+    // the live runs so the orchestrator/summary names the dead client.
+    const allResponses = [...responses, ...preflightFailures];
+
+    this.emitLog().info(`✅ CLI analysis complete: ${allResponses.filter(r => r.success).length}/${allResponses.length} successful`);
+
+    return allResponses;
   }
 
+
+  /**
+   * Render the per-critic failure blocks shared by the all-failed and
+   * partial-failure synthesis paths. Emits the canonical
+   * BRUTALIST_CLI_BEGIN / optional BRUTALIST_CLI_CLIENT / END markers so a
+   * failure is attributed to its named client — a lone GLM failure must not
+   * read as bare CLAUDE (D4) — and shows "glm (CLAUDE)" only when the client
+   * id differs from the provider (no redundant "claude (CLAUDE)").
+   */
+  private renderFailedCriticBlocks(failed: CLIAgentResponse[]): string {
+    return failed.map(r => {
+      const model = sanitizeMarkerField(r.model ?? '');
+      const clientId = r.clientId ?? r.agent;
+      const display = clientId === r.agent
+        ? r.agent.toUpperCase()
+        : `${clientId} (${r.agent.toUpperCase()})`;
+      let block = `<!-- BRUTALIST_CLI_BEGIN cli="${r.agent}" model="${model}" exec_ms="${r.executionTime}" success="false" -->\n`;
+      if (clientId !== r.agent) {
+        block += `<!-- BRUTALIST_CLI_CLIENT id="${clientId}" -->\n`;
+      }
+      block += `- **${display}**: ${sanitizeMarkerField(r.error ?? '')}\n`;
+      block += `<!-- BRUTALIST_CLI_END cli="${r.agent}" -->\n`;
+      return block;
+    }).join('');
+  }
 
   synthesizeBrutalistFeedback(responses: CLIAgentResponse[], analysisType: string): string {
     const successfulResponses = responses.filter(r => r.success);
     const failedResponses = responses.filter(r => !r.success);
 
     if (successfulResponses.length === 0) {
-      return `# Brutalist Analysis Failed\n\n❌ All CLI agents failed to analyze\n${failedResponses.map(r => `- ${r.agent.toUpperCase()}: ${r.error}`).join('\n')}`;
+      return `# Brutalist Analysis Failed\n\n❌ All CLI agents failed to analyze\n\n${this.renderFailedCriticBlocks(failedResponses)}`.trim();
     }
 
     const noun = successfulResponses.length === 1 ? 'critic' : 'critics';
@@ -1507,9 +1939,16 @@ export class CLIAgentOrchestrator {
     // BEGIN comment (cli, model, exec_ms, success) is the canonical
     // source of truth; the markdown header below it is for human display.
     successfulResponses.forEach((response) => {
-      const model = response.model ?? '';
+      const model = sanitizeMarkerField(response.model ?? '');
+      const clientId = response.clientId ?? response.agent;
       synthesis += `<!-- BRUTALIST_CLI_BEGIN cli="${response.agent}" model="${model}" exec_ms="${response.executionTime}" success="true" -->\n`;
-      synthesis += `### CLI: ${response.agent.toUpperCase()} *(${model || 'default'} · ${response.executionTime}ms)*\n\n`;
+      if (clientId !== response.agent) {
+        synthesis += `<!-- BRUTALIST_CLI_CLIENT id="${clientId}" -->\n`;
+      }
+      const displayName = clientId === response.agent
+        ? response.agent.toUpperCase()
+        : `${clientId} (${response.agent.toUpperCase()})`;
+      synthesis += `### CLI: ${displayName} *(${model || 'default'} · ${response.executionTime}ms)*\n\n`;
       synthesis += response.output;
       synthesis += `\n\n<!-- BRUTALIST_CLI_END cli="${response.agent}" -->\n\n`;
     });
@@ -1518,12 +1957,7 @@ export class CLIAgentOrchestrator {
       synthesis += `## Failed Critics\n`;
       const failNoun = failedResponses.length === 1 ? 'critic' : 'critics';
       synthesis += `${failedResponses.length} ${failNoun} failed to complete their destruction:\n`;
-      failedResponses.forEach(r => {
-        const model = r.model ?? '';
-        synthesis += `<!-- BRUTALIST_CLI_BEGIN cli="${r.agent}" model="${model}" exec_ms="${r.executionTime}" success="false" -->\n`;
-        synthesis += `- **${r.agent.toUpperCase()}**: ${r.error}\n`;
-        synthesis += `<!-- BRUTALIST_CLI_END cli="${r.agent}" -->\n`;
-      });
+      synthesis += this.renderFailedCriticBlocks(failedResponses);
       synthesis += '\n';
     }
 

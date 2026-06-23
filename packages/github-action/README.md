@@ -118,6 +118,20 @@ jobs:
           agy-oauth-token: ${{ secrets.AGY_OAUTH_TOKEN }}
           # Alternative API-key fallback for Codex (mutually exclusive with codex-auth):
           # openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          # Optional additional Claude Code critic routed through a custom endpoint:
+          # custom-claude-client-id: glm
+          # custom-claude-base-url: https://immersivecommons13.tail5da903.ts.net
+          # custom-claude-auth-token: ${{ secrets.GLM_ANTHROPIC_AUTH_TOKEN }}
+          # custom-claude-model: glm-5.1
+          # custom-claude-small-fast-model: glm-4.5-air
+          # Optional: route MANY custom Claude critics at once (JSON array; up to 16).
+          # Additive to the singular custom-claude-* inputs above (they append one
+          # more client; deduped by id, keep-first on collision).
+          # custom-claude-clients: |
+          #   [
+          #     { "id": "glm",  "baseUrl": "https://glm.example/v1",  "authToken": "${{ secrets.GLM_TOKEN }}",  "model": "glm-5.1", "contextWindow": 128000 },
+          #     { "id": "kimi", "baseUrl": "https://kimi.example/v1", "authToken": "${{ secrets.KIMI_TOKEN }}", "model": "kimi-k2", "contextWindow": 200000 }
+          #   ]
           # Defaults:
           # github-token: ${{ github.token }}
           # minimum-severity: low
@@ -143,6 +157,14 @@ Tuning knobs (env on the action's step), useful once you're on a release that su
 | `codex-auth` | no | — | Full contents of `~/.codex/auth.json` for Codex OAuth. Mutually exclusive with `openai-api-key`. |
 | `agy-oauth-token` | no | — | Raw JSON from the macOS keychain `gemini/antigravity` entry (after `go-keyring-base64:` prefix strip + base64-decode). See "Antigravity (agy)" auth section above. |
 | `openai-api-key` | no | — | OpenAI API key for the Codex critic. Fallback when `codex-auth` is absent. |
+| `model` | no | `claude-opus-4-8` | Native Claude Agent SDK brain model. |
+| `claude-critic-model` | no | `model` | Native Claude Code critic model. |
+| `custom-claude-client-id` | no | `custom-claude` | Display id for an additional Claude Code critic routed through a custom endpoint. |
+| `custom-claude-base-url` | no | — | `ANTHROPIC_BASE_URL` for the custom Claude Code critic. |
+| `custom-claude-auth-token` | no | — | Bearer token for `ANTHROPIC_AUTH_TOKEN`; store as a GitHub secret. |
+| `custom-claude-model` | no | — | Model name for the custom Claude Code critic, e.g. `glm-5.1`. |
+| `custom-claude-small-fast-model` | no | — | Optional `ANTHROPIC_SMALL_FAST_MODEL`, e.g. `glm-4.5-air`. |
+| `custom-claude-clients` | no | — | JSON array of N custom Claude-routed critics (each `{id, baseUrl, authToken, model, smallFastModel?, contextWindow?, containment?}`), up to **16**. ADDITIVE to the native critics, and additive to the singular `custom-claude-*` inputs (which append one more client; deduped by id, keep-first on collision). Per-entry tokens go in dedicated env vars (never inlined into the forwarded config); each client is isolated (`~/.brutalist/claude-clients/<id>`, mode `0700`) and hardened (no native creds, no `WebFetch`/`WebSearch`/MCP) by default — set `"containment":"standard"` to restore web/MCP tools. The diff chunker sizes chunks to the smallest participant `contextWindow`. |
 | `working-directory` | no | `.` | Subtree of the repo to focus on. |
 | `minimum-severity` | no | `low` | Inline-comment threshold. One of: `critical`, `high`, `medium`, `low`, `nit`. Lower-severity findings still appear in the summary. |
 

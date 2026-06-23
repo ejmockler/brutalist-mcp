@@ -39679,6 +39679,9 @@ const SeveritySchema = schemas_enum(['critical', 'high', 'medium', 'low', 'nit']
 const SideSchema = schemas_enum(['RIGHT', 'LEFT', 'FILE']);
 const FindingSchema = object({
     cli: CliNameSchema.describe('Which CLI critic emitted the underlying observation. Surfaced in the PR comment as a badge.'),
+    clientId: schemas_string()
+        .optional()
+        .describe('Optional named client id when multiple clients share one CLI provider, e.g. glm over Claude Code.'),
     path: schemas_string()
         .min(1)
         .describe('Repo-relative path to the file the finding is about.'),
@@ -39708,6 +39711,9 @@ const FindingSchema = object({
 });
 const CliBreakdownSchema = object({
     cli: CliNameSchema,
+    clientId: schemas_string()
+        .optional()
+        .describe('Optional named client id when multiple clients share one CLI provider.'),
     success: schemas_boolean(),
     model: schemas_string()
         .optional()
@@ -39767,11 +39773,13 @@ You do NOT have access to \`mcp__brutalist__roast_cli_debate\`. Don't try to cal
 2. For each roast response, **follow pagination to completion before parsing**. Brutalist auto-paginates responses above ~25k tokens; the first chunk you receive may end mid-CLI-section, leaving \`<!-- BRUTALIST_CLI_BEGIN ... -->\` without its closing \`<!-- BRUTALIST_CLI_END ... -->\`. The header line "Pagination Status" and "Continue Reading" appear in the response when more pages exist; read the response's \`context_id\` and re-call \`roast\` with **the SAME \`domain\` and \`target\` as the initial call**, plus \`{ context_id, offset: <next-offset> }\` (and **omit \`resume\`**) until \`hasMore\` is false. \`domain\` and \`target\` are required by the tool schema even on pagination calls — omitting them returns a validation error before the cached page is read. Concatenate the chunks before parsing per-CLI sections. Submitting findings against a partial first page is the same failure mode as fabrication.
 3. For each roast response, parse the per-CLI sections delimited by:
        <!-- BRUTALIST_CLI_BEGIN cli="<name>" model="<model>" exec_ms="<ms>" success="<bool>" -->
+       <!-- BRUTALIST_CLI_CLIENT id="<optional-client-id>" -->
        ... per-CLI critique body ...
        <!-- BRUTALIST_CLI_END cli="<name>" -->
    The metadata in the BEGIN comment is the source of truth for attribution. Do NOT use the visible \`### CLI: ...\` header for parsing — it's for human display only. If a section has a BEGIN but no matching END, the response was truncated — re-paginate before treating that CLI's output as complete.
 4. For each substantive observation in a CLI's section, emit ONE Finding object with:
    - \`cli\`: the cli value from the BEGIN comment.
+   - \`clientId\` (optional): the id from the \`BRUTALIST_CLI_CLIENT\` comment when present.
    - \`path\`: the file path the CLI cited. Resolve relative to the repository root. **For renames, LEFT-side findings must use the PRE-rename path** (the \`a/<path>\` in the diff header); RIGHT-side findings use the POST-rename path (\`b/<path>\`). The adapter keys LEFT by base path and RIGHT by head path — mismatching these silently buckets the finding as unanchored.
    - \`verbatimQuote\`: the exact text the CLI was reacting to. **You must find this string in the actual file via Grep before submitting.** If the CLI claims a quote that doesn't exist in the file, drop the finding (or downgrade to outOfDiff with side="FILE" if the substantive concern still applies).
    - \`lineHint\` (optional): the 1-indexed line number from your Grep match. Adapters will re-verify; this is a hint.
@@ -39782,7 +39790,7 @@ You do NOT have access to \`mcp__brutalist__roast_cli_debate\`. Don't try to cal
    - \`body\`: the full critique. Preserve the brutalist voice — don't sanitize.
    - \`suggestion\` (optional): if the CLI proposed concrete replacement code, supply the replacement text here. Adapters render it as a GitHub suggestion block.
 5. Two CLIs flagging the same line is **two findings**, one per CLI. Cross-CLI grouping happens in the downstream adapter; emit per-CLI normalized.
-6. Build \`perCli\` from the BEGIN-comment metadata for each CLI that participated, even if it produced zero findings (success/exec_ms/model context is valuable for the review summary).
+6. Build \`perCli\` from the BEGIN-comment metadata for each CLI client that participated, even if it produced zero findings (success/exec_ms/model context is valuable for the review summary). If a \`BRUTALIST_CLI_CLIENT\` comment is present after BEGIN, set \`clientId\` to that id and include it in the summary text so native Claude and custom Claude-routed clients remain distinguishable.
 7. Build \`synthesis\` as a 2–4 sentence cross-CLI summary: where the critics agree, where they disagree, and the headline issue. This goes in the review body.
 8. Findings whose path or quote couldn't be resolved against the codebase go in \`outOfDiff\`. Findings whose substantive concern is still actionable but doesn't anchor to a specific changed line also go in \`outOfDiff\` with side="FILE".
 9. Call \`submit_findings\` once with the complete payload. Setting \`schemaVersion: 1\` is mandatory.
@@ -39809,6 +39817,63 @@ You do NOT have access to \`mcp__brutalist__roast_cli_debate\`. Don't try to cal
 You are not posting to GitHub. You are not editing files. You are not summarizing the changes for humans. Your single output is the structured \`submit_findings\` payload. Downstream adapters render it.
 `.trim();
 //# sourceMappingURL=system-prompt.js.map
+;// CONCATENATED MODULE: ../orchestrator/dist/attribution.js
+/**
+ * Client-id normalization for the orchestrator's submit_findings handler.
+ *
+ * The orchestrator brain (Claude Agent SDK) parses brutalist roast output
+ * and emits Finding / CliBreakdown objects whose `clientId` is copied from
+ * prose HTML comments. When multiple independent orchestrator runs process
+ * different diff chunks the brain can hallucinate or drift on the clientId
+ * value. The action provisions the valid set and threads it through here so
+ * every brain-emitted id is clamped before the result is captured.
+ */
+const NATIVE_CLIS = ['claude', 'codex', 'agy'];
+/**
+ * Clamp a brain-emitted clientId to the provisioned set ∪ native cli names.
+ * Absent or clientId===cli => undefined (native); known => kept; unknown =>
+ * undefined (dropped to native).
+ */
+function makeClientIdNormalizer(knownClientIds) {
+    const known = new Set([...(knownClientIds ?? []), ...NATIVE_CLIS]);
+    return (cli, clientId) => !clientId || clientId === cli ? undefined : known.has(clientId) ? clientId : undefined;
+}
+/**
+ * Composite (cli, clientId) key for per-CLI dedup. ` ` cannot appear in a
+ * cli name or a sanitized clientId, so it is a safe separator. MUST stay in
+ * sync with mergePerCli's key in the github-action's chunk-diff.ts (kept as an
+ * independent copy so chunk-diff doesn't import this ESM package).
+ */
+function perCliKey(row) {
+    return `${row.cli} ${row.clientId ?? ''}`;
+}
+/**
+ * Dedupe per-CLI breakdown rows by the (cli, clientId) composite key, keep-first.
+ *
+ * Namespacing by cli (not the bare `clientId ?? cli`) means a custom client
+ * whose clientId equals a DIFFERENT native cli name can't collapse into that
+ * native row. The submit_findings clamp can still collapse a hallucinated
+ * {cli:'claude', clientId:'phantom'} row to {cli:'claude', clientId:undefined},
+ * making it identical to a genuine native {cli:'claude'} row — and a custom row
+ * whose marker the brain OMITTED is indistinguishable from native, so it also
+ * collapses. Neither can be repaired here (the rows are byte-identical), so the
+ * orchestrator surfaces the collapse COUNT as telemetry rather than dropping
+ * attribution silently. The single-chunk action path skips mergePerCli, so this
+ * keeps the single-chunk and multi-chunk paths in agreement.
+ */
+function dedupePerCli(rows) {
+    const seen = new Set();
+    const out = [];
+    for (const row of rows) {
+        const key = perCliKey(row);
+        if (seen.has(key))
+            continue;
+        seen.add(key);
+        out.push(row);
+    }
+    return out;
+}
+//# sourceMappingURL=attribution.js.map
 ;// CONCATENATED MODULE: ../orchestrator/dist/orchestrator.js
 /**
  * Orchestrator entry point.
@@ -39828,6 +39893,7 @@ You are not posting to GitHub. You are not editing files. You are not summarizin
  *   - The agent can't "forget" the contract: the system prompt (#9)
  *     instructs it that the run completes only after submit_findings.
  */
+
 
 
 
@@ -39932,6 +39998,8 @@ async function run(options) {
     // tool's handler writes here; run() reads after query() drains.
     let captured;
     let submitCount = 0;
+    const normalizeClientId = makeClientIdNormalizer(options.knownClientIds);
+    let normalizedClientIds = 0;
     // Path to the temp file holding the PR diff, when one is written (see
     // SAFE_ENV_DIFF_BYTES). Cleaned up in the query finally regardless of
     // outcome. Declared here so it is in scope for that cleanup.
@@ -39963,6 +40031,36 @@ async function run(options) {
         // than silent shape drift. If parse throws, captured stays
         // undefined and the agent can retry with a corrected payload.
         const parsed = OrchestratorResultSchema.parse(args);
+        // Clamp brain-emitted clientIds to the provisioned set ∪ native cli
+        // names. Unknown ids are dropped to native (undefined) so drift and
+        // hallucination in parallel chunk runs don't pollute attribution.
+        const clampClientId = (f) => {
+            const next = normalizeClientId(f.cli, f.clientId);
+            if (f.clientId && next !== f.clientId)
+                normalizedClientIds++;
+            return { ...f, clientId: next };
+        };
+        parsed.findings = parsed.findings.map(clampClientId);
+        parsed.outOfDiff = parsed.outOfDiff.map(clampClientId);
+        parsed.perCli = parsed.perCli.map(clampClientId);
+        // Dedupe perCli by (clientId ?? cli), keep-first. Clamping can collapse a
+        // hallucinated {cli:'claude', clientId:'phantom'} row to
+        // {cli:'claude', clientId:undefined}, which is then byte-identical to a
+        // genuine native {cli:'claude'} row — surfacing two identical native rows
+        // on the single-chunk action path (which skips chunk-diff.ts's
+        // mergePerCli). dedupePerCli mirrors mergePerCli's key so single-chunk and
+        // multi-chunk paths agree. (Extracted so it's unit-testable with static
+        // imports — run() itself needs the SDK-mock dynamic-import seam.)
+        const perCliBeforeDedup = parsed.perCli.length;
+        parsed.perCli = dedupePerCli(parsed.perCli);
+        const perCliCollapsed = perCliBeforeDedup - parsed.perCli.length;
+        if (perCliCollapsed > 0) {
+            // Telemetry: a collapse can be a benign hallucination-dedup OR a real
+            // critic's breakdown being shadowed by native (omitted/colliding
+            // clientId marker). Surface it so attribution loss is never silent.
+            console.warn(`[brutalist] attribution: ${perCliCollapsed} per-CLI row(s) collapsed during dedup ` +
+                `— a routed critic may be shadowing/shadowed by native (omitted or colliding clientId marker).`);
+        }
         // Reject empty payloads as terminal action. A run where the agent
         // failed every roast call but still submitted is operationally
         // identical to "no issues" — that's exactly the wrong signal.
@@ -39990,7 +40088,9 @@ async function run(options) {
             content: [
                 {
                     type: 'text',
-                    text: `Findings submitted: ${captured.findings.length} inline, ${captured.outOfDiff.length} out-of-diff.`,
+                    text: `Findings submitted: ${captured.findings.length} inline, ${captured.outOfDiff.length} out-of-diff.` +
+                        `${normalizedClientIds ? ` (${normalizedClientIds} unknown clientId(s) normalized to native cli.)` : ''}` +
+                        `${perCliCollapsed ? ` (${perCliCollapsed} per-CLI row(s) collapsed during attribution dedup.)` : ''}`,
                 },
             ],
         };
@@ -40420,9 +40520,12 @@ async function runWithConcurrency(items, concurrency, fn) {
 /**
  * Merge per-chunk OrchestratorResults into one. Findings/outOfDiff are
  * concatenated and de-duplicated; perCli is merged per critic (success OR-ed,
- * execution time summed); synthesis is concatenated with chunk labels.
- * Quotes are anchored to file+line downstream, so concatenating across chunks
- * is sound — chunks are disjoint by file/hunk.
+ * execution time is the per-critic MAX across chunks (chunks run in parallel
+ * via chunkConcurrency, so summing overcounts wall-clock; at chunkConcurrency=1
+ * this undercounts total work — an intentional latency-over-cost signal));
+ * synthesis is concatenated with chunk labels. Quotes are anchored to
+ * file+line downstream, so concatenating across chunks is sound — chunks are
+ * disjoint by file/hunk.
  */
 function mergeResults(results) {
     const findings = dedupeFindings(results.flatMap((r) => r.findings));
@@ -40454,7 +40557,7 @@ const FIELD_SEP = String.fromCharCode(0);
 function findingKey(f) {
     // `side` is part of the key: LEFT vs RIGHT on the same line is a distinct
     // finding (matches grouper.ts keying on path::line::side).
-    return [f.cli, f.path, f.side, f.lineHint ?? '', f.verbatimQuote, f.title].join(FIELD_SEP);
+    return [f.clientId ?? f.cli, f.cli, f.path, f.side, f.lineHint ?? '', f.verbatimQuote, f.title].join(FIELD_SEP);
 }
 function dedupeFindings(findings) {
     const seen = new Set();
@@ -40471,13 +40574,16 @@ function dedupeFindings(findings) {
 function mergePerCli(entries) {
     const byCli = new Map();
     for (const e of entries) {
-        const existing = byCli.get(e.cli);
+        // Namespace by (cli, clientId) — MUST match dedupePerCli/perCliKey in the
+        // orchestrator's attribution.ts so single-chunk and multi-chunk agree.
+        const key = `${e.cli} ${e.clientId ?? ''}`;
+        const existing = byCli.get(key);
         if (!existing) {
-            byCli.set(e.cli, { ...e });
+            byCli.set(key, { ...e });
             continue;
         }
         existing.success = existing.success || e.success;
-        existing.executionTimeMs += e.executionTimeMs;
+        existing.executionTimeMs = Math.max(existing.executionTimeMs, e.executionTimeMs);
         if (!existing.model && e.model)
             existing.model = e.model;
         if (e.summary && !existing.summary.includes(e.summary)) {
@@ -40487,11 +40593,107 @@ function mergePerCli(entries) {
     return [...byCli.values()];
 }
 
+;// CONCATENATED MODULE: ./src/custom-claude.ts
+/**
+ * Custom Claude-routed critic provisioning.
+ *
+ * Extracted from index.ts so it is unit-testable WITHOUT importing
+ * @brutalist/orchestrator (whose untransformed ESM jest can't parse, and which
+ * would otherwise force a heavy mock + top-level-await test seam). index.ts
+ * imports the helpers from here; tests import them with plain static imports.
+ */
+
+
+
+
+/**
+ * Sanitize a custom-claude client id into the constrained alphabet used as a
+ * directory name and as the attribution key threaded into knownClientIds AND
+ * BRUTALIST_CLAUDE_CLIENTS[].id.
+ *
+ * ATTRIBUTION CONTRACT — the CORE transform (`id.trim().slice(0, 80)` then
+ * `.replace(/[^a-zA-Z0-9._:-]/g, '-')`) MUST stay byte-for-byte identical to
+ * `sanitizeClientId` in src/cli-agents.ts (the mcp-server side). The action
+ * sanitizes the id here; the mcp-server re-sanitizes the same id and emits it;
+ * the orchestrator clamps brain-emitted ids against this known set. If the two
+ * transforms drift, an id the action provisions can fail to match the id the
+ * mcp-server emits, silently breaking per-client attribution. The ONLY allowed
+ * divergence is the empty-result fallback (here: 'custom-claude'; there:
+ * 'client'). A characterization test in BOTH packages pins this transform so
+ * drift breaks a test.
+ */
+function sanitizeClientId(id) {
+    const bounded = id.trim().slice(0, 80);
+    const sanitized = bounded.replace(/[^a-zA-Z0-9._:-]/g, '-');
+    return sanitized || 'custom-claude';
+}
+/**
+ * Per-client auth-token env var name. Index-based (NOT id-based) because a
+ * sanitized client id may contain '.'/':'/'-' (legal in CLAUDE_CONFIG_DIR
+ * paths + attribution keys per cli-agents.ts) which are ILLEGAL in POSIX env
+ * var names ([A-Za-z0-9_] only). The emitted BRUTALIST_CLAUDE_CLIENTS entry
+ * references this name via authTokenEnv so the raw token is never inlined into
+ * the forwarded config JSON.
+ */
+function customClaudeTokenEnvName(index) {
+    return `BRUTALIST_CUSTOM_CLAUDE_AUTH_TOKEN_${index}`;
+}
+/**
+ * Provision the custom Claude-routed critics (N): for each, set its auth token
+ * in a dedicated index-named env var, mask it (core.setSecret), write a
+ * per-client 0700 config dir, and publish them all in BRUTALIST_CLAUDE_CLIENTS
+ * (token by reference via authTokenEnv — NEVER inlined). Returns the sanitized
+ * knownClientIds (threaded into every per-chunk runOrchestrator; they MUST
+ * equal the ids the mcp-server re-sanitizes and emits) and the token env names.
+ *
+ * Consumes the already-parsed + merged + deduped inputs.customClaudeClients
+ * (inputs.ts owns parse/validate/merge); empty => touches no env, empty result.
+ */
+async function provisionCustomClaudeClient(inputs) {
+    const clients = inputs.customClaudeClients ?? [];
+    if (clients.length === 0) {
+        return { knownClientIds: [], tokenEnvNames: [] };
+    }
+    const knownClientIds = [];
+    const tokenEnvNames = [];
+    const published = [];
+    for (let i = 0; i < clients.length; i++) {
+        const c = clients[i];
+        const tokenEnv = customClaudeTokenEnvName(i);
+        process.env[tokenEnv] = c.authToken;
+        lib_core.setSecret(c.authToken); // mask in any success-path log
+        const clientId = sanitizeClientId(c.id);
+        const configDir = external_node_path_.join(external_node_os_namespaceObject.homedir(), '.brutalist', 'claude-clients', clientId);
+        await external_node_fs_.promises.mkdir(configDir, { recursive: true, mode: 0o700 });
+        const entry = {
+            id: clientId,
+            provider: 'claude',
+            baseUrl: c.baseUrl,
+            authTokenEnv: tokenEnv, // token by reference only — never inlined here
+            model: c.model,
+            configDir,
+            includeProcessAuth: false,
+        };
+        if (c.smallFastModel)
+            entry.smallFastModel = c.smallFastModel;
+        if (c.containment)
+            entry.containment = c.containment;
+        knownClientIds.push(clientId);
+        tokenEnvNames.push(tokenEnv);
+        published.push(entry);
+        lib_core.info(`Custom Claude Code critic enabled: ${clientId} (${c.model}).`);
+    }
+    process.env.BRUTALIST_CLAUDE_CLIENTS = JSON.stringify(published);
+    lib_core.info(`Custom Claude critics provisioned: ${knownClientIds.length}; governing diff-chunk window ${inputs.contextWindowTokens} tok.`);
+    return { knownClientIds, tokenEnvNames };
+}
+
 ;// CONCATENATED MODULE: ./src/inputs.ts
 /**
  * Action input parsing and validation. Fails fast with actionable
  * errors when required inputs are missing or invalid.
  */
+
 
 const SEVERITY_RANK = {
     critical: 4,
@@ -40500,6 +40702,111 @@ const SEVERITY_RANK = {
     low: 1,
     nit: 0,
 };
+/** Max custom Claude-routed critics — matches the roast clients[] schema cap. */
+const MAX_CUSTOM_CLAUDE_CLIENTS = 16;
+/** Native CLI provider names a custom client may not claim. */
+const NATIVE_CLI_IDS = ['claude', 'codex', 'agy'];
+/**
+ * A custom client id is reserved/unsafe if (after sanitization) it collides
+ * with a native CLI name (attribution corruption) or is a path-traversal
+ * basename ('.'/'..') that escapes the per-client `claude-clients/<id>` leaf.
+ */
+function isReservedClientId(rawId) {
+    const id = sanitizeClientId(rawId);
+    return NATIVE_CLI_IDS.includes(id) || id === '.' || id === '..';
+}
+/**
+ * Throw unless `value` is a valid http(s) URL. The scheme MUST be http or
+ * https: this becomes ANTHROPIC_BASE_URL — where the critic's prompt + PR diff
+ * + bearer token are sent — so non-network schemes (file:, data:, ftp:, …) are
+ * an SSRF/exfil footgun and are rejected. https is strongly recommended (http
+ * sends the token in cleartext).
+ */
+function assertUrl(value, label) {
+    let u;
+    try {
+        u = new URL(value);
+    }
+    catch {
+        throw new Error(`${label} must be a valid URL (got "${value}").`);
+    }
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+        throw new Error(`${label} must use http(s); "${u.protocol}" is not allowed.`);
+    }
+}
+const CUSTOM_CLIENT_FIELDS = new Set([
+    'id', 'baseUrl', 'authToken', 'model', 'smallFastModel', 'contextWindow', 'containment',
+]);
+/**
+ * Parse + validate the `custom-claude-clients` input (a JSON array string).
+ * Fails fast with an actionable, entry-indexed error; returns [] for empty.
+ * Does NOT dedup or merge the singular inputs — readInputs() does that.
+ */
+function parseCustomClaudeClients(raw) {
+    const trimmed = raw.trim();
+    if (!trimmed)
+        return [];
+    let parsed;
+    try {
+        parsed = JSON.parse(trimmed);
+    }
+    catch (err) {
+        throw new Error(`custom-claude-clients must be a JSON array, e.g. '[{"id":"glm","baseUrl":"https://glm.gw","authToken":"<secret>","model":"glm-5.1"}]'. Parse error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!Array.isArray(parsed)) {
+        throw new Error('custom-claude-clients must be a JSON array.');
+    }
+    const out = [];
+    parsed.forEach((entry, i) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+            throw new Error(`custom-claude-clients[${i}] must be an object.`);
+        }
+        const e = entry;
+        for (const key of Object.keys(e)) {
+            if (!CUSTOM_CLIENT_FIELDS.has(key)) {
+                throw new Error(`custom-claude-clients[${i}] has unknown field "${key}". Allowed: id, baseUrl, authToken, model, smallFastModel, contextWindow, containment.`);
+            }
+        }
+        const reqStr = (field) => {
+            const v = e[field];
+            if (typeof v !== 'string' || !v.trim()) {
+                throw new Error(`custom-claude-clients[${i}] requires a non-empty string "${field}".`);
+            }
+            return v.trim();
+        };
+        const baseUrl = reqStr('baseUrl');
+        assertUrl(baseUrl, `custom-claude-clients[${i}] "baseUrl"`);
+        const authToken = reqStr('authToken');
+        lib_core.setSecret(authToken); // mask before any later per-entry validation can throw
+        const client = {
+            id: reqStr('id'),
+            baseUrl,
+            authToken,
+            model: reqStr('model'),
+        };
+        if (e.smallFastModel !== undefined) {
+            if (typeof e.smallFastModel !== 'string' || !e.smallFastModel.trim()) {
+                throw new Error(`custom-claude-clients[${i}] "smallFastModel" must be a non-empty string when set.`);
+            }
+            client.smallFastModel = e.smallFastModel.trim();
+        }
+        if (e.contextWindow !== undefined) {
+            const w = e.contextWindow;
+            if (typeof w !== 'number' || !Number.isInteger(w) || w < 10_000 || w > 2_000_000) {
+                throw new Error(`custom-claude-clients[${i}] "contextWindow" must be an integer in [10000, 2000000].`);
+            }
+            client.contextWindow = w;
+        }
+        if (e.containment !== undefined) {
+            if (e.containment !== 'hardened' && e.containment !== 'standard') {
+                throw new Error(`custom-claude-clients[${i}] "containment" must be "hardened" or "standard".`);
+            }
+            client.containment = e.containment;
+        }
+        out.push(client);
+    });
+    return out;
+}
 /**
  * Conservative chars-per-token estimate used to convert the usable token
  * budget into a character budget for splitting. Deliberately LOW: code
@@ -40537,10 +40844,70 @@ function readInputs() {
     // Best model by default. Brain uses this directly; the claude critic picks
     // it up from ~/.claude/settings.json (written by the action before invoke).
     const model = (lib_core.getInput('model') || 'claude-opus-4-8').trim();
+    const claudeCriticModel = (lib_core.getInput('claude-critic-model') || model).trim();
+    const customClaudeBaseUrl = (lib_core.getInput('custom-claude-base-url') || '').trim() || undefined;
+    const customClaudeAuthToken = (lib_core.getInput('custom-claude-auth-token') || '').trim() || undefined;
+    const customClaudeModel = (lib_core.getInput('custom-claude-model') || '').trim() || undefined;
+    const customClaudeSmallFastModel = (lib_core.getInput('custom-claude-small-fast-model') || '').trim() || undefined;
+    const customClaudeClientId = (lib_core.getInput('custom-claude-client-id') || 'custom-claude').trim();
+    if ((customClaudeBaseUrl || customClaudeAuthToken || customClaudeModel || customClaudeSmallFastModel) &&
+        (!customClaudeBaseUrl || !customClaudeAuthToken || !customClaudeModel)) {
+        throw new Error('custom Claude routing requires custom-claude-base-url, custom-claude-auth-token, and custom-claude-model.');
+    }
+    if (customClaudeBaseUrl)
+        assertUrl(customClaudeBaseUrl, 'custom-claude-base-url');
+    const customClaudeContextWindow = lib_core.getInput('custom-claude-context-window')
+        ? parseIntInput('custom-claude-context-window', '0', 10_000, 2_000_000)
+        : undefined;
+    // Merge the plural `custom-claude-clients` JSON array with the singular
+    // custom-claude-* shorthand (the singular trio, if complete, appends ONE
+    // client at the end). Dedup by SANITIZED id (the dir/attribution key), keep-
+    // first — so an explicit plural entry wins over the legacy singular on a
+    // collision. With no plural input, this is exactly [singular] (or []).
+    const pluralClients = parseCustomClaudeClients(lib_core.getInput('custom-claude-clients') || '');
+    const singularClients = customClaudeBaseUrl && customClaudeAuthToken && customClaudeModel
+        ? [{
+                id: customClaudeClientId,
+                baseUrl: customClaudeBaseUrl,
+                authToken: customClaudeAuthToken,
+                model: customClaudeModel,
+                smallFastModel: customClaudeSmallFastModel,
+                contextWindow: customClaudeContextWindow,
+            }]
+        : [];
+    const customClaudeClients = [];
+    const seenClientIds = new Set();
+    for (const c of [...pluralClients, ...singularClients]) {
+        if (isReservedClientId(c.id)) {
+            throw new Error(`Custom Claude client id "${c.id}" collides with a native CLI name (claude/codex/agy) or is path-unsafe ('.'/'..').`);
+        }
+        // Mask EVERY parsed token at the earliest point — before dedup — so a
+        // token dropped on an id collision (which never reaches provisioning) is
+        // still registered with the runner's secret masker.
+        lib_core.setSecret(c.authToken);
+        const key = sanitizeClientId(c.id);
+        if (seenClientIds.has(key)) {
+            lib_core.warning(`Duplicate custom Claude client id "${c.id}" (sanitizes to "${key}") — keeping the first, dropping this one.`);
+            continue;
+        }
+        seenClientIds.add(key);
+        customClaudeClients.push(c);
+    }
+    if (customClaudeClients.length > MAX_CUSTOM_CLAUDE_CLIENTS) {
+        throw new Error(`Too many custom Claude clients: ${customClaudeClients.length} (max ${MAX_CUSTOM_CLAUDE_CLIENTS}).`);
+    }
     // Context-window-aware chunking. The diff is split so each chunk fits the
     // governing (smallest) participant window minus working headroom, letting
-    // every critic — not just the 1M-context ones — review every chunk.
-    const contextWindowTokens = parseIntInput('context-window-tokens', '200000', 10_000, 2_000_000);
+    // every critic — not just the 1M-context ones — review every chunk. Fold
+    // EVERY participating custom client's window into the min (only runnable
+    // clients are in customClaudeClients, so an unused window can't shrink it).
+    const configuredWindow = parseIntInput('context-window-tokens', '200000', 10_000, 2_000_000);
+    const participantWindows = [configuredWindow];
+    for (const c of customClaudeClients) {
+        if (c.contextWindow)
+            participantWindows.push(c.contextWindow);
+    }
+    const contextWindowTokens = Math.min(...participantWindows);
     const contextHeadroomPct = parseIntInput('context-headroom-pct', '40', 0, 90);
     const chunkConcurrency = parseIntInput('chunk-concurrency', '2', 1, 16);
     const usableTokens = Math.floor(contextWindowTokens * (1 - contextHeadroomPct / 100));
@@ -40560,6 +40927,14 @@ function readInputs() {
         minimumSeverity: minimumSeverityRaw,
         maxDiffChars,
         model,
+        claudeCriticModel,
+        customClaudeBaseUrl,
+        customClaudeAuthToken,
+        customClaudeModel,
+        customClaudeSmallFastModel,
+        customClaudeClientId,
+        customClaudeContextWindow,
+        customClaudeClients,
         contextWindowTokens,
         contextHeadroomPct,
         maxChunkChars,
@@ -41398,7 +41773,8 @@ function renderInlineCommentBody(findings, rollup) {
     lines.push(`🪓 **Brutalist** — ${findings.length} ${noun}, rollup: ${SEVERITY_BADGES[rollup]}`);
     lines.push('');
     for (const f of findings) {
-        const cliLabel = CLI_BADGE[f.cli] ?? f.cli;
+        const baseLabel = CLI_BADGE[f.cli] ?? f.cli;
+        const cliLabel = f.clientId && f.clientId !== f.cli ? `${f.clientId} (${baseLabel})` : baseLabel;
         lines.push(`**[${cliLabel} ${SEVERITY_BADGES[f.severity]}]** *${f.category}* — ${f.title}`);
         lines.push('');
         lines.push(f.body.trim());
@@ -41449,6 +41825,10 @@ function bucketOutOfDiff(outOfDiff) {
  * 422s the entire review (not just the offending field).
  */
 const REVIEW_BODY_MAX_CHARS = 60_000;
+function criticLabel(cli, clientId) {
+    const base = CLI_BADGE[cli] ?? cli;
+    return clientId && clientId !== cli ? `${clientId} (${base})` : base;
+}
 function renderReviewSummary(inputs) {
     const { result, groups, outOfDiff, dropped } = inputs;
     const lines = [];
@@ -41480,7 +41860,7 @@ function renderReviewSummary(inputs) {
         lines.push('<summary>Per-CLI breakdown</summary>');
         lines.push('');
         for (const cli of result.perCli) {
-            const label = CLI_BADGE[cli.cli] ?? cli.cli;
+            const label = criticLabel(cli.cli, cli.clientId);
             const status = cli.success ? '✅' : '❌';
             const model = cli.model ? `\`${cli.model}\`` : '`default`';
             lines.push(`### ${status} ${label} (${model}, ${cli.executionTimeMs}ms)`);
@@ -41509,7 +41889,7 @@ function renderReviewSummary(inputs) {
         for (const [category, items] of Object.entries(byCategory)) {
             lines.push(`### ${category}`);
             for (const f of items) {
-                const cli = CLI_BADGE[f.cli] ?? f.cli;
+                const cli = criticLabel(f.cli, f.clientId);
                 const tag = renderProvenance(f.provenance);
                 lines.push(`- ${SEVERITY_BADGES[f.severity]} **\`${f.path}\`** — *${cli}*${tag}: ${f.title}`);
             }
@@ -42081,6 +42461,7 @@ const FILE_PERMS_OWNER_RW = external_node_fs_.constants.S_IRUSR | external_node_
 
 
 
+
 async function main() {
     const inputs = readInputs();
     // Preflight: fail fast with an actionable error if `brutalist-mcp` or
@@ -42110,6 +42491,7 @@ async function main() {
         lib_core.info('Codex critic will authenticate via OAuth.');
     if (provisioned.agyOauth)
         lib_core.info('Agy critic will authenticate via file-based OAuth.');
+    const { knownClientIds } = await provisionCustomClaudeClient(inputs);
     const pull = getPullRequestRef();
     if (!pull) {
         throw new Error('This action runs on pull_request events only. github.context.payload.pull_request was missing.');
@@ -42130,7 +42512,7 @@ async function main() {
     // claude CRITIC (spawned by brutalist-mcp) runs on inputs.model. The brain
     // gets the model directly via runOrchestrator({ model }). Merges with any
     // existing settings so unrelated keys are preserved.
-    await ensureClaudeSettingsModel(inputs.model);
+    await ensureClaudeSettingsModel(inputs.claudeCriticModel);
     // Resolve working-directory against process.cwd(). The runner sets
     // cwd to $GITHUB_WORKSPACE (the checked-out repo root); the input
     // narrows from there. Absolute inputs are honored verbatim; relative
@@ -42163,6 +42545,7 @@ async function main() {
         // which isn't available in the ncc-bundled action runtime.
         claudeCodeExecutablePath: preflight.claude.resolvedPath,
         model: inputs.model,
+        knownClientIds,
     });
     let result;
     if (chunks.length <= 1) {
@@ -42268,6 +42651,13 @@ main().catch((err) => {
     try {
         const i = readInputs();
         secrets = [i.anthropicOauthToken, i.openaiApiKey].filter((s) => typeof s === 'string' && s.length >= 8);
+        // Every custom Claude-routed critic carries its own bearer token; register
+        // them ALL for redaction (the singular custom-claude-auth-token is merged
+        // into customClaudeClients by readInputs, so this covers it too).
+        for (const c of i.customClaudeClients ?? []) {
+            if (typeof c.authToken === 'string' && c.authToken.length >= 8)
+                secrets.push(c.authToken);
+        }
         // Extract individual token fields from each OAuth credential blob
         // so partial echoes (e.g. a CLI logging "Bearer <token>") get
         // masked even when the whole-blob match doesn't fire. Defense in

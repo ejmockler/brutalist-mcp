@@ -180,13 +180,14 @@ describe('mergeResults', () => {
     expect(merged.contextId).toBe('ctx-2');
   });
 
-  it('merges perCli per critic: OR success, sum time, keep first model', () => {
+  it('merges perCli per critic: OR success, MAX time (not sum), keep first model', () => {
     const a: CliBreakdown = { cli: 'codex', success: false, model: 'gpt-5', executionTimeMs: 100, summary: 's1' };
     const b: CliBreakdown = { cli: 'codex', success: true, executionTimeMs: 250, summary: 's2' };
     const merged = mergeResults([result({ perCli: [a] }), result({ perCli: [b] })]);
     expect(merged.perCli.length).toBe(1);
     expect(merged.perCli[0].success).toBe(true);
-    expect(merged.perCli[0].executionTimeMs).toBe(350);
+    // MAX not sum: reflects wall-clock latency when chunks run in parallel.
+    expect(merged.perCli[0].executionTimeMs).toBe(250);
     expect(merged.perCli[0].model).toBe('gpt-5');
   });
 
@@ -225,5 +226,88 @@ describe('runWithConcurrency', () => {
     expect(settled[0]).toMatchObject({ ok: true, value: 1 });
     expect(settled[1].ok).toBe(false);
     expect(settled[2]).toMatchObject({ ok: true, value: 3 });
+  });
+});
+
+// ── mergePerCli executionTimeMs = MAX, not sum ───────────────────────────────
+
+describe('mergePerCli MAX executionTimeMs', () => {
+  it('3 parallel chunks: max(8000,12000,5000) === 12000', () => {
+    const chunk = (ms: number): CliBreakdown => ({
+      cli: 'claude',
+      success: true,
+      executionTimeMs: ms,
+      summary: `run ${ms}ms`,
+    });
+    const merged = mergeResults([
+      result({ perCli: [chunk(8000)] }),
+      result({ perCli: [chunk(12000)] }),
+      result({ perCli: [chunk(5000)] }),
+    ]);
+    expect(merged.perCli).toHaveLength(1);
+    expect(merged.perCli[0].executionTimeMs).toBe(12000);
+  });
+
+  it('success is OR-ed across chunks even when some fail', () => {
+    const a: CliBreakdown = { cli: 'claude', success: false, executionTimeMs: 8000, summary: 'fail' };
+    const b: CliBreakdown = { cli: 'claude', success: true, executionTimeMs: 3000, summary: 'ok' };
+    const merged = mergeResults([result({ perCli: [a] }), result({ perCli: [b] })]);
+    expect(merged.perCli[0].success).toBe(true);
+    expect(merged.perCli[0].executionTimeMs).toBe(8000);
+  });
+
+  it('native and custom-client perCli rows stay DISTINCT (clientId??cli keying)', () => {
+    // Native claude: no clientId. Custom claude: clientId='glm'. Must NOT be merged.
+    const native: CliBreakdown = { cli: 'claude', success: true, executionTimeMs: 5000, summary: 'native' };
+    const custom: CliBreakdown = { cli: 'claude', clientId: 'glm', success: true, executionTimeMs: 7000, summary: 'custom' };
+    const merged = mergeResults([
+      result({ perCli: [native] }),
+      result({ perCli: [custom] }),
+    ]);
+    // Two distinct rows: one keyed by 'claude', one by 'glm'.
+    expect(merged.perCli).toHaveLength(2);
+    const nativeRow = merged.perCli.find((p) => !p.clientId);
+    const customRow = merged.perCli.find((p) => p.clientId === 'glm');
+    expect(nativeRow).toBeDefined();
+    expect(customRow).toBeDefined();
+    expect(nativeRow!.executionTimeMs).toBe(5000);
+    expect(customRow!.executionTimeMs).toBe(7000);
+  });
+});
+
+// ── findingKey clientId separation & cross-chunk dedupe ─────────────────────
+
+describe('findingKey clientId dedup semantics', () => {
+  it('findingKey separates native and custom-client findings on the same code', () => {
+    // Native claude finding and GLM finding on the same line/quote are DISTINCT.
+    const native = finding({ cli: 'claude', clientId: undefined, verbatimQuote: 'foo()', title: 'T' });
+    const custom = finding({ cli: 'claude', clientId: 'glm', verbatimQuote: 'foo()', title: 'T' });
+    const merged = mergeResults([
+      result({ findings: [native] }),
+      result({ findings: [custom] }),
+    ]);
+    expect(merged.findings).toHaveLength(2);
+    expect(merged.findings.some((f) => !f.clientId)).toBe(true);
+    expect(merged.findings.some((f) => f.clientId === 'glm')).toBe(true);
+  });
+
+  it('cross-chunk deduplication: identical custom-client findings merged to one', () => {
+    // Same glm finding appearing in chunk 1 and chunk 2 (overlapping context) → one.
+    const glmFinding = finding({ cli: 'claude', clientId: 'glm', verbatimQuote: 'bar()', title: 'Dup' });
+    const merged = mergeResults([
+      result({ findings: [glmFinding] }),
+      result({ findings: [{ ...glmFinding }] }),
+    ]);
+    expect(merged.findings).toHaveLength(1);
+    expect(merged.findings[0].clientId).toBe('glm');
+  });
+
+  it('distinct clientIds on the same quote are NOT deduped', () => {
+    const nativeFinding = finding({ cli: 'claude', clientId: undefined, verbatimQuote: 'baz()', title: 'Same' });
+    const glmFinding = finding({ cli: 'claude', clientId: 'glm', verbatimQuote: 'baz()', title: 'Same' });
+    const merged = mergeResults([
+      result({ findings: [nativeFinding, glmFinding] }),
+    ]);
+    expect(merged.findings).toHaveLength(2);
   });
 });

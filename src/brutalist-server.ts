@@ -456,7 +456,12 @@ export class BrutalistServer {
         target: z.string().describe("Filesystem path to analyze (e.g., '/path/to/project' or '.'). Directs agents to the relevant part of the codebase."),
         // Common optional fields
         context: z.string().optional().describe("Essential context for the critique. For abstract domains (idea, architecture, security, etc.), this is the primary input describing what to evaluate. For filesystem domains, provides supplementary background (e.g., goals, constraints, team context)."),
-        clis: z.array(z.enum(["codex", "claude", "agy"])).min(1).max(3).optional().describe("Subset of critics to run."),
+        // Reference the canonical fields from BASE_ROAST_SCHEMA so the live
+        // tool surface and the shared schema cannot drift: `clis` is .min(0)
+        // (an explicit [] runs ONLY the named clients[]), and `clients`
+        // carries the full routed-client schema + the claude-only superRefine.
+        clis: BASE_ROAST_SCHEMA.clis,
+        clients: BASE_ROAST_SCHEMA.clients,
         verbose: z.boolean().optional().describe("Detailed output"),
         models: z.object({
           claude: z.string().optional(),
@@ -521,7 +526,7 @@ export class BrutalistServer {
           claude: z.string().optional(),
           codex: z.string().optional(),
           agy: z.string().optional()
-        }).optional().describe("Model overrides for specific agents. Codex uses the Codex CLI configured/default model by default unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Agy is Flash-pinned (no --model flag); field ignored."),
+        }).optional().describe("Model overrides for specific agents. Codex uses the Codex CLI configured/default model by default unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Agy honors the model label via its native --model flag (1.0.10+)."),
         // Pagination and conversation continuation
         context_id: z.string().optional().describe("Context ID for cached pagination or debate continuation"),
         resume: z.boolean().optional().describe("Continue debate with a new prompt; omit for pagination/page reads"),
@@ -530,7 +535,8 @@ export class BrutalistServer {
         cursor: z.string().optional(),
         force_refresh: z.boolean().optional(),
         verbose: z.boolean().optional(),
-        mcp_servers: z.array(z.string()).optional().describe(`MCP servers to enable for debate agents (e.g., ["playwright"]). Available: ${listRegisteredServers().join(', ')}`)
+        mcp_servers: z.array(z.string()).optional().describe(`MCP servers to enable for debate agents (e.g., ["playwright"]). Available: ${listRegisteredServers().join(', ')}`),
+        clients: z.array(z.any()).optional().describe("NOT SUPPORTED in debate. Use `agents` to pick the two debaters; custom Claude-routed clients (e.g. GLM) run only via `roast`.")
       },
       async (args, extra) => {
         // CRITICAL: Prevent recursion
@@ -540,6 +546,19 @@ export class BrutalistServer {
             content: [{
               type: "text" as const,
               text: `ERROR: Brutalist MCP tools cannot be used from within a brutalist-spawned CLI subprocess (recursion prevented)`
+            }]
+          };
+        }
+
+        // C3: debate has no per-client routing path (it assigns
+        // constitutional positions to 2 named agents). Reject clients
+        // explicitly rather than silently dropping the GLM route.
+        if (Array.isArray(args.clients) && args.clients.length > 0) {
+          logger.warn(`🚫 Rejecting roast_cli_debate with unsupported clients[]`);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `ERROR: roast_cli_debate does not support \`clients\`. Custom Claude-routed clients (e.g. GLM) run only via the \`roast\` tool. To choose native debaters use agents: ["claude", "codex"].`
             }]
           };
         }

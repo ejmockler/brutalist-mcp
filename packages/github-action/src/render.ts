@@ -22,6 +22,11 @@ import type { ResolvedFinding } from './resolver.js';
  */
 export const REVIEW_BODY_MAX_CHARS = 60_000;
 
+function criticLabel(cli: string, clientId?: string): string {
+  const base = CLI_BADGE[cli] ?? cli;
+  return clientId && clientId !== cli ? `${clientId} (${base})` : base;
+}
+
 export function renderReviewSummary(inputs: ReviewSubmissionInputs): string {
   const { result, groups, outOfDiff, dropped } = inputs;
   const lines: string[] = [];
@@ -54,7 +59,7 @@ export function renderReviewSummary(inputs: ReviewSubmissionInputs): string {
     lines.push('<summary>Per-CLI breakdown</summary>');
     lines.push('');
     for (const cli of result.perCli) {
-      const label = CLI_BADGE[cli.cli] ?? cli.cli;
+      const label = criticLabel(cli.cli, cli.clientId);
       const status = cli.success ? '✅' : '❌';
       const model = cli.model ? `\`${cli.model}\`` : '`default`';
       lines.push(`### ${status} ${label} (${model}, ${cli.executionTimeMs}ms)`);
@@ -83,7 +88,7 @@ export function renderReviewSummary(inputs: ReviewSubmissionInputs): string {
     for (const [category, items] of Object.entries(byCategory)) {
       lines.push(`### ${category}`);
       for (const f of items) {
-        const cli = CLI_BADGE[f.cli] ?? f.cli;
+        const cli = criticLabel(f.cli, f.clientId);
         const tag = renderProvenance(f.provenance);
         lines.push(
           `- ${SEVERITY_BADGES[f.severity]} **\`${f.path}\`** — *${cli}*${tag}: ${f.title}`,

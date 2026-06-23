@@ -20,6 +20,7 @@ import { run as runOrchestrator } from '@brutalist/orchestrator';
 import type { OrchestratorResult } from '@brutalist/orchestrator';
 import { chunkDiff, mergeResults, runWithConcurrency } from './chunk-diff.js';
 import { readInputs } from './inputs.js';
+import { provisionCustomClaudeClient } from './custom-claude.js';
 import { fetchPullRequestContext, getPullRequestRef } from './diff.js';
 import { resolveFindings } from './resolver.js';
 import { groupInlineFindingsWithSubThreshold, applyReviewsApiLimits } from './grouper.js';
@@ -59,6 +60,8 @@ async function main(): Promise<void> {
   if (provisioned.codexOauth) core.info('Codex critic will authenticate via OAuth.');
   if (provisioned.agyOauth) core.info('Agy critic will authenticate via file-based OAuth.');
 
+  const { knownClientIds } = await provisionCustomClaudeClient(inputs);
+
   const pull = getPullRequestRef();
   if (!pull) {
     throw new Error(
@@ -88,7 +91,7 @@ async function main(): Promise<void> {
   // claude CRITIC (spawned by brutalist-mcp) runs on inputs.model. The brain
   // gets the model directly via runOrchestrator({ model }). Merges with any
   // existing settings so unrelated keys are preserved.
-  await ensureClaudeSettingsModel(inputs.model);
+  await ensureClaudeSettingsModel(inputs.claudeCriticModel);
 
   // Resolve working-directory against process.cwd(). The runner sets
   // cwd to $GITHUB_WORKSPACE (the checked-out repo root); the input
@@ -131,6 +134,7 @@ async function main(): Promise<void> {
       // which isn't available in the ncc-bundled action runtime.
       claudeCodeExecutablePath: preflight.claude.resolvedPath,
       model: inputs.model,
+      knownClientIds,
     });
 
   let result: OrchestratorResult;
@@ -265,6 +269,12 @@ main().catch((err) => {
     secrets = [i.anthropicOauthToken, i.openaiApiKey].filter(
       (s): s is string => typeof s === 'string' && s.length >= 8,
     );
+    // Every custom Claude-routed critic carries its own bearer token; register
+    // them ALL for redaction (the singular custom-claude-auth-token is merged
+    // into customClaudeClients by readInputs, so this covers it too).
+    for (const c of i.customClaudeClients ?? []) {
+      if (typeof c.authToken === 'string' && c.authToken.length >= 8) secrets.push(c.authToken);
+    }
     // Extract individual token fields from each OAuth credential blob
     // so partial echoes (e.g. a CLI logging "Bearer <token>") get
     // masked even when the whole-blob match doesn't fire. Defense in

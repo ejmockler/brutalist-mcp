@@ -281,6 +281,7 @@ export class ToolHandler {
         args.clis,
         args.verbose,
         args.models,
+        args.clients,
         progressToken,
         sessionId,
         requestId,
@@ -357,6 +358,7 @@ export class ToolHandler {
       codex?: string;
       agy?: string;
     },
+    clients?: import('../cli-agents.js').CLIClientSpec[],
     progressToken?: string | number,
     sessionId?: string,
     requestId?: string,
@@ -392,6 +394,7 @@ export class ToolHandler {
           clis,
           analysisType: analysisType as BrutalistPromptType,
           models,
+          clients,
           onStreamingEvent: this.handleStreamingEvent,
           progressToken,
           onProgress: progressToken && sessionId ?

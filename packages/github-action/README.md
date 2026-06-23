@@ -58,7 +58,7 @@ The file holds `{ tokens: { refresh_token, access_token, id_token, account_id },
 
 ### Antigravity (agy, optional) — file-based OAuth via macOS keychain capture
 
-agy has no API-key auth path (issue [#78](https://github.com/google-antigravity/antigravity-cli/issues/78) still open in v1.0.2). The Action provisions tokens via a file the agy CLI's container-detection auto-loads.
+agy has no API-key auth path (issue [#78](https://github.com/google-antigravity/antigravity-cli/issues/78) — still file-based-OAuth-only through v1.0.10). The Action provisions tokens via a file the agy CLI's container-detection auto-loads, and the brutalist-mcp critic freezes agy's binary version (`AGY_CLI_DISABLE_AUTO_UPDATE`) during the run so a mid-fleet self-update can't silently change critic behavior (an uncontrolled 1.0.2→1.0.10 self-update is what once broke this critic). Model pins use agy's native `--model` flag (live as of 1.0.10).
 
 ```bash
 # Step 1: one-time interactive auth on macOS (browser OAuth)

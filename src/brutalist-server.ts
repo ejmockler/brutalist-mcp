@@ -467,7 +467,7 @@ export class BrutalistServer {
           claude: z.string().optional(),
           codex: z.string().optional(),
           agy: z.string().optional()
-        }).optional().describe("Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model by default; set BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true to allow a codex override. Agy accepts a human-readable label (\"Gemini 3.1 Pro (High)\", \"Claude Sonnet 4.6 (Thinking)\", etc.) via settings.json swap under flock(2); Pro/Claude/GPT-OSS tiers require Antigravity entitlement. Omit to use each CLI's configured default."),
+        }).optional().describe("Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model by default; set BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true to allow a codex override. Agy accepts a human-readable label (\"Gemini 3.1 Pro (High)\", \"Claude Sonnet 4.6 (Thinking)\", etc.) via its native --model flag (1.0.10+); Pro/Claude/GPT-OSS tiers require Antigravity entitlement. Omit to use each CLI's configured default."),
         // Pagination
         offset: z.number().min(0).optional().describe("Pagination offset"),
         limit: z.number().min(1000).max(100000).optional().describe("Max chars/chunk"),

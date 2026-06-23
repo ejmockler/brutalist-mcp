@@ -58,7 +58,7 @@ The file holds `{ tokens: { refresh_token, access_token, id_token, account_id },
 
 ### Antigravity (agy, optional) — file-based OAuth via macOS keychain capture
 
-agy has no API-key auth path (issue [#78](https://github.com/google-antigravity/antigravity-cli/issues/78) still open in v1.0.2). The Action provisions tokens via a file the agy CLI's container-detection auto-loads.
+agy has no API-key auth path (issue [#78](https://github.com/google-antigravity/antigravity-cli/issues/78) — file-based OAuth only through v1.0.10). The Action provisions tokens via a file the agy CLI's container-detection auto-loads. **agy's OAuth token rotates (~monthly); a stale `AGY_OAUTH_TOKEN` makes agy fall back to interactive auth and hang in CI, so re-capture it periodically.**
 
 ```bash
 # Step 1: one-time interactive auth on macOS (browser OAuth)
@@ -78,7 +78,7 @@ Codex and agy both rotate access_tokens during use and rewrite their credential 
 
 ### Why OAuth at all?
 
-Cost, rate-limits, and org policies follow the human identity that authorized the auth flow, not the bot. The `openai-api-key` API-key alternative still works for the Codex critic if you prefer that boundary. agy has no API-key alternative in v1.0.2.
+Cost, rate-limits, and org policies follow the human identity that authorized the auth flow, not the bot. The `openai-api-key` API-key alternative still works for the Codex critic if you prefer that boundary. agy has no API-key alternative (file-based OAuth only).
 
 ## Usage
 

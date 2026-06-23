@@ -44,8 +44,8 @@ inputs:
     description: |
       Raw JSON contents of the macOS keychain "gemini/antigravity" entry —
       the OAuth token for the Antigravity (agy) CLI critic. Without this,
-      agy cannot authenticate in CI runners (no env-var auth path exists
-      in v1.0.2 — agy issue #78). With it, the Action writes the JSON to
+      agy cannot authenticate in CI runners (no env-var/API-key auth path
+      exists — agy issue #78). With it, the Action writes the JSON to
       ~/.gemini/antigravity-cli/antigravity-oauth-token (mode 0600); agy
       auto-detects the container environment and reads tokens from there.
 

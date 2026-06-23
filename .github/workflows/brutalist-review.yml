@@ -29,7 +29,7 @@ jobs:
         run: |
           # Pin every critic CLI — an unpinned @latest runs before secrets exist,
           # but a planted binary persists and later receives the OAuth tokens.
-          npm install -g @brutalist/mcp@1.14.7 @anthropic-ai/claude-code@2.1.162 @openai/codex@0.136.0
+          npm install -g @brutalist/mcp@1.18.1 @anthropic-ai/claude-code@2.1.162 @openai/codex@0.136.0
           # NOTE: agy installer is unpinned upstream (no published checksum) — residual supply-chain surface.
           curl -fsSL https://antigravity.google/cli/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -44,13 +44,18 @@ jobs:
         # fix (orchestrator default 50) so the brain no longer exhausts turns.
         uses: ejmockler/brutalist-mcp/packages/github-action@v1
         env:
-          # The round-3 FAILURE was the ORCHESTRATOR budget, not the per-critic cap:
-          # on a large diff the brain needs room AFTER the slowest critic returns, and
-          # 25 min wasn't enough. Raising the per-critic cap to 25 min did NOT help agy
-          # (it ran to the exact cap with no output either way — a CI-side agy issue,
-          # not time). So: keep the 15-min per-critic cap, give the orchestrator 35 min.
+          # Per-critic cap (claude/codex). As of 1.18.0 agy self-caps at 6 min
+          # (BRUTALIST_AGY_TIMEOUT) so a stall fails fast instead of burning this
+          # full 15-min budget; the orchestrator gets 35 min so the brain still has
+          # room to work after the slowest critic returns.
           BRUTALIST_TIMEOUT: "900000"
           BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2100000"
+          # Freeze agy's binary for the whole job. agy self-updates from a
+          # us-central1 endpoint, and an uncontrolled 1.0.2 -> 1.0.10 self-update is
+          # what originally broke this critic (15-min timeouts, no output). 1.18.0's
+          # adapter also sets this on the spawned agy process; job-level covers the
+          # `curl install.sh` step too.
+          AGY_CLI_DISABLE_AUTO_UPDATE: "1"
         with:
           github-token: ${{ github.token }}
           anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}

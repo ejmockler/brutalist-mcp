@@ -60,6 +60,28 @@ jobs:
       - name: Verify github-action dist/ is fresh
         run: npm run verify-dist --workspace=packages/github-action
 
+      - name: Validate action.yml inputs are expression-free
+        # Composite action.yml inputs (descriptions/defaults) must NOT contain
+        # GitHub Actions expression syntax — GitHub evaluates it at load time,
+        # where contexts like `secrets` are unavailable, so the WHOLE action
+        # fails to load for every consumer on @v1 (a fleet-wide outage; that is
+        # exactly how the GLM_TOKEN example in custom-claude-clients broke
+        # v1.18.0). jest never loads action.yml as a consumer, so this is the
+        # only guard that catches it. NB: the marker is built from parts so this
+        # very step doesn't trip the same evaluation it's guarding against.
+        run: |
+          python3 - <<'PY'
+          import yaml, sys
+          marker = '$' + '{{'
+          doc = yaml.safe_load(open('packages/github-action/action.yml'))
+          bad = [k for k, v in (doc.get('inputs') or {}).items()
+                 if any(marker in str(x) for x in (v or {}).values())]
+          if bad:
+              print('::error::action.yml inputs must not contain GH expression syntax:', ', '.join(bad))
+              sys.exit(1)
+          print('action.yml inputs are expression-free.')
+          PY
+
       - name: Build
         run: npm run build
 

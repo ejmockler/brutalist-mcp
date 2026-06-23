@@ -140,8 +140,8 @@ inputs:
       custom-claude-clients: |
         [
           { "id": "glm", "baseUrl": "https://glm.example/v1",
-            "authToken": "${{ secrets.GLM_TOKEN }}", "model": "glm-5.1",
-            "contextWindow": 128000 }
+            "authToken": "<your token; pass via secrets.* in your workflow>",
+            "model": "glm-5.1", "contextWindow": 128000 }
         ]
     required: false
   custom-claude-context-window:

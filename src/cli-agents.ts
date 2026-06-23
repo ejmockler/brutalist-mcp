@@ -1153,7 +1153,17 @@ export class CLIAgentOrchestrator {
     const client = options.activeClient;
     const clientId = client?.id;
     const workingDir = client?.workingDirectory || options.workingDirectory || this.defaultWorkingDir;
-    const timeout = client?.timeout || options.timeout || this.defaultTimeout;
+    let timeout = client?.timeout || options.timeout || this.defaultTimeout;
+    // Per-provider fail-fast ceiling: a provider (agy) may cap its spawn timeout
+    // below the global so a stall fails fast instead of burning BRUTALIST_TIMEOUT.
+    const providerMaxTimeout = getProvider(cliName).getConfig().maxTimeoutMs;
+    if (providerMaxTimeout && providerMaxTimeout < timeout) {
+      this.emitLog().info(`⏱️ Capping ${cliName} timeout to its adapter ceiling`, {
+        fromMs: timeout,
+        toMs: providerMaxTimeout,
+      });
+      timeout = providerMaxTimeout;
+    }
     let tempMcpConfigPath: string | undefined;
     // Hoisted so the catch branch can read `built?.model` for response
     // attribution. Undefined when commandBuilder itself threw before

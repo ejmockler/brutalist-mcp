@@ -13,6 +13,7 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { EventEmitter } from 'events';
 import { CLIAgentOrchestrator, CLIAgentOptions } from '../../src/cli-agents.js';
+import { getProvider } from '../../src/cli-adapters/index.js';
 import { spawn } from 'child_process';
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -348,6 +349,32 @@ describe('CLI Provider Command Construction', () => {
       const prompt = findPromptArg(result.args);
       expect(prompt).not.toContain('defensive pre-merge code review');
       expect(prompt).toContain('Analyze this idea');
+    });
+
+    it('passes a model pin via the native --model flag (1.0.10+), not the legacy settings.json swap', async () => {
+      const result = await buildAgy(DIFF_PROMPT, {
+        workingDirectory: '/work/repo',
+        models: { agy: 'Claude Opus 4.6 (Thinking)' },
+      });
+      const i = result.args.indexOf('--model');
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(result.args[i + 1]).toBe('Claude Opus 4.6 (Thinking)');
+      // Legacy env-swap pin is gone.
+      expect(result.env.BRUTALIST_AGY_MODEL_PIN).toBeUndefined();
+    });
+
+    it('freezes the agy binary version (AGY_CLI_DISABLE_AUTO_UPDATE) with or without a pin', async () => {
+      const pinned = await buildAgy(DIFF_PROMPT, { workingDirectory: '/work/repo', models: { agy: 'Gemini 3.5 Flash (High)' } });
+      const plain = await buildAgy(DIFF_PROMPT, { workingDirectory: '/work/repo' });
+      expect(pinned.env.AGY_CLI_DISABLE_AUTO_UPDATE).toBe('1');
+      expect(plain.env.AGY_CLI_DISABLE_AUTO_UPDATE).toBe('1');
+      expect(plain.args).not.toContain('--model');
+    });
+
+    it('exposes a fail-fast per-provider timeout ceiling (agy only; claude/codex use the global)', () => {
+      expect(getProvider('agy').getConfig().maxTimeoutMs).toBe(360_000);
+      expect(getProvider('claude').getConfig().maxTimeoutMs).toBeUndefined();
+      expect(getProvider('codex').getConfig().maxTimeoutMs).toBeUndefined();
     });
 
     // ARG_MAX guard. agy --print can only take the prompt on argv (no stdin),

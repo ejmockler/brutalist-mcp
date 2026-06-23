@@ -82,99 +82,52 @@ function resolveAgyBin(): string {
 export const AGY_BINARY = resolveAgyBin();
 
 /**
- * Inline Python wrapper. Handles two concerns:
+ * Inline Python wrapper — ONE concern: PTY allocation. agy issue #76 (stdout
+ * silently dropped when stdout is not a TTY) hits macOS and Windows but NOT
+ * Linux. The wrapper creates a pty pair, forks, the child sees the slave TTY
+ * (bypassing agy's isatty check), the parent reads the master and writes to
+ * its own stdout (a pipe — fine regardless of #76).
  *
- *   (a) PTY allocation. agy issue #76 (stdout silently dropped when
- *       stdout is not a TTY) hits macOS and Windows but NOT Linux.
- *       The wrapper creates a pty pair, forks, child sees the slave TTY
- *       (bypassing agy's isatty check), parent reads from the master and
- *       writes to its own stdout (which can be a pipe — that part works
- *       regardless of #76).
+ * Model pinning is NO LONGER done here. agy 1.0.10 added a real `--model`
+ * flag (it was a dead string in 1.0.2, which is why this used to swap
+ * settings.json under flock — the source of a leftover `.brutalist-lock`
+ * leak). The adapter now passes `--model <label>` natively, so the wrapper is
+ * pure PTY: no settings race, no lock file, and a model pin no longer forces
+ * the wrapper on Linux.
  *
- *   (b) Per-invocation model pinning via settings.json. agy has no
- *       --model flag at runtime, but `settings.json.model` accepts the
- *       human-readable label form ("Gemini 3.1 Pro (High)", etc.) and
- *       agy's `model_config_manager.go:157` log confirms it propagates
- *       the label to the backend. The wrapper reads BRUTALIST_AGY_MODEL_PIN
- *       from env; if set, it acquires an fcntl.flock(LOCK_EX) on a
- *       sibling lockfile, reads + backs up the existing settings.json,
- *       writes the merged version with the model override, spawns agy,
- *       and restores the original settings.json on exit (in a finally
- *       block so SIGTERM/exception paths still clean up). Race-safe
- *       across processes that share $HOME.
- *
- * Why Python and not node-pty:
- *   - node-pty is a native module: prebuilt binaries per platform,
- *     `spawn-helper` chmod gotchas during npm install, install-time
- *     failure modes on unusual setups (Apple Silicon Node 24 had
- *     intermittent issues this session). Adds 140KB of native code
- *     to the dep tree.
- *   - Python 3 is preinstalled on macOS (12+ ships /usr/bin/python3
- *     stub that triggers Xcode CLT install on first run; users
- *     running agy locally already have CLT for `agy` itself to
- *     install). And on Linux runners (Ubuntu LTS) by default.
- *   - `pty.spawn` and `fcntl.flock` are stdlib. Zero install cost.
- *
- * Supported `BRUTALIST_AGY_MODEL_PIN` label values (per Antigravity
- * docs + binary strings; per-account entitlement gates Pro/Claude):
- *   - "Gemini 3.5 Flash (High|Medium)"   — always available
- *   - "Gemini 3.1 Pro (High|Low)"        — Pro tier
- *   - "Claude Sonnet 4.6 (Thinking)"     — Antigravity Claude tier
- *   - "Claude Opus 4.6 (Thinking)"       — Antigravity Claude tier
- *   - "GPT-OSS 120B (Medium)"            — Antigravity tier
- * Invalid labels are silently downselected by agy to Flash Medium.
+ * Why Python (not node-pty): node-pty is a native module (per-platform
+ * prebuilds, spawn-helper chmod gotchas, install-time failures); `pty.spawn`
+ * is stdlib, preinstalled on macOS and Ubuntu runners, zero install cost.
  */
 const AGY_PYTHON_WRAPPER = `
-import pty, sys, os, json, fcntl
+import pty, sys, os
 agy_bin, agy_args = sys.argv[1], sys.argv[2:]
-model = os.environ.get('BRUTALIST_AGY_MODEL_PIN', '').strip()
-home = os.path.expanduser('~')
-settings = os.path.join(home, '.gemini', 'antigravity-cli', 'settings.json')
-lock_path = settings + '.brutalist-lock'
-original = None
-lock_fd = None
-if model:
-    os.makedirs(os.path.dirname(settings), exist_ok=True)
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    fcntl.flock(lock_fd, fcntl.LOCK_EX)
-    try:
-        with open(settings, 'r') as f:
-            original = f.read()
-        cfg = json.loads(original) if original.strip() else {}
-    except FileNotFoundError:
-        cfg = {}
-    cfg['model'] = model
-    with open(settings, 'w') as f:
-        json.dump(cfg, f)
-try:
-    status = pty.spawn([agy_bin] + agy_args)
-finally:
-    if model:
-        try:
-            if original is None:
-                try: os.unlink(settings)
-                except FileNotFoundError: pass
-            else:
-                with open(settings, 'w') as f:
-                    f.write(original)
-        finally:
-            if lock_fd is not None:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                os.close(lock_fd)
+status = pty.spawn([agy_bin] + agy_args)
 sys.exit(os.waitstatus_to_exitcode(status))
 `.trim();
 
 const PTY_WRAP_NEEDED = process.platform === 'darwin' || process.platform === 'win32';
 
+// Fail-fast backstop for agy. It critiques in ~10-15s when healthy but can
+// occasionally stall (the original breakage was the uncontrolled 1.0.2->1.0.10
+// self-update). Cap its run well below the global BRUTALIST_TIMEOUT so a hang
+// fails in minutes, not the full 15. Generous default (6 min) so a legitimately
+// slow run is never killed; override via BRUTALIST_AGY_TIMEOUT.
+const AGY_MAX_TIMEOUT_MS = (() => {
+  const n = parseInt(process.env.BRUTALIST_AGY_TIMEOUT ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 360_000;
+})();
+
 const AGY_CONFIG: CLIBuilderConfig = {
-  // Routing is decided per-invocation in buildCommand() based on
-  // (a) platform needing PTY and (b) whether a model pin is requested.
-  // This static config slot is just the default for the spawn entrypoint.
+  // Routing is decided per-invocation in buildCommand() based on the platform
+  // needing a PTY (#76 on macOS/Windows). This static config slot is just the
+  // default for the spawn entrypoint.
   command: AGY_BINARY,
   defaultArgs: ['--print'],
-  // No --model flag exists; this slot is unused for agy. Kept for
-  // CLIBuilderConfig conformance.
+  // agy pins the model via its native --model flag, added in buildCommand()
+  // (not this generic modelArgName path), so this slot is unused.
   modelArgName: '',
+  maxTimeoutMs: AGY_MAX_TIMEOUT_MS,
 };
 
 // Default model when nothing's pinned. agy reads settings.json at
@@ -345,11 +298,22 @@ export class AgyAdapter implements CLIProvider {
 
     const modelPin = options.models?.agy?.trim();
 
-    // The Python wrapper handles two distinct concerns: PTY allocation
-    // for #76 on macOS/Windows, and settings.json swap+restore under
-    // flock(2) when a model pin is requested. We invoke it when EITHER
-    // is needed. On Linux without a model pin, agy runs directly.
-    const useWrapper = PTY_WRAP_NEEDED || !!modelPin;
+    // Model pinning uses agy's native --model flag (live as of 1.0.10; it was
+    // a dead string in 1.0.2, which is why the legacy path swapped
+    // settings.json under flock). It resolves per-session with no file race
+    // and no leftover lock marker; unknown labels are rejected at runtime
+    // ("model %s not found"). Supported labels: "Gemini 3.5 Flash (High|Medium)",
+    // "Gemini 3.1 Pro (High|Low)", "Claude Sonnet 4.6 (Thinking)",
+    // "Claude Opus 4.6 (Thinking)", "GPT-OSS 120B (Medium)" (per entitlement).
+    if (modelPin) {
+      agyArgs.push('--model', modelPin);
+      log.info('Agy model pin requested (native --model flag)', { model: modelPin });
+    }
+
+    // The Python wrapper now serves ONE concern: PTY allocation for agy #76
+    // on macOS/Windows. With the settings.json swap gone, a model pin no
+    // longer forces the wrapper on Linux.
+    const useWrapper = PTY_WRAP_NEEDED;
 
     const command = useWrapper ? 'python3' : AGY_BINARY;
     const args = useWrapper
@@ -357,10 +321,11 @@ export class AgyAdapter implements CLIProvider {
       : agyArgs;
 
     const env: Record<string, string> = { ...secureEnv };
-    if (modelPin) {
-      env.BRUTALIST_AGY_MODEL_PIN = modelPin;
-      log.info('Agy model pin requested', { model: modelPin });
-    }
+    // Freeze the agy binary for the run: agy self-updates from a us-central1
+    // endpoint at startup, and an uncontrolled 1.0.2 -> 1.0.10 self-update is
+    // what originally broke this integration. Disabling the runtime updater
+    // keeps the installed (known-good) build in place.
+    env.AGY_CLI_DISABLE_AUTO_UPDATE = '1';
     // Forward agy's appDataDir override so the SUBPROCESS resolves <scratch>
     // (and its token/config) to the SAME dir we computed for the spill file.
     // createSecureEnvironment() does NOT allowlist this var, so without this

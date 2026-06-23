@@ -42,13 +42,13 @@ export const BASE_ROAST_SCHEMA = {
 
   // Model selection — Claude honors overrides; Codex normally uses its own CLI
   // config/default so stale tool-call tags do not override newer local Codex
-  // configuration. agy has no --model flag at runtime (Flash-pinned in
-  // --print mode); the field is accepted but ignored.
+  // configuration. agy 1.0.10 honors the model label via its native --model
+  // flag (it was a dead no-op string in 1.0.2).
   models: z.object({
     claude: z.string().optional().describe("Any Claude model (e.g. opus, sonnet, haiku, or full ID). Omit for CLI default."),
     codex: z.string().optional().describe("Codex override. Ignored unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true; omit for Codex CLI configured/default model."),
-    agy: z.string().optional().describe("Agy model label. Brutalist writes this to ~/.gemini/antigravity-cli/settings.json under flock(2) before each agy invocation and restores the prior value after. Supported labels: \"Gemini 3.5 Flash (High|Medium)\" (always available), \"Gemini 3.1 Pro (High|Low)\", \"Claude Sonnet 4.6 (Thinking)\", \"Claude Opus 4.6 (Thinking)\", \"GPT-OSS 120B (Medium)\" (Pro/Claude/GPT-OSS tiers require Antigravity entitlement). Invalid labels silently fall back to Flash Medium.")
-  }).optional().describe("Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Agy field reserved (no runtime --model flag). Omit to use each CLI's configured default."),
+    agy: z.string().optional().describe("Agy model label, passed to agy's native --model flag (1.0.10+). Supported labels: \"Gemini 3.5 Flash (High|Medium)\" (always available), \"Gemini 3.1 Pro (High|Low)\", \"Claude Sonnet 4.6 (Thinking)\", \"Claude Opus 4.6 (Thinking)\", \"GPT-OSS 120B (Medium)\" (Pro/Claude/GPT-OSS tiers require Antigravity entitlement). Unknown labels are rejected by agy at runtime.")
+  }).optional().describe("Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Agy honors the model label via its native --model flag (1.0.10+). Omit to use each CLI's configured default."),
   clients: z.array(z.object({
     id: z.string().min(1).max(80).describe("Stable display id for this CLI client, e.g. claude-native or glm."),
     provider: z.enum(["claude", "codex", "agy"]).default("claude").describe("Underlying CLI provider."),

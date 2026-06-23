@@ -526,7 +526,7 @@ export class BrutalistServer {
           claude: z.string().optional(),
           codex: z.string().optional(),
           agy: z.string().optional()
-        }).optional().describe("Model overrides for specific agents. Codex uses the Codex CLI configured/default model by default unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Agy is Flash-pinned (no --model flag); field ignored."),
+        }).optional().describe("Model overrides for specific agents. Codex uses the Codex CLI configured/default model by default unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Agy honors the model label via its native --model flag (1.0.10+)."),
         // Pagination and conversation continuation
         context_id: z.string().optional().describe("Context ID for cached pagination or debate continuation"),
         resume: z.boolean().optional().describe("Continue debate with a new prompt; omit for pagination/page reads"),

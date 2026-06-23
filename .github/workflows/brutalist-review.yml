@@ -29,7 +29,7 @@ jobs:
         run: |
           # Pin every critic CLI — an unpinned @latest runs before secrets exist,
           # but a planted binary persists and later receives the OAuth tokens.
-          npm install -g @brutalist/mcp@1.18.1 @anthropic-ai/claude-code@2.1.162 @openai/codex@0.136.0
+          npm install -g @brutalist/mcp@1.18.2 @anthropic-ai/claude-code@2.1.162 @openai/codex@0.136.0
           # NOTE: agy installer is unpinned upstream (no published checksum) — residual supply-chain surface.
           curl -fsSL https://antigravity.google/cli/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"

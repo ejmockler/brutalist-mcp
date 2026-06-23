@@ -752,12 +752,17 @@ async function spawnAsync(
       child.stdin?.write(options.input);
       child.stdin?.end();
     } else {
-      // CRITICAL: For Claude CLI specifically, close stdin immediately even without input
-      // Claude --print waits for stdin EOF before processing the prompt argument
-      if (command === 'claude') {
+      // No input: send stdin EOF for every CLI EXCEPT codex. Claude AND agy
+      // `--print` BLOCK waiting for stdin EOF before they finish — a left-open
+      // pipe hangs them until the spawn timeout. agy surfaced this only in CI:
+      // bash and the macOS PTY wrapper hand agy an already-closed/TTY stdin
+      // (instant EOF), but the orchestrator's Node spawn uses stdio:'pipe' and
+      // never .end()s it, so agy waited out the full per-critic timeout and
+      // produced no critique. Codex is left untouched (it streams fine with
+      // stdin open and we don't perturb a working critic).
+      if (command !== 'codex') {
         child.stdin?.end();
       }
-      // Codex works fine with stdin left open
     }
   });
 }

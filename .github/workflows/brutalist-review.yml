@@ -63,8 +63,11 @@ jobs:
           agy-oauth-token: ${{ secrets.AGY_OAUTH_TOKEN }}
           minimum-severity: medium
           # GLM routed critic — Anthropic-compatible gateway (public Tailscale Funnel).
-          # Additive 4th critic, hardened by default (no web/MCP). Fails fast if the
-          # GLM quota is exhausted; the native critics are unaffected.
+          # Additive 4th critic, hardened by default (no web/MCP, no native creds —
+          # verified: includeProcessAuth:false + authTokenEnv). The native critics
+          # are unaffected when GLM is down. NOTE: a down/over-quota GLM does NOT
+          # fail instantly — the routed Claude client retries the rate-limit for
+          # ~3-4 min before giving up, so a dead GLM adds that much latency.
           custom-claude-client-id: glm
           custom-claude-base-url: https://immersivecommons13.tail5da903.ts.net
           custom-claude-auth-token: ${{ secrets.GLM_TOKEN }}

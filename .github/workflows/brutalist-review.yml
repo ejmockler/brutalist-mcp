@@ -62,3 +62,12 @@ jobs:
           codex-auth: ${{ secrets.CODEX_AUTH }}
           agy-oauth-token: ${{ secrets.AGY_OAUTH_TOKEN }}
           minimum-severity: medium
+          # GLM routed critic — Anthropic-compatible gateway (public Tailscale Funnel).
+          # Additive 4th critic, hardened by default (no web/MCP). Fails fast if the
+          # GLM quota is exhausted; the native critics are unaffected.
+          custom-claude-client-id: glm
+          custom-claude-base-url: https://immersivecommons13.tail5da903.ts.net
+          custom-claude-auth-token: ${{ secrets.GLM_TOKEN }}
+          custom-claude-model: glm-5.1
+          custom-claude-small-fast-model: glm-4.5-air
+          custom-claude-context-window: 128000

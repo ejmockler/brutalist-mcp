@@ -1,6 +1,6 @@
 {
   "name": "@brutalist/mcp",
-  "version": "1.18.2",
+  "version": "1.18.3",
   "description": "Deploy Claude Code, Codex & Antigravity (agy) CLI agents to demolish your work before users do. Real file analysis. Brutal honesty. Per-call model pinning, conversation continuation & intelligent pagination.",
   "type": "module",
   "main": "dist/index.js",

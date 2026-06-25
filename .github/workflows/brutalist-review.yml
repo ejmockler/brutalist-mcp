@@ -48,8 +48,8 @@ jobs:
           # (BRUTALIST_AGY_TIMEOUT) so a stall fails fast instead of burning this
           # full 15-min budget; the orchestrator gets 35 min so the brain still has
           # room to work after the slowest critic returns.
-          BRUTALIST_TIMEOUT: "900000"
-          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2100000"
+          BRUTALIST_TIMEOUT: "1800000"
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2700000"
           # Freeze agy's binary for the whole job. agy self-updates from a
           # us-central1 endpoint, and an uncontrolled 1.0.2 -> 1.0.10 self-update is
           # what originally broke this critic (15-min timeouts, no output). 1.18.0's

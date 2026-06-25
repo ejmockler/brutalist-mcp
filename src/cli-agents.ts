@@ -226,7 +226,7 @@ export function normalizeClaudeClient(
 async function preflightRoutedClient(
   client: CLIClientSpec,
   log: StructuredLogger,
-): Promise<{ ok: true } | { ok: false; reason: 'auth' | 'unreachable' | 'unknown'; detail: string }> {
+): Promise<{ ok: true } | { ok: false; reason: 'auth' | 'unreachable' | 'quota' | 'unknown'; detail: string }> {
   // Routed only via includeProcessAuth:false (no endpoint) — nothing to probe.
   if (!client.baseUrl) return { ok: true };
   // Feature-detect fetch + AbortSignal.timeout (Node 18+ / 17.3+). On an
@@ -237,18 +237,32 @@ async function preflightRoutedClient(
     return { ok: true };
   }
   const token = client.resolvedAuthToken ?? resolveClientAuthToken(client, process.env);
-  const url = `${client.baseUrl.replace(/\/+$/, '')}/v1/models`;
+  // Probe a 1-token /v1/messages completion — NOT /v1/models. The models
+  // endpoint isn't quota-gated, so an over-quota gateway returns 200 there and
+  // the full review then burns ~3-4min PER CHUNK retrying the 429. A real
+  // (tiny) completion surfaces the 429 in milliseconds so we fail fast WITH
+  // attribution. Use the small/fast model so the probe is cheap.
+  const url = `${client.baseUrl.replace(/\/+$/, '')}/v1/messages`;
+  const probeModel = client.smallFastModel ?? client.model ?? 'claude-3-5-haiku-latest';
   try {
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = {
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    };
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
       headers['x-api-key'] = token;
     }
     const res = await fetch(url, {
-      method: 'GET',
+      method: 'POST',
       headers,
-      signal: AbortSignal.timeout(CLI_CHECK_TIMEOUT),
+      body: JSON.stringify({ model: probeModel, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
+      signal: AbortSignal.timeout(ROUTED_PROBE_TIMEOUT),
     });
+    // Over quota / rate-limited → fail fast (this is the whole point).
+    if (res.status === 429) {
+      return { ok: false, reason: 'quota', detail: 'gateway over quota / rate-limited (HTTP 429)' };
+    }
     // Only treat 401/403 as a real auth failure when we actually PRESENTED a
     // token. A client inheriting native auth (includeProcessAuth, no typed
     // token) sends no header here, so a 401 just means "endpoint wants auth
@@ -257,9 +271,20 @@ async function preflightRoutedClient(
     if (token && (res.status === 401 || res.status === 403)) {
       return { ok: false, reason: 'auth', detail: `gateway returned ${res.status}` };
     }
+    // 200, or any other non-fatal status (e.g. a 400 model quibble) → proceed;
+    // the real spawn handles it. We only short-circuit on quota/auth/unreachable.
     return { ok: true };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+    // A probe TIMEOUT is NOT a failure: a healthy-but-slow gateway (slow first
+    // token) must not be skipped — a 1-token "ping" should be fast, but if it
+    // isn't, let the real spawn run rather than false-skip a working critic.
+    // Only a hard connection failure (DNS/TLS/refused) means unreachable.
+    const name = (error as { name?: string })?.name;
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      log.info('Routed client pre-flight probe timed out; proceeding to full run', { clientId: client.id });
+      return { ok: true };
+    }
     log.warn('Routed client pre-flight probe failed', { clientId: client.id, error: msg });
     return { ok: false, reason: 'unreachable', detail: msg };
   }
@@ -286,6 +311,7 @@ export type BrutalistPromptType =
 // Configurable timeouts and limits
 const DEFAULT_TIMEOUT = parseInt(process.env.BRUTALIST_TIMEOUT || '1800000', 10); // 30 minutes default
 const CLI_CHECK_TIMEOUT = parseInt(process.env.BRUTALIST_CLI_CHECK_TIMEOUT || '5000', 10); // 5 seconds for CLI checks
+const ROUTED_PROBE_TIMEOUT = parseInt(process.env.BRUTALIST_ROUTED_PROBE_TIMEOUT || '10000', 10); // 10s — routed-client /v1/messages quota/auth probe (429 returns instantly; this only bounds a slow first token)
 const MAX_BUFFER_SIZE = parseInt(process.env.BRUTALIST_MAX_BUFFER || String(10 * 1024 * 1024), 10); // 10MB default
 const MAX_CONCURRENT_CLIS = parseInt(process.env.BRUTALIST_MAX_CONCURRENT || '3', 10); // 3 concurrent CLIs
 

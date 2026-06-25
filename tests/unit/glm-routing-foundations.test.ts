@@ -508,6 +508,41 @@ describe('pre-flight auth gating (inherit-native vs token)', () => {
       (global as any).fetch = realFetch;
     }
   });
+
+  it('an over-quota gateway (429) is pre-flighted out and fails FAST, not retried for minutes', async () => {
+    const realFetch = (global as any).fetch;
+    (global as any).fetch = jest.fn<() => Promise<any>>().mockResolvedValue({ status: 429 });
+    try {
+      const o = orch();
+      const spy = stubExec(o);
+      const results = await o.executeBrutalistAnalysis('code' as any, 'x', 'spec', undefined, {
+        clients: [{ id: 'glm', provider: 'claude', baseUrl: 'https://glm.x', authToken: 't', model: 'glm-5.1', smallFastModel: 'glm-4.5-air', configDir: '/tmp/glm-quota-test' }],
+      });
+      expect(ranIds(spy)).not.toContain('glm'); // pre-flighted out — no full run, no 3-4min retry
+      const glm = results.find((r) => r.clientId === 'glm');
+      expect(glm?.success).toBe(false);
+      expect(glm?.error).toContain('quota');
+    } finally {
+      (global as any).fetch = realFetch;
+    }
+  });
+
+  it('a probe TIMEOUT does NOT skip a (possibly slow-but-healthy) routed client — it still runs', async () => {
+    const realFetch = (global as any).fetch;
+    const timeoutErr = Object.assign(new Error('aborted due to timeout'), { name: 'TimeoutError' });
+    (global as any).fetch = jest.fn<() => Promise<any>>().mockRejectedValue(timeoutErr);
+    try {
+      const o = orch();
+      const spy = stubExec(o);
+      const results = await o.executeBrutalistAnalysis('code' as any, 'x', 'spec', undefined, {
+        clients: [{ id: 'glm', provider: 'claude', baseUrl: 'https://glm.x', authToken: 't', configDir: '/tmp/glm-timeout-test' }],
+      });
+      expect(ranIds(spy)).toContain('glm'); // stayed live — a slow probe must not false-skip
+      expect(results.find((r) => r.clientId === 'glm')?.success).toBe(true);
+    } finally {
+      (global as any).fetch = realFetch;
+    }
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────

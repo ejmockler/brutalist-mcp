@@ -40914,12 +40914,14 @@ function readInputs() {
     // overflow them. Fold each ACTIVE native critic's conservative hard window in
     // (same rule as the custom clients: only a critic that actually runs constrains
     // the min).
-    //   claude: always active (its OAuth token is required). 1M ONLY with the [1m]
-    //           model suffix (opus-4.8 on Max/Team/Enterprise OAuth); else 200k.
+    //   claude: always active (its OAuth token is required). The brain reads every
+    //           chunk on `model` and the critic reads it on `claudeCriticModel`, so
+    //           1M holds ONLY when BOTH carry the [1m] suffix (opus-4.8 on Max/Team/
+    //           Enterprise OAuth); a diverged claude-critic-model without [1m] => 200k.
     //   codex:  gpt-5.x-codex floor ~200k (conservative; some tiers run higher).
     //   agy:    Gemini hard window 1M (its ~135k auto-compaction is a fidelity
     //           limit, not an overflow, so it does not cap the chunk).
-    participantWindows.push(/\[1m\]/i.test(model) ? 1_000_000 : 200_000);
+    participantWindows.push(/\[1m\]/i.test(model) && /\[1m\]/i.test(claudeCriticModel) ? 1_000_000 : 200_000);
     if (lib_core.getInput('codex-auth') || lib_core.getInput('openai-api-key'))
         participantWindows.push(200_000);
     if (lib_core.getInput('agy-oauth-token'))

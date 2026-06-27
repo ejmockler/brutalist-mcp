@@ -220,6 +220,25 @@ describe('native-critic window floor (active native critics fold into the govern
     const inputs = readInputs();
     expect(inputs.contextWindowTokens).toBe(128_000);
   });
+
+  it('diverged claude-critic-model WITHOUT [1m] caps the window at 200k even when the brain model has [1m]', () => {
+    // The brain reads each chunk on `model`, but the claude CRITIC reads it on
+    // claudeCriticModel — so 1M is only safe when BOTH carry [1m]. A diverged
+    // claude-critic-model without [1m] must NOT let the window exceed the critic's 200k.
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CLAUDE-CRITIC-MODEL'] = 'claude-opus-4-8'; // no [1m]
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(200_000);
+  });
+
+  it('both model AND claude-critic-model on [1m] => claude folds 1M (does not cap a 500k window)', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CLAUDE-CRITIC-MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(500_000);
+  });
 });
 
 describe('custom-claude-clients (multi-client) parse + merge + dedup + cap', () => {

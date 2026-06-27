@@ -155,9 +155,12 @@ inputs:
     description: |
       Governing context window (in tokens) used to size diff chunks. Set this
       to the SMALLEST context window among the participating models so every
-      critic can review every chunk. Under OAuth/subscription auth the usable
-      window is ~200K even for 1M-capable models; raise this only if you have
-      auth (e.g. an API key) that unlocks a larger usable window.
+      critic can review every chunk. opus-4.8's 1M window IS usable via Claude
+      Code OAuth on Max/Team/Enterprise when the model carries the [1m] suffix
+      (e.g. claude-opus-4-8[1m]); without [1m], or on Pro, claude is ~200K. The
+      chunker also folds each active native critic's hard window (claude, codex
+      ~200K, agy 1M) into this min, so a raised value can't exceed the smallest
+      participating critic — codex caps a claude+codex+agy panel at ~200K.
       Default: 200000.
     required: false
     default: '200000'

@@ -40907,6 +40907,23 @@ function readInputs() {
         if (c.contextWindow)
             participantWindows.push(c.contextWindow);
     }
+    // Native critics (claude/codex/agy) ALSO bound each chunk: a chunk larger than
+    // a critic's real hard context window overflows it ("Prompt is too long").
+    // They have no contextWindow input like the routed clients, so they were
+    // invisible to this min — a raised context-window-tokens would silently
+    // overflow them. Fold each ACTIVE native critic's conservative hard window in
+    // (same rule as the custom clients: only a critic that actually runs constrains
+    // the min).
+    //   claude: always active (its OAuth token is required). 1M ONLY with the [1m]
+    //           model suffix (opus-4.8 on Max/Team/Enterprise OAuth); else 200k.
+    //   codex:  gpt-5.x-codex floor ~200k (conservative; some tiers run higher).
+    //   agy:    Gemini hard window 1M (its ~135k auto-compaction is a fidelity
+    //           limit, not an overflow, so it does not cap the chunk).
+    participantWindows.push(/\[1m\]/i.test(model) ? 1_000_000 : 200_000);
+    if (lib_core.getInput('codex-auth') || lib_core.getInput('openai-api-key'))
+        participantWindows.push(200_000);
+    if (lib_core.getInput('agy-oauth-token'))
+        participantWindows.push(1_000_000);
     const contextWindowTokens = Math.min(...participantWindows);
     // Default 15: a chunk may fill up to 85% of the governing window. Nominal
     // 15% understates the real free space — CHARS_PER_TOKEN=3 is a deliberate

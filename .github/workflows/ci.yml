@@ -150,7 +150,15 @@ jobs:
     permissions:
       contents: write   # force-push the moving tags
     steps:
+      # GITHUB_TOKEN (a GitHub App) is REFUSED when force-pushing a moving tag
+      # onto a release commit that changed any .github/workflows/ file — and
+      # there is no `workflows` permission to grant it. Use a PAT with `workflow`
+      # scope (secret MOVE_TAGS_PAT) when present so @vMAJOR/@vMAJOR.MINOR still
+      # advance for workflow-touching releases; fall back to github.token (prior
+      # behavior) when the secret is absent, so this never blocks the publish.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          token: ${{ secrets.MOVE_TAGS_PAT || github.token }}
 
       - name: Repoint @vMAJOR and @vMAJOR.MINOR at this release
         run: |

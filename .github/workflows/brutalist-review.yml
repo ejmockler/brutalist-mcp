@@ -36,7 +36,11 @@ jobs:
           # and read the checked-out tree. (A ~/.codex/config.toml sandbox setting
           # would NOT work: the adapter passes an explicit --sandbox read-only,
           # which overrides config; this host sysctl is the effective fix.)
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # `|| true`: never hard-fail the install on a runner image that lacks
+          # this key (or sudo) — codex would just degrade to its diff-only review,
+          # which is far better than failing the whole advisory review. Flagged by
+          # the dogfood's own brutalist self-review on this PR.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           # Pin every critic CLI — an unpinned @latest runs before secrets exist,
           # but a planted binary persists and later receives the OAuth tokens.
           npm install -g @brutalist/mcp@1.18.6 @anthropic-ai/claude-code@2.1.162 @openai/codex@0.136.0

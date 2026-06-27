@@ -162,6 +162,66 @@ describe('contextWindowTokens governing-min logic', () => {
   });
 });
 
+describe('native-critic window floor (active native critics fold into the governing min)', () => {
+  it('plain claude (no [1m]) caps a raised configured window at claude\'s 200k', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
+    // No codex/agy tokens => claude is the only active native critic.
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(200_000);
+  });
+
+  it('claude on [1m] raises claude\'s native window to 1M (does not cap a 500k window)', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(500_000);
+  });
+
+  it('active codex (codex-auth) caps the governing window at ~200k even with claude on [1m]', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
+    process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(200_000);
+  });
+
+  it('active codex via openai-api-key also caps at ~200k', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
+    process.env['INPUT_OPENAI-API-KEY'] = 'sk-test-key';
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(200_000);
+  });
+
+  it('active agy alone (Gemini 1M hard window) does not cap below a raised window', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
+    process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
+    // min(500k, claude 1M, agy 1M) = 500k — agy's ~135k compaction is fidelity, not overflow.
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(500_000);
+  });
+
+  it('claude-only [1m] panel (no codex/agy) can chunk above 200k', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '300000';
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(300_000);
+  });
+
+  it('a routed custom client still wins when it is the smallest, regardless of native floors', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
+    process.env['INPUT_CUSTOM-CLAUDE-BASE-URL'] = 'https://example.test/v1';
+    process.env['INPUT_CUSTOM-CLAUDE-AUTH-TOKEN'] = 'sk-custom-abcdef';
+    process.env['INPUT_CUSTOM-CLAUDE-MODEL'] = 'glm-5.1';
+    process.env['INPUT_CUSTOM-CLAUDE-CONTEXT-WINDOW'] = '128000';
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(128_000);
+  });
+});
+
 describe('custom-claude-clients (multi-client) parse + merge + dedup + cap', () => {
   const setClients = (v: string) => { process.env['INPUT_CUSTOM-CLAUDE-CLIENTS'] = v; };
   const C = (over: Record<string, unknown> = {}) =>

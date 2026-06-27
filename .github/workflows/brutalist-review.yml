@@ -27,6 +27,16 @@ jobs:
           node-version: '20'
       - name: Install CLI critics
         run: |
+          # codex 0.115+ sandboxes its model-run shell tools with bubblewrap; on
+          # ubuntu-24.04 runners kernel.apparmor_restrict_unprivileged_userns=1
+          # blocks bwrap's user-namespace setup → "bwrap: loopback: Failed
+          # RTM_NEWADDR: Operation not permitted" → codex can exec nothing and
+          # falls back to a diff-only (not codebase-grounded) review. Lift the
+          # restriction so codex's read-only sandbox can build its netns/loopback
+          # and read the checked-out tree. (A ~/.codex/config.toml sandbox setting
+          # would NOT work: the adapter passes an explicit --sandbox read-only,
+          # which overrides config; this host sysctl is the effective fix.)
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           # Pin every critic CLI — an unpinned @latest runs before secrets exist,
           # but a planted binary persists and later receives the OAuth tokens.
           npm install -g @brutalist/mcp@1.18.3 @anthropic-ai/claude-code@2.1.162 @openai/codex@0.136.0

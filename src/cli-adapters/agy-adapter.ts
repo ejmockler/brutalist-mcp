@@ -83,10 +83,13 @@ export const AGY_BINARY = resolveAgyBin();
 
 /**
  * Inline Python wrapper — ONE concern: PTY allocation. agy issue #76 (stdout
- * silently dropped when stdout is not a TTY) hits macOS and Windows but NOT
- * Linux. The wrapper creates a pty pair, forks, the child sees the slave TTY
- * (bypassing agy's isatty check), the parent reads the master and writes to
- * its own stdout (a pipe — fine regardless of #76).
+ * silently dropped when stdout is not a TTY) hits EVERY platform whenever agy's
+ * stdout is a pipe — which is exactly how this adapter captures it, Linux CI
+ * included. (The earlier "macOS/Windows but NOT Linux" claim was wrong and left
+ * the Linux CI agy critic returning an empty review on every chunk.) The wrapper
+ * creates a pty pair, forks, the child sees the slave TTY (bypassing agy's
+ * isatty check), the parent reads the master and writes to its own stdout
+ * (a pipe — fine regardless of #76).
  *
  * Model pinning is NO LONGER done here. agy 1.0.10 added a real `--model`
  * flag (it was a dead string in 1.0.2, which is why this used to swap
@@ -106,7 +109,11 @@ status = pty.spawn([agy_bin] + agy_args)
 sys.exit(os.waitstatus_to_exitcode(status))
 `.trim();
 
-const PTY_WRAP_NEEDED = process.platform === 'darwin' || process.platform === 'win32';
+// #76 drops agy's stdout whenever it is a pipe (our subprocess capture) — on
+// EVERY platform, Linux CI included. Wrap everywhere python3 is available
+// (macOS/Linux/Windows CI+dev all ship it) so the captured stdout is non-empty.
+const PTY_WRAP_NEEDED =
+  process.platform === 'darwin' || process.platform === 'linux' || process.platform === 'win32';
 
 // Fail-fast backstop for agy. It critiques in ~10-15s when healthy but can
 // occasionally stall (the original breakage was the uncontrolled 1.0.2->1.0.10

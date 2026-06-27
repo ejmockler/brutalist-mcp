@@ -40908,7 +40908,15 @@ function readInputs() {
             participantWindows.push(c.contextWindow);
     }
     const contextWindowTokens = Math.min(...participantWindows);
-    const contextHeadroomPct = parseIntInput('context-headroom-pct', '40', 0, 90);
+    // Default 15: a chunk may fill up to 85% of the governing window. Nominal
+    // 15% understates the real free space — CHARS_PER_TOKEN=3 is a deliberate
+    // underestimate (real diffs run ~3.5/tok), so a chunk's actual token count
+    // lands ~15% under its char-budget, leaving ~25-30% truly free for the
+    // critic's prompt + reasoning + output. Bigger chunks => fewer chunks =>
+    // fewer concurrency waves. Overshooting trips a per-chunk "Prompt is too
+    // long" (caught by runWithConcurrency => degraded coverage, not a hard
+    // fail); a repo that hits it can raise context-headroom-pct back up.
+    const contextHeadroomPct = parseIntInput('context-headroom-pct', '15', 0, 90);
     // Default 6: large diffs commonly split into a handful of chunks, and at
     // concurrency 2 a 6-chunk review serialized into 3 waves — overrunning tight
     // job timeout-minutes on consumers (bobnetsec/core died at 20 min mid-wave).

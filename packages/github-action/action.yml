@@ -165,9 +165,10 @@ inputs:
     description: |
       Percentage of the context window reserved as working room for the agent
       (reasoning, tool round-trips, output). A diff chunk uses at most
-      (100 − this)% of the window. Default: 40 (chunks ≤ 60% of the window).
+      (100 − this)% of the window. Default: 15 (chunks ≤ 85% of the window);
+      the conservative 3-chars/token estimate leaves additional real headroom.
     required: false
-    default: '40'
+    default: '15'
   chunk-concurrency:
     description: |
       Maximum number of chunk reviews to run in parallel for diffs that span

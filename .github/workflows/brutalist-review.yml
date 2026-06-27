@@ -44,10 +44,10 @@ jobs:
         # fix (orchestrator default 50) so the brain no longer exhausts turns.
         uses: ejmockler/brutalist-mcp/packages/github-action@v1
         env:
-          # Per-critic cap (claude/codex). As of 1.18.0 agy self-caps at 6 min
-          # (BRUTALIST_AGY_TIMEOUT) so a stall fails fast instead of burning this
-          # full 15-min budget; the orchestrator gets 35 min so the brain still has
-          # room to work after the slowest critic returns.
+          # Per-critic cap (claude/codex): 30 min. As of 1.18.0 agy self-caps at
+          # 6 min (BRUTALIST_AGY_TIMEOUT) so a stall fails fast instead of burning
+          # this full 30-min budget; the orchestrator gets 45 min so the brain
+          # still has room to work after the slowest critic returns.
           BRUTALIST_TIMEOUT: "1800000"
           BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2700000"
           # Freeze agy's binary for the whole job. agy self-updates from a

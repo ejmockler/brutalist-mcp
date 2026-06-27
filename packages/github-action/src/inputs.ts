@@ -315,7 +315,15 @@ export function readInputs(): ActionInputs {
   }
   const contextWindowTokens = Math.min(...participantWindows);
   const contextHeadroomPct = parseIntInput('context-headroom-pct', '40', 0, 90);
-  const chunkConcurrency = parseIntInput('chunk-concurrency', '2', 1, 16);
+  // Default 6: large diffs commonly split into a handful of chunks, and at
+  // concurrency 2 a 6-chunk review serialized into 3 waves — overrunning tight
+  // job timeout-minutes on consumers (bobnetsec/core died at 20 min mid-wave).
+  // 6 runs the typical multi-chunk diff in a SINGLE wave so wall-clock is one
+  // chunk, not ⌈chunks/2⌉ of them. Bounded at 16. The real ceiling is the
+  // shared subscription's concurrent-session rate limit, not the 2-core
+  // runner (each chunk is I/O-bound on critic LLM calls, not CPU); a repo that
+  // trips 429s can dial this back down via the chunk-concurrency input.
+  const chunkConcurrency = parseIntInput('chunk-concurrency', '6', 1, 16);
   const usableTokens = Math.floor(contextWindowTokens * (1 - contextHeadroomPct / 100));
   const maxChunkChars = Math.max(1000, usableTokens * CHARS_PER_TOKEN);
 

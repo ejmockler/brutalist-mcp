@@ -171,10 +171,11 @@ inputs:
   chunk-concurrency:
     description: |
       Maximum number of chunk reviews to run in parallel for diffs that span
-      multiple chunks. Higher is faster but more likely to hit subscription
-      rate limits. Default: 2.
+      multiple chunks. Higher is faster (a multi-chunk diff finishes in fewer
+      sequential waves, so it fits tighter job timeout-minutes) but more likely
+      to hit subscription rate limits. Default: 6.
     required: false
-    default: '2'
+    default: '6'
 runs:
   using: 'node24'
   main: 'dist/index.js'

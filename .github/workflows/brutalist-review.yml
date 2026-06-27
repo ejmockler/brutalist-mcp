@@ -62,15 +62,16 @@ jobs:
           codex-auth: ${{ secrets.CODEX_AUTH }}
           agy-oauth-token: ${{ secrets.AGY_OAUTH_TOKEN }}
           minimum-severity: medium
-          # GLM routed critic — Anthropic-compatible gateway (public Tailscale Funnel).
-          # Additive 4th critic, hardened by default (no web/MCP, no native creds —
-          # verified: includeProcessAuth:false + authTokenEnv). Native critics are
-          # unaffected. Latency: GLM is the SLOWEST critic (~5min even healthy). A
-          # truly-DOWN gateway fails fast (~5s preflight), but an OVER-QUOTA 429
-          # retries ~3-4min per chunk. Reviews are advisory, so this never gates merges.
-          custom-claude-client-id: glm
-          custom-claude-base-url: https://immersivecommons13.tail5da903.ts.net
-          custom-claude-auth-token: ${{ secrets.GLM_TOKEN }}
-          custom-claude-model: glm-5.1
-          custom-claude-small-fast-model: glm-4.5-air
-          custom-claude-context-window: 128000
+          # claude critic + orchestrator brain run Opus 4.8 with the 1M context
+          # window. The [1m] suffix is the RELIABLE lever (Claude Code parses and
+          # strips it before the request); the silent Max auto-upgrade is flaky.
+          # Requires this OAuth token to be Max/Team/Enterprise — on a Pro token
+          # [1m] can error. Does NOT change chunk SIZE: codex (~200k) still governs
+          # the diff-chunk window, so this only buys claude headroom (no compaction,
+          # better synthesis), not fewer chunks. CLI pin (2.1.162) already supports it.
+          model: "claude-opus-4-8[1m]"
+          # GLM routed critic temporarily removed. Re-add the custom-claude-* block
+          # (client-id glm, base-url, GLM_TOKEN, model glm-5.1, small-fast glm-4.5-air,
+          # context-window 128000) to restore it. NOTE: GLM's 128000 was the only
+          # participant window folding into the diff-chunk min — without it the
+          # governing window is the configured default (200000).

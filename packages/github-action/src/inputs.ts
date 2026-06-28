@@ -199,6 +199,14 @@ export interface ActionInputs {
  */
 const CHARS_PER_TOKEN = 3;
 
+// Conservative fallback window (tokens) for any critic whose real context window
+// we can't confirm: codex, a non-[1m] claude, or a routed client that omits
+// contextWindow. Over-chunking is the safe failure; under-constraining overflows.
+const CONSERVATIVE_WINDOW_TOKENS = 200_000;
+// Wide window (tokens) for critics that genuinely hold ~1M: claude on [1m]
+// (opus-4.8 via Max/Team/Enterprise OAuth) and agy (Gemini hard window).
+const WIDE_WINDOW_TOKENS = 1_000_000;
+
 function parseIntInput(name: string, fallback: string, min: number, max: number): number {
   const raw = core.getInput(name) || fallback;
   const n = parseInt(raw, 10);
@@ -311,7 +319,12 @@ export function readInputs(): ActionInputs {
   const configuredWindow = parseIntInput('context-window-tokens', '200000', 10_000, 2_000_000);
   const participantWindows = [configuredWindow];
   for (const c of customClaudeClients) {
-    if (c.contextWindow) participantWindows.push(c.contextWindow);
+    // Every client here is ACTIVE (runnable). A client that DECLARES a window
+    // contributes it; one that OMITS it is an unknown we must not assume holds
+    // the (possibly raised) configured window — fold the conservative floor so a
+    // 1M chunk can't silently overflow it. (Previously an omitted window was
+    // skipped entirely, leaving exactly that overflow.)
+    participantWindows.push(c.contextWindow ?? CONSERVATIVE_WINDOW_TOKENS);
   }
   // Native critics (claude/codex/agy) ALSO bound each chunk: a chunk larger than
   // a critic's real hard context window overflows it ("Prompt is too long").
@@ -324,12 +337,23 @@ export function readInputs(): ActionInputs {
   //           chunk on `model` and the critic reads it on `claudeCriticModel`, so
   //           1M holds ONLY when BOTH carry the [1m] suffix (opus-4.8 on Max/Team/
   //           Enterprise OAuth); a diverged claude-critic-model without [1m] => 200k.
+  //           NB: `[1m]` is the Claude Code ENABLEMENT suffix (Claude Code parses
+  //           and strips it to turn on the 1M beta context) — NOT a guess at
+  //           Anthropic's model naming. A model without [1m] genuinely gets ~200k
+  //           via OAuth, so the conservative fallback is correct, not fragile.
   //   codex:  gpt-5.x-codex floor ~200k (conservative; some tiers run higher).
   //   agy:    Gemini hard window 1M (its ~135k auto-compaction is a fidelity
   //           limit, not an overflow, so it does not cap the chunk).
-  participantWindows.push(/\[1m\]/i.test(model) && /\[1m\]/i.test(claudeCriticModel) ? 1_000_000 : 200_000);
-  if (core.getInput('codex-auth') || core.getInput('openai-api-key')) participantWindows.push(200_000);
-  if (core.getInput('agy-oauth-token')) participantWindows.push(1_000_000);
+  // The codex/agy floors key off INPUT PRESENCE, not whether the binary is
+  // installed (readInputs runs before runPreflight, and agy isn't probed there).
+  // An authed-but-not-installed critic therefore still constrains the window —
+  // over-chunking, the SAFE direction. Under-constraining would overflow a critic
+  // that IS installed, so presence-gating is intentional, not a missed check.
+  participantWindows.push(
+    /\[1m\]/i.test(model) && /\[1m\]/i.test(claudeCriticModel) ? WIDE_WINDOW_TOKENS : CONSERVATIVE_WINDOW_TOKENS,
+  );
+  if (core.getInput('codex-auth') || core.getInput('openai-api-key')) participantWindows.push(CONSERVATIVE_WINDOW_TOKENS);
+  if (core.getInput('agy-oauth-token')) participantWindows.push(WIDE_WINDOW_TOKENS);
   const contextWindowTokens = Math.min(...participantWindows);
   // Default 15: a chunk may fill up to 85% of the governing window. Nominal
   // 15% understates the real free space — CHARS_PER_TOKEN=3 is a deliberate

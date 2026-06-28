@@ -149,7 +149,10 @@ inputs:
       Context window (tokens) of the custom Claude-routed critic model, e.g.
       128000 for GLM-4.5. The diff chunker sizes chunks to the SMALLEST
       participant window, so set this when the routed model's window is below
-      context-window-tokens to avoid 'prompt too long'.
+      context-window-tokens to avoid 'prompt too long'. If OMITTED, an active
+      routed critic is treated as the conservative 200000 floor — so a routed
+      critic with a genuinely LARGER window (e.g. 1M) MUST declare it here, or
+      chunks are capped at 200000 (safe over-chunking, not an overflow).
     required: false
   context-window-tokens:
     description: |

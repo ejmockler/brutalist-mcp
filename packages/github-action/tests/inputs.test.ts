@@ -241,6 +241,46 @@ describe('native-critic window floor (active native critics fold into the govern
   });
 });
 
+describe('routed-client window floor (an active custom client without a declared window)', () => {
+  // Test 1 is the Bug-1 differentiator (fails against the old `if (c.contextWindow)`
+  // skip → 500000); tests 2 (declared-window passthrough) and 3 (floor never raises
+  // the min) are regression guards that pass under both old and new code.
+  // Activate the singular custom client (the trio) WITHOUT a context-window.
+  const enableRouting = () => {
+    process.env['INPUT_CUSTOM-CLAUDE-BASE-URL'] = 'https://example.test/v1';
+    process.env['INPUT_CUSTOM-CLAUDE-AUTH-TOKEN'] = 'sk-custom-abcdef';
+    process.env['INPUT_CUSTOM-CLAUDE-MODEL'] = 'glm-5.2';
+  };
+
+  it('active custom client with NO declared window caps the governing window at the 200k floor (was: skipped → overflow)', () => {
+    // claude on [1m] so claude's own floor is 1M — the ONLY sub-500k constraint
+    // is the undeclared custom client. OLD code skipped it → would be 500000.
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CLAUDE-CRITIC-MODEL'] = 'claude-opus-4-8[1m]';
+    enableRouting();
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(200_000);
+  });
+
+  it('a DECLARED custom window is still used, not overridden by the 200k floor', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CLAUDE-CRITIC-MODEL'] = 'claude-opus-4-8[1m]';
+    enableRouting();
+    process.env['INPUT_CUSTOM-CLAUDE-CONTEXT-WINDOW'] = '300000';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(300_000);
+  });
+
+  it('an undeclared-window client does not raise the min above a smaller configured window', () => {
+    enableRouting();
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '150000';
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(150_000);
+  });
+});
+
 describe('custom-claude-clients (multi-client) parse + merge + dedup + cap', () => {
   const setClients = (v: string) => { process.env['INPUT_CUSTOM-CLAUDE-CLIENTS'] = v; };
   const C = (over: Record<string, unknown> = {}) =>

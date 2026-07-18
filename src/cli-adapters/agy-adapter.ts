@@ -14,9 +14,10 @@
  *     agy uses its configured/default model.
  *   - No --system flag either. The adversarial prompt is composed into
  *     the user-prompt slot via the promptWrapper-style folding below.
- *   - Agy's internal print deadline is set to the same resolved budget as the
- *     orchestrator (two hours by default). The PTY wrapper forwards outer
- *     cancellation to agy's entire process group.
+ *   - Agy's internal print wait receives the resolved budget (two hours by
+ *     default) using Go-duration `ms` syntax, which 1.1.4 accepts. It is not a
+ *     reliable wall-clock kill; the outer spawn timeout remains authoritative,
+ *     and the PTY wrapper forwards that cancellation to agy's process group.
  *   - --sandbox redirects writes to ~/.gemini/antigravity-cli/scratch/
  *     instead of writing into the caller's cwd, so agy's agentic loop
  *     can call tools (creating implementation_plan.md, etc.) without
@@ -411,11 +412,12 @@ export class AgyAdapter implements CLIProvider {
       }
     }
 
-    // Never omit this flag: agy 1.1.4 otherwise applies its own hidden 5m
-    // default. `_executeCLI` threads its resolved timeout here so the Node
-    // wrapper and Agy use one policy. Direct adapter callers resolve the same
-    // client/per-call/global/default precedence, with an explicit Agy ceiling
-    // applied only when BRUTALIST_AGY_TIMEOUT is set.
+    // Never omit this flag: agy 1.1.4 otherwise applies its own 5m internal
+    // default. Its Go duration parser accepts this millisecond syntax, but its
+    // waiter is not a reliable wall-clock kill; spawnAsync remains authoritative.
+    // `_executeCLI` still threads the resolved budget here so Agy's internal
+    // wait is not shorter. Direct callers use the same precedence, with an
+    // explicit Agy ceiling only when BRUTALIST_AGY_TIMEOUT is set.
     const requestedTimeoutMs = options.effectiveTimeoutMs
       ?? options.activeClient?.timeout
       ?? options.timeout

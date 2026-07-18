@@ -59,13 +59,15 @@ codex mcp add brutalist -- brutalist-mcp
 **Configuring `tool_timeout_sec` for Codex:**
 Codex's MCP client defaults `tool_timeout_sec` to 60 seconds, so configure the Brutalist server entry directly in `~/.codex/config.toml`; it cannot be passed via `codex mcp add`.
 
-Set it to 7200 seconds to match Brutalist's two-hour agent default:
+Set it to at least 9000 seconds for a normal parallel roast. That leaves 30
+minutes of transport and synthesis headroom beyond Brutalist's two-hour
+per-agent default; raise it further for multi-round debates:
 
 ```toml
 [mcp_servers.brutalist]
 command = "brutalist-mcp" # Ensure this matches your installation command
 args = [] # Depending on your setup, this might be empty or contain arguments
-tool_timeout_sec = 7200 # Match Brutalist's two-hour default
+tool_timeout_sec = 9000 # 2h critic budget + 30m client/synthesis headroom
 ```
 
 

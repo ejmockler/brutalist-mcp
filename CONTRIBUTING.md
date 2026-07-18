@@ -45,14 +45,14 @@ const args = ['--print', combined,
               '--dangerously-skip-permissions'];
 await spawnAsync(process.env.AGY_BIN || 'agy', args, {
   cwd: workingDir,
-  timeout: 7200000  // Agy and the outer orchestrator share the resolved wall clock
+  timeout: 7200000  // Authoritative wall clock; the Agy flag is an internal wait hint
 });
 ```
 
 ### Known Failure Patterns
 
 - **Claude --append-system-prompt**: Times out in spawn context
-- **Agy --print-timeout**: Never omit it; Agy otherwise applies its own five-minute default. Pass the resolved outer timeout in milliseconds.
+- **Agy --print-timeout**: Never omit it; Agy otherwise applies its own five-minute internal default. Agy 1.1.4 accepts Go-duration milliseconds (for example `7200000ms`), but the flag is not a reliable wall-clock kill. Pass the resolved budget as an internal hint and keep `spawnAsync` authoritative.
 - **Agy --print + stdin**: agy ignores stdin in print mode; prompt must be in argv
 - **Agy on macOS PATH**: If the Antigravity desktop IDE is installed, its wrapper at `~/.antigravity/antigravity/bin/agy` may shadow the CLI agent at `~/.local/bin/agy`. Use `AGY_BIN=$HOME/.local/bin/agy` to disambiguate
 

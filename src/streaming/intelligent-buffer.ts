@@ -9,6 +9,7 @@
 
 import { logger } from '../logger.js';
 import { StreamingEvent } from '../cli-agents.js';
+import { DEFAULT_AGENT_TIMEOUT_MS } from '../constants.js';
 
 /**
  * Priority level for events
@@ -685,11 +686,11 @@ export class IntelligentBuffer {
   }
   
   /**
-   * Clean up stale sessions (no activity for > 1 hour)
+   * Clean up stale sessions after the default run budget plus retention room.
    */
   private cleanupStaleSessions(): void {
     const now = Date.now();
-    const staleThreshold = 60 * 60 * 1000; // 1 hour
+    const staleThreshold = DEFAULT_AGENT_TIMEOUT_MS + 60 * 60 * 1000;
     
     for (const [sessionId, state] of this.states.entries()) {
       if (now - state.lastFlush > staleThreshold) {

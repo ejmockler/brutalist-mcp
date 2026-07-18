@@ -23,6 +23,7 @@ export { classifyRouting, isRoutedClient };
 import { AGY_BINARY } from './cli-adapters/agy-adapter.js';
 import type { MetricsRegistry } from './metrics/index.js';
 import { CLI_SPAWN_LABELS, safeMetric } from './metrics/index.js';
+import { DEFAULT_AGENT_TIMEOUT_MS, optionalPositiveInteger, positiveIntegerOr } from './constants.js';
 
 function sanitizeModelNameForMessage(model?: string): string {
   if (!model) return 'requested model';
@@ -309,7 +310,7 @@ export type BrutalistPromptType =
   | 'legal';
 
 // Configurable timeouts and limits
-const DEFAULT_TIMEOUT = parseInt(process.env.BRUTALIST_TIMEOUT || '1800000', 10); // 30 minutes default
+const DEFAULT_TIMEOUT = positiveIntegerOr(process.env.BRUTALIST_TIMEOUT, DEFAULT_AGENT_TIMEOUT_MS);
 const CLI_CHECK_TIMEOUT = parseInt(process.env.BRUTALIST_CLI_CHECK_TIMEOUT || '5000', 10); // 5 seconds for CLI checks
 const ROUTED_PROBE_TIMEOUT = parseInt(process.env.BRUTALIST_ROUTED_PROBE_TIMEOUT || '10000', 10); // 10s — routed-client /v1/messages quota/auth probe (429 returns instantly; this only bounds a slow first token)
 const MAX_BUFFER_SIZE = parseInt(process.env.BRUTALIST_MAX_BUFFER || String(10 * 1024 * 1024), 10); // 10MB default
@@ -317,7 +318,11 @@ const MAX_CONCURRENT_CLIS = parseInt(process.env.BRUTALIST_MAX_CONCURRENT || '3'
 
 // Resource limits for security
 const MAX_MEMORY_MB = parseInt(process.env.BRUTALIST_MAX_MEMORY || '2048', 10); // 2GB memory limit per process
-const MAX_CPU_TIME_SEC = parseInt(process.env.BRUTALIST_MAX_CPU_TIME || '3000', 10); // 50 minutes CPU time (should exceed default timeout)
+// Despite the legacy env name, this is elapsed process runtime, not measured
+// CPU time. It is opt-in: the outer spawn timeout already owns the default
+// wall-clock budget, and a fixed secondary limit would silently defeat a
+// two-hour default or any explicit longer override.
+const MAX_PROCESS_RUNTIME_SEC = optionalPositiveInteger(process.env.BRUTALIST_MAX_CPU_TIME);
 const MEMORY_CHECK_INTERVAL = 5000; // Check memory usage every 5 seconds
 
 // Process tracking for resource management
@@ -665,11 +670,11 @@ async function spawnAsync(
             return;
           }
           
-          // Check CPU time limit
+          // Optional elapsed-runtime backstop (legacy env name says "CPU").
           const runtimeMs = Date.now() - processInfo.startTime;
-          if (runtimeMs > MAX_CPU_TIME_SEC * 1000) {
+          if (MAX_PROCESS_RUNTIME_SEC && runtimeMs > MAX_PROCESS_RUNTIME_SEC * 1000) {
             child.kill('SIGTERM');
-            reject(new Error(`Process exceeded CPU time limit: ${runtimeMs}ms > ${MAX_CPU_TIME_SEC * 1000}ms`));
+            reject(new Error(`Process exceeded configured runtime limit: ${runtimeMs}ms > ${MAX_PROCESS_RUNTIME_SEC * 1000}ms`));
             return;
           }
           
@@ -812,6 +817,8 @@ export interface CLIAgentOptions {
   requestId?: string; // Unique request identifier
   debateMode?: boolean; // Suppress filesystem exploration for pure argumentation
   mcpServers?: string[]; // MCP server names to enable (e.g., ['playwright'])
+  /** Resolved wall-clock budget threaded to adapters by the orchestrator. */
+  effectiveTimeoutMs?: number;
   /**
    * Optional scoped logger threaded into provider.buildCommand / decodeOutput.
    * When present, adapters emit via this logger (narrowed with forOperation)
@@ -835,11 +842,9 @@ export interface CLIClientSpec {
   includeProcessAuth?: boolean;
   /**
    * Tool/sandbox containment for a Claude-provider client. 'hardened'
-   * (the default for any routed client) additionally denies WebFetch,
-   * WebSearch, and all MCP servers — the routed model decides tool calls
-   * under bypassPermissions, so a third-party gateway must not get web
-   * egress. 'standard' restores the native tool surface (only for an
-   * endpoint you fully trust).
+   * (the default for any routed client) suppresses caller-requested MCP
+   * servers. Bash, WebFetch, and WebSearch remain available in both modes.
+   * 'standard' restores requested MCP for a trusted endpoint.
    */
   containment?: 'hardened' | 'standard';
   workingDirectory?: string;
@@ -885,15 +890,15 @@ export interface CLIContext {
 
 export class CLIAgentOrchestrator {
   // Per-CLI spawn timeout. MUST honor BRUTALIST_TIMEOUT (DEFAULT_TIMEOUT,
-  // read from env at module load) — this was previously hardcoded to
-  // 1800000, which silently shadowed the env: executeSingleCLI passes
+  // read from env at module load) — this was previously hardcoded, which
+  // silently shadowed the env: executeSingleCLI passes
   // `options.timeout || this.defaultTimeout` to spawnAsync, and spawnAsync's
   // own `options.timeout || DEFAULT_TIMEOUT` then never reached DEFAULT_TIMEOUT
   // because this value was always set. Net effect: BRUTALIST_TIMEOUT was dead
   // for real critic spawns and any stalled critic (e.g. agy's agentic loop)
-  // ran the full 30 min, colliding with the orchestrator's wall-clock budget.
+  // ran until the hardcoded cap, colliding with the orchestrator's budget.
   // Unifying on DEFAULT_TIMEOUT makes the per-critic cap actually configurable
-  // (default unchanged at 1800000 when the env is unset).
+  // (two hours when the env is unset).
   private defaultTimeout = DEFAULT_TIMEOUT; // honors BRUTALIST_TIMEOUT env
   private defaultWorkingDir = process.cwd();
   private cliContext: CLIContext = { availableCLIs: [] };
@@ -1185,8 +1190,8 @@ export class CLIAgentOrchestrator {
     const clientId = client?.id;
     const workingDir = client?.workingDirectory || options.workingDirectory || this.defaultWorkingDir;
     let timeout = client?.timeout || options.timeout || this.defaultTimeout;
-    // Per-provider fail-fast ceiling: a provider (agy) may cap its spawn timeout
-    // below the global so a stall fails fast instead of burning BRUTALIST_TIMEOUT.
+    // Optional explicit per-provider ceiling. No provider has a shorter
+    // built-in default; Agy sets this only via BRUTALIST_AGY_TIMEOUT.
     const providerMaxTimeout = getProvider(cliName).getConfig().maxTimeoutMs;
     if (providerMaxTimeout && providerMaxTimeout < timeout) {
       this.emitLog().info(`⏱️ Capping ${cliName} timeout to its adapter ceiling`, {
@@ -1232,7 +1237,10 @@ export class CLIAgentOrchestrator {
       }
 
 
-      built = await commandBuilder(userPrompt, systemPromptSpec, options);
+      built = await commandBuilder(userPrompt, systemPromptSpec, {
+        ...options,
+        effectiveTimeoutMs: timeout,
+      });
       const { command, args, env, input } = built;
       tempMcpConfigPath = built.tempMcpConfigPath;
 
@@ -1572,7 +1580,7 @@ export class CLIAgentOrchestrator {
       if (tempMcpConfigPath) {
         await cleanupTempConfig(tempMcpConfigPath);
       }
-      // Clean up the agy oversized-prompt spill file (scratch dir). Reuses
+      // Clean up agy's temporary task file in its scratch dir. Reuses
       // cleanupTempConfig's ENOENT-tolerant unlink. `built` is hoisted, so
       // this runs whether the spawn succeeded, failed, or threw.
       if (built?.tempPromptPath) {

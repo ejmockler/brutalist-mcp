@@ -13,6 +13,7 @@ import { randomUUID } from 'crypto';
 import { logger } from '../logger.js';
 import { StreamingEvent } from '../cli-agents.js';
 import { IntelligentBuffer, EventBatch } from './intelligent-buffer.js';
+import { DEFAULT_AGENT_TIMEOUT_MS } from '../constants.js';
 
 /**
  * Session manager statistics
@@ -114,7 +115,7 @@ export interface SessionEvents {
  * Session configuration options
  */
 export interface SessionConfig {
-  ttl?: number;              // Time-to-live in milliseconds (default: 2 hours)
+  ttl?: number;              // Time-to-live in milliseconds (default: 3 hours)
   maxConnections?: number;   // Max concurrent connections per session (default: 5)
   maxMemoryMB?: number;      // Memory limit per session (default: 100MB)
   maxEvents?: number;        // Maximum events to store (default: 10000)
@@ -151,7 +152,7 @@ export class SessionChannelManager extends EventEmitter {
   // Configuration
   private readonly config: Required<SessionConfig>;
   private readonly DEFAULT_CONFIG: Required<SessionConfig> = {
-    ttl: 2 * 60 * 60 * 1000,        // 2 hours
+    ttl: DEFAULT_AGENT_TIMEOUT_MS + 60 * 60 * 1000, // 1h beyond a default run
     maxConnections: 5,               // 5 concurrent connections
     maxMemoryMB: 100,               // 100MB per session
     maxEvents: 10000,               // 10k events

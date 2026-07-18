@@ -714,7 +714,11 @@ child.stdout?.on('data', (data) => {
 **Resource Limits**:
 ```typescript
 const MAX_MEMORY_MB = 2048;     // 2GB per process
-const MAX_CPU_TIME_SEC = 3000;  // 50 minutes
+// Optional operator ceiling; no fixed secondary wall timer undercuts the
+// two-hour agent default.
+const MAX_PROCESS_RUNTIME_SEC = optionalPositiveInteger(
+  process.env.BRUTALIST_MAX_CPU_TIME,
+);
 
 // Memory monitoring every 5 seconds
 setInterval(async () => {

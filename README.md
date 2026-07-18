@@ -57,15 +57,15 @@ codex mcp add brutalist -- brutalist-mcp
 ```
 
 **Configuring `tool_timeout_sec` for Codex:**
-The `tool_timeout_sec` parameter (defaulting to 60 seconds) for your Brutalist MCP server needs to be configured directly in your Codex configuration file at `~/.codex/config.toml`. It cannot be passed via the `codex mcp add` command directly.
+Codex's MCP client defaults `tool_timeout_sec` to 60 seconds, so configure the Brutalist server entry directly in `~/.codex/config.toml`; it cannot be passed via `codex mcp add`.
 
-To set a custom timeout (e.g., 5 minutes or 300 seconds), add or modify the `[mcp_servers.brutalist]` section in `~/.codex/config.toml` as follows:
+Set it to 7200 seconds to match Brutalist's two-hour agent default:
 
 ```toml
 [mcp_servers.brutalist]
 command = "brutalist-mcp" # Ensure this matches your installation command
 args = [] # Depending on your setup, this might be empty or contain arguments
-tool_timeout_sec = 300 # Set your desired timeout in seconds
+tool_timeout_sec = 7200 # Match Brutalist's two-hour default
 ```
 
 
@@ -338,7 +338,7 @@ A client is **routed** as soon as it sets `baseUrl` (or `authToken`/`authTokenEn
 - **Isolated credentials.** A routed client never inherits the host's native `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN` — only its own endpoint + token reach the gateway process. Set `includeProcessAuth: true` to opt back into inheriting native auth. (Conversely, the native critic never inherits an ambient `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`, so a `GLM` export in your shell can't silently reroute the trusted critic.)
 - **Isolated state.** `configDir` maps to `CLAUDE_CONFIG_DIR`; if omitted, a per-client dir under `~/.brutalist/claude-clients/<id>` is created (mode `0700`).
 - **`smallFastModel`** defaults to `model` so a gateway never receives Claude's built-in haiku model name.
-- **Hardened tools.** The routed model decides tool calls under `--permission-mode bypassPermissions`, so a routed critic additionally denies `WebFetch`/`WebSearch` and suppresses MCP servers — closing the prompt-injection exfiltration channel. Set `containment: "standard"` to restore the full tool surface for an endpoint you fully trust.
+- **MCP containment.** Routed critics suppress caller-requested MCP servers by default. Set `containment: "standard"` to restore requested MCP for a trusted endpoint. Bash, `WebFetch`, and `WebSearch` are available in both modes.
 
 Custom-endpoint fields (`baseUrl`, `authToken`, `model`, `containment`, …) are only valid for `provider: "claude"`; a `codex`/`agy` client carrying them is rejected. Up to **16** named clients may run in one roast (`clients[]` cap). `roast_cli_debate` does not support `clients`.
 
@@ -357,9 +357,9 @@ The GitHub Action wires the same multi-client surface. Pass a JSON array via `cu
       ]
 ```
 
-Each entry's token is placed in a dedicated env var and referenced via `authTokenEnv` — raw tokens are never inlined into the forwarded `BRUTALIST_CLAUDE_CLIENTS`. Every client gets an isolated `~/.brutalist/claude-clients/<id>` config dir (mode `0700`), and is **isolated + hardened by default** (no native creds, no `WebFetch`/`WebSearch`/MCP) exactly like the `roast` `clients[]` above. The diff chunker sizes chunks to the **smallest** participant window, so set each client's `contextWindow` when its model's usable window is below `context-window-tokens`.
+Each entry's token is placed in a dedicated env var and referenced via `authTokenEnv` — raw tokens are never inlined into the forwarded `BRUTALIST_CLAUDE_CLIENTS`. Every client gets an isolated `~/.brutalist/claude-clients/<id>` config dir (mode `0700`), is isolated from native credentials, and suppresses caller-requested MCP by default exactly like the `roast` `clients[]` above. Bash, `WebFetch`, and `WebSearch` remain available. The diff chunker sizes chunks to the **smallest** participant window, so set each client's `contextWindow` when its model's usable window is below `context-window-tokens`.
 
-The singular `custom-claude-*` inputs remain supported for the one-client case and are **backward-compatible** — they work *alongside* `custom-claude-clients` (the singular trio, if set, appends one more client; deduped by id, keep-first on collision). Add `"containment": "standard"` to an entry to restore web/MCP tools for an endpoint you fully trust. The array cap matches the tool: **16** clients.
+The singular `custom-claude-*` inputs remain supported for the one-client case and are **backward-compatible** — they work *alongside* `custom-claude-clients` (the singular trio, if set, appends one more client; deduped by id, keep-first on collision). Add `"containment": "standard"` to an entry to restore requested MCP for an endpoint you trust. The array cap matches the tool: **16** clients.
 
 ## Why Multiple Perspectives
 

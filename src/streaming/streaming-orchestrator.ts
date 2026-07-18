@@ -18,6 +18,7 @@ import { SessionManager } from './session-manager.js';
 import { EnhancedSSETransport } from './sse-transport.js';
 import { ProgressTracker } from './progress-tracker.js';
 import { CircuitBreaker, CircuitBreakerConfig, CachedResponseFallback, DegradedServiceFallback } from './circuit-breaker.js';
+import { DEFAULT_AGENT_TIMEOUT_MS } from '../constants.js';
 
 /**
  * Enhanced streaming CLI execution options
@@ -117,12 +118,12 @@ export class StreamingCLIOrchestrator extends EventEmitter {
     
     this.config = {
       maxConcurrentAnalyses: 10,
-      defaultTimeout: 1800000, // 30 minutes
+      defaultTimeout: DEFAULT_AGENT_TIMEOUT_MS,
       circuitBreakerConfig: {
         failureThreshold: 5,
         recoveryTimeout: 30000,
         successThreshold: 3,
-        timeout: 1800000, // 30 minutes
+        timeout: DEFAULT_AGENT_TIMEOUT_MS,
         monitoringWindow: 300000,
         minimumRequests: 10
       },
@@ -504,7 +505,7 @@ export class StreamingCLIOrchestrator extends EventEmitter {
    */
   private performCleanup(): void {
     const now = Date.now();
-    const staleThreshold = 30 * 60 * 1000; // 30 minutes
+    const staleThreshold = this.config.defaultTimeout + 5 * 60 * 1000;
     
     // Clean up stale analyses
     for (const [sessionId, analysis] of this.activeAnalyses) {

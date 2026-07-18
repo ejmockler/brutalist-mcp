@@ -50,10 +50,9 @@ export function isReservedCustomClientId(sanitizedId: string): boolean {
  * — when it carries ANY routing signal: a base URL (typed field or via
  * env.ANTHROPIC_BASE_URL), a bearer token, or an explicit opt-out of
  * process-auth inheritance. Routed clients are isolated-by-default (no
- * native credential inheritance) and hardened-by-default (no web egress /
- * MCP). Everything else is "native". One predicate gates BOTH auth
- * isolation and tool containment so a client can never be isolated-for-auth
- * but not-hardened-for-tools (or vice versa).
+ * native credential inheritance) and suppress caller-requested MCP by default.
+ * Built-in Bash and web tools remain available. Everything else is "native";
+ * the same routing predicate selects both credential and MCP policy.
  */
 export function classifyRouting(c?: CLIClientSpec): 'native' | 'routed' {
   if (!c) return 'native';

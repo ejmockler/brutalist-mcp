@@ -57,13 +57,13 @@ export const BASE_ROAST_SCHEMA = {
     baseUrl: z.string().url().refine(
       (u) => { try { const p = new URL(u).protocol; return p === 'https:' || p === 'http:'; } catch { return false; } },
       { message: "baseUrl must use http(s) — the prompt, diff, and token are sent there." },
-    ).optional().describe("Claude-compatible endpoint base URL for ANTHROPIC_BASE_URL (http(s) only). Presence marks the client 'routed': isolated from native credentials and hardened (no web egress/MCP) by default."),
+    ).optional().describe("Claude-compatible endpoint base URL for ANTHROPIC_BASE_URL (http(s) only). Presence marks the client 'routed': isolated from native credentials and caller-requested MCP by default; Bash and built-in web tools remain available."),
     authToken: z.string().optional().describe("Bearer token for ANTHROPIC_AUTH_TOKEN. Prefer authTokenEnv for shared configs."),
     authTokenEnv: z.string().optional().describe("Environment variable name containing the bearer token."),
     configDir: z.string().optional().describe("Per-client CLAUDE_CONFIG_DIR for Claude Code state isolation. Defaults to ~/.brutalist/claude-clients/<id> for routed clients."),
     env: z.record(z.string()).optional().describe("Additional per-client environment variables (applied last; override resolved values)."),
     includeProcessAuth: z.boolean().optional().describe("Routed clients are isolated by default (no native Claude credentials). Set true to ALSO inherit the process ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN into this client; set false to force isolation on an otherwise-native client."),
-    containment: z.enum(["hardened", "standard"]).optional().describe("Tool/sandbox policy. 'hardened' (DEFAULT for any routed/custom-endpoint client) additionally denies WebFetch, WebSearch, and all MCP servers. 'standard' restores the native tool surface — only for an endpoint you fully trust."),
+    containment: z.enum(["hardened", "standard"]).optional().describe("MCP policy. 'hardened' (DEFAULT for routed/custom-endpoint clients) suppresses caller-requested MCP servers; 'standard' restores them. Bash, WebFetch, and WebSearch are always available."),
     workingDirectory: z.string().optional(),
     timeout: z.number().int().positive().optional(),
     mcpServers: z.array(z.string()).optional()

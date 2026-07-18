@@ -234,7 +234,7 @@ describe('Build Verification Smoke Tests', () => {
 });
 
 describe('Configuration Validation', () => {
-  it('CPU timeout (source code default) should exceed process timeout', () => {
+  it('secondary elapsed-runtime guard is opt-in', () => {
     const fs = require('fs');
     const path = require('path');
 
@@ -244,21 +244,13 @@ describe('Configuration Validation', () => {
       'utf8'
     );
 
-    // Extract MAX_CPU_TIME_SEC default from source
-    const cpuTimeMatch = cliAgentsContent.match(
-      /MAX_CPU_TIME_SEC\s*=\s*parseInt\([^,]+['"](\d+)['"]/
+    expect(cliAgentsContent).toContain(
+      'optionalPositiveInteger(process.env.BRUTALIST_MAX_CPU_TIME)',
     );
-    expect(cpuTimeMatch).toBeTruthy();
-    expect(cpuTimeMatch).toHaveLength(2);
-
-    const sourceCpuTimeDefault = parseInt(cpuTimeMatch[1]);
-    const DEFAULT_TIMEOUT = 1500000; // 25 minutes (from brutalist-server.ts)
-
-    // Source code default must be greater than process timeout
-    expect(sourceCpuTimeDefault * 1000).toBeGreaterThan(DEFAULT_TIMEOUT);
-
-    // Should be at least 30 minutes (1800 seconds)
-    expect(sourceCpuTimeDefault).toBeGreaterThanOrEqual(1800);
+    expect(cliAgentsContent).not.toMatch(/BRUTALIST_MAX_CPU_TIME\s*\|\|/);
+    expect(cliAgentsContent).toContain(
+      'if (MAX_PROCESS_RUNTIME_SEC && runtimeMs > MAX_PROCESS_RUNTIME_SEC * 1000)',
+    );
   });
 
   it('source modules use ES imports, not require', () => {

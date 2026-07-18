@@ -46,9 +46,9 @@ export interface CLIBuilderConfig {
   mcpSupport?: MCPSupportConfig;
   /**
    * Optional per-provider ceiling on the spawn timeout (ms). When set and
-   * lower than the otherwise-computed timeout, it caps this provider's run —
-   * a fail-fast backstop for a provider known to occasionally stall (agy),
-   * so a hang costs minutes instead of the full global BRUTALIST_TIMEOUT.
+   * lower than the otherwise-computed timeout, it caps this provider's run.
+   * Providers have no implicit ceiling; Agy populates this only when an
+   * operator explicitly sets BRUTALIST_AGY_TIMEOUT.
    */
   maxTimeoutMs?: number;
 }
@@ -104,9 +104,9 @@ export interface CLIProvider {
     // (`_executeCLI`) cleans up via `cleanupTempConfig` in its
     // `finally` block. Undefined when MCP is disabled.
     tempMcpConfigPath?: string;
-    // Set when the adapter spilled an oversized prompt to a temp file
-    // (agy's argv ARG_MAX guard). Caller (`_executeCLI`) unlinks it in
-    // its `finally` block. Undefined for the common inline path.
+    // Set when an adapter routed a prompt through a temporary task file
+    // (agy does this for codebase compatibility and its argv-size guard).
+    // Caller (`_executeCLI`) unlinks it in its `finally` block.
     tempPromptPath?: string;
     // Resolved model name. Surfaced for downstream attribution
     // (per-CLI section headers, orchestrator finding extraction).

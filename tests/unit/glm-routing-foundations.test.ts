@@ -208,9 +208,9 @@ describe('buildClaudeProviderEnv', () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// Containment denylist (B) via buildCLICommand
+// Tool availability + MCP containment via buildCLICommand
 // ───────────────────────────────────────────────────────────────────────────
-describe('Containment (B) — routed critics deny web egress + MCP', () => {
+describe('Routed Claude tool availability and MCP containment', () => {
   function orch(): CLIAgentOrchestrator {
     const o = new CLIAgentOrchestrator();
     (o as any).cliContext = { availableCLIs: ['claude', 'codex'] };
@@ -221,22 +221,24 @@ describe('Containment (B) — routed critics deny web egress + MCP', () => {
     return (orch() as any).buildCLICommand('claude', 'Analyze', 'Be brutal', opts);
   }
   const denylist = (r: any) => r.args[r.args.indexOf('--disallowedTools') + 1] as string;
+  const allowlist = (r: any) => r.args[r.args.indexOf('--allowedTools') + 1] as string;
 
-  it('native critic keeps web tools (denylist exactly Bash,Edit,Write,NotebookEdit)', async () => {
+  it('native critic keeps Bash and web tools (denylist is mutation tools only)', async () => {
     const r = await build({});
-    expect(denylist(r)).toBe('Bash,Edit,Write,NotebookEdit');
+    expect(denylist(r)).toBe('Edit,Write,NotebookEdit');
+    expect(allowlist(r)).toBe('Bash,WebFetch,WebSearch');
   });
 
-  it('routed (hardened-by-default) client denies WebFetch + WebSearch', async () => {
+  it('routed hardened clients keep Bash and web tools available', async () => {
     const r = await build({ activeClient: { id: 'glm', provider: 'claude', baseUrl: 'https://glm.x', authToken: 't', model: 'glm-5.1' } });
-    expect(denylist(r)).toContain('WebFetch');
-    expect(denylist(r)).toContain('WebSearch');
-    expect(denylist(r)).toContain('Bash');
+    expect(denylist(r)).toBe('Edit,Write,NotebookEdit');
+    expect(allowlist(r)).toBe('Bash,WebFetch,WebSearch');
   });
 
-  it("containment:'standard' on a routed client restores the native denylist", async () => {
+  it("containment:'standard' keeps Bash and web tools available", async () => {
     const r = await build({ activeClient: { id: 'glm', provider: 'claude', baseUrl: 'https://glm.x', authToken: 't', containment: 'standard' } });
-    expect(denylist(r)).toBe('Bash,Edit,Write,NotebookEdit');
+    expect(denylist(r)).toBe('Edit,Write,NotebookEdit');
+    expect(allowlist(r)).toBe('Bash,WebFetch,WebSearch');
   });
 
   it('B3: hardened routed client suppresses MCP even when mcpServers supplied', async () => {

@@ -39762,7 +39762,8 @@ You are the brutalist PR review orchestrator. Your job is to run multi-CLI bruta
 - \`mcp__brutalist__roast(domain, target, context?, ...)\` — runs Claude Code, Codex, and Antigravity (agy) CLI critics in parallel and returns merged prose. Each CLI's section is wrapped in stable HTML-comment delimiters (see "Parsing per-CLI output" below). This is your primary information source.
 - \`mcp__brutalist__brutalist_discover(intent)\` — optional domain-selection helper.
 - \`mcp__brutalist__cli_agent_roster()\` — shows which CLIs are available; useful for diagnostics.
-- \`Read(path)\`, \`Grep(pattern, path)\` — for verifying verbatim quotes and reading file context. **You MUST grep every verbatimQuote against the actual file before submitting it.**
+- \`Read(path)\`, \`Grep(pattern, path)\`, and \`Bash(command)\` — for inspecting the repository, running read-only verification commands, and checking file context. **You MUST grep every verbatimQuote against the actual file before submitting it.**
+- \`WebFetch(url, prompt)\` and \`WebSearch(query)\` — for verifying current external evidence when a finding depends on it.
 - \`mcp__orchestrator__submit_findings(...)\` — your **terminal** action. Call exactly once, last.
 
 You do NOT have access to \`mcp__brutalist__roast_cli_debate\`. Don't try to call it. Debate is the wrong shape for breadth code review.
@@ -39957,14 +39958,17 @@ class OrchestratorTimeoutError extends Error {
         this.name = 'OrchestratorTimeoutError';
     }
 }
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+// This is the parent orchestration envelope, not a per-critic deadline.
+// Critics get two hours each; the default three-slot panel runs in parallel,
+// then the brain gets 15 minutes to normalize and submit findings.
+const DEFAULT_TIMEOUT_MS = 2 * 60 * 60 * 1000 + 15 * 60 * 1000; // 2h15m
 // Hard cap on agent turns — the seatbelt against a confused brain looping
 // until the wall-clock timeout. Sized for the worst-case happy path, which is
-// dominated by pagination: a 3-critic roast (claude+codex+agy) routinely
-// exceeds brutalist's ~25k-token page size, so each of up to 3 roasts can span
-// several SAME-domain/target re-calls (one turn each) before it's fully read.
-// Budget: optional brutalist_discover (1) + 3 roast issues (3) + pagination
-// follow-ups (~3 pages × 3 roasts ≈ 9) + grep-based quote verification (~several)
+// dominated by pagination: a multi-critic roast routinely exceeds brutalist's
+// ~25k-token page size, so the single codebase roast can span several
+// SAME-domain/target re-calls (one turn each) before it is fully read.
+// Budget: optional brutalist_discover (1) + roast issue (1) + pagination
+// follow-ups + grep-based quote verification (~several)
 // + terminal submit_findings (1) already crowds 20, leaving zero headroom for a
 // re-read or retry. 50 restores generous slack while staying a non-trivial
 // finite cap; the wall-clock budget (timeoutMs) remains the real seatbelt.
@@ -40193,7 +40197,7 @@ async function run(options) {
     // (6h default) — a turn never completes, so the turn counter never advances.
     // The AbortController propagates through the SDK's child-process tree.
     // Wall-clock budget. Precedence: explicit option > BRUTALIST_ORCHESTRATOR_TIMEOUT_MS
-    // env (lets CI lower it for cheap iteration without a code change) > 30-min default.
+    // env (lets CI tune it without a code change) > 2h15m envelope.
     const envTimeout = Number(process.env.BRUTALIST_ORCHESTRATOR_TIMEOUT_MS);
     const timeoutMs = options.timeoutMs
         ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : DEFAULT_TIMEOUT_MS);
@@ -40217,22 +40221,25 @@ async function run(options) {
             [BRUTALIST_MCP_SERVER_NAME]: brutalistConfig,
             [ORCHESTRATOR_MCP_SERVER_NAME]: orchestratorMcp,
         },
-        // Built-in tools: Read + Grep are needed by the orchestrator itself
-        // to verify verbatim quotes and inspect the repo when prose
-        // references files. Edit/Write/Bash are intentionally absent.
-        tools: ['Read', 'Grep'],
+        // The brain may inspect locally and verify current web evidence directly.
+        // Mutation-specific Edit/Write tools remain absent; Bash and web egress
+        // are intentionally available for every review path.
+        tools: ['Read', 'Grep', 'Bash', 'WebFetch', 'WebSearch'],
         allowedTools: [
             ...ALLOWED_BRUTALIST_TOOLS,
             SUBMIT_FINDINGS_TOOL_FQ,
             'Read',
             'Grep',
+            'Bash',
+            'WebFetch',
+            'WebSearch',
         ],
         disallowedTools: [...DENIED_BRUTALIST_TOOLS],
         systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
         // Hard cap on agent turns — the seatbelt against a confused agent looping
         // until the GitHub Actions job timeout (6h default) before failing. The
-        // system prompt's "at most 3 roast calls" remains the primary budget; this
-        // is the backstop. See DEFAULT_MAX_TURNS for the sizing rationale and the
+        // system prompt's single-roast rule remains the primary budget; this is the
+        // backstop. See DEFAULT_MAX_TURNS for the sizing rationale and the
         // BRUTALIST_ORCHESTRATOR_MAX_TURNS env override.
         maxTurns,
         env: {

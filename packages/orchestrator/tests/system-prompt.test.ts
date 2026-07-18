@@ -21,6 +21,12 @@ describe('ORCHESTRATOR_SYSTEM_PROMPT', () => {
     expect(ORCHESTRATOR_SYSTEM_PROMPT.toLowerCase()).toMatch(/before submitting/);
   });
 
+  it('advertises the always-available Bash and web tools', () => {
+    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('Bash(command)');
+    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('WebFetch(url, prompt)');
+    expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('WebSearch(query)');
+  });
+
   it('explicitly bans the debate tool', () => {
     expect(ORCHESTRATOR_SYSTEM_PROMPT).toContain('roast_cli_debate');
   });

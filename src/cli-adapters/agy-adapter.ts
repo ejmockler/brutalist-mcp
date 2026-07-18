@@ -7,25 +7,17 @@
  * constraints we engineer around here:
  *
  *   - agy --print does NOT accept stdin; prompt goes via argv (~128KB
- *     ARG_MAX cap). Brutalist's actual prompts are well under that.
- *   - No --model flag exists at runtime ("--model" is a dead string in
- *     the binary, rejected by the Go flag parser). agy --print is hard-
- *     pinned to whatever is in `~/.gemini/antigravity-cli/settings.json`
- *     under the `model` key — and only the HUMAN-READABLE label form
- *     ("Gemini 3.1 Pro (High)", not "gemini-3-pro-preview"). When the
- *     caller passes `options.models.agy`, the Python wrapper swaps that
- *     value into settings.json under flock(2), runs agy, restores the
- *     original. Race-safe across processes that share $HOME. Default
- *     (no override) leaves settings.json untouched and agy uses whatever
- *     model the user picked via the TUI's /model command, falling back
- *     to "Gemini 3.5 Flash (Medium)" if unset.
+ *     ARG_MAX cap). Oversized prompts and all codebase critiques use a
+ *     secure scratch-file pointer instead.
+ *   - agy 1.0.10+ accepts a human-readable model label through --model
+ *     (for example "Gemini 3.5 Flash (Medium)"). Without an override,
+ *     agy uses its configured/default model.
  *   - No --system flag either. The adversarial prompt is composed into
  *     the user-prompt slot via the promptWrapper-style folding below.
- *   - --print-timeout is internally broken (e.g. `=3s` runs until
- *     external kill). The orchestrator's spawnAsync timeout is the real
- *     wall-clock enforcement; we still pass --print-timeout 15m as an
- *     internal hint so agy's own polling loop doesn't accidentally
- *     short-circuit.
+ *   - Agy's internal print wait receives the resolved budget (two hours by
+ *     default) using Go-duration `ms` syntax, which 1.1.4 accepts. It is not a
+ *     reliable wall-clock kill; the outer spawn timeout remains authoritative,
+ *     and the PTY wrapper forwards that cancellation to agy's process group.
  *   - --sandbox redirects writes to ~/.gemini/antigravity-cli/scratch/
  *     instead of writing into the caller's cwd, so agy's agentic loop
  *     can call tools (creating implementation_plan.md, etc.) without
@@ -41,7 +33,7 @@
  * agy auto-fires (cgroup-based, see affordance map) and switches to the
  * file-token-storage path on its own — no env var needed on our side.
  */
-import { existsSync, mkdirSync, writeFileSync, openSync, closeSync, constants as fsConstants } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, openSync, closeSync, unlinkSync, constants as fsConstants } from 'node:fs';
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -50,6 +42,7 @@ import type { StructuredLogger } from '../logger.js';
 import type { CLIAgentOptions } from '../cli-agents.js';
 import type { ModelResolver } from '../model-resolver.js';
 import type { CLIProvider, CLIBuilderConfig, CLIName, DecodeResult } from './index.js';
+import { DEFAULT_AGENT_TIMEOUT_MS, optionalPositiveInteger, positiveIntegerOr } from '../constants.js';
 
 /**
  * Resolve which binary to invoke as `agy`. Three-step priority:
@@ -82,48 +75,162 @@ function resolveAgyBin(): string {
 export const AGY_BINARY = resolveAgyBin();
 
 /**
- * Inline Python wrapper — ONE concern: PTY allocation. agy issue #76 (stdout
- * silently dropped when stdout is not a TTY) hits EVERY platform whenever agy's
- * stdout is a pipe — which is exactly how this adapter captures it, Linux CI
- * included. (The earlier "macOS/Windows but NOT Linux" claim was wrong and left
- * the Linux CI agy critic returning an empty review on every chunk.) The wrapper
- * creates a pty pair, forks, the child sees the slave TTY (bypassing agy's
- * isatty check), the parent reads the master and writes to its own stdout
- * (a pipe — fine regardless of #76).
+ * Inline Python wrapper for PTY allocation and lifecycle supervision. agy
+ * issue #76 (stdout silently dropped when stdout is not a TTY) hits EVERY
+ * platform whenever agy's stdout is a pipe — exactly how this adapter captures
+ * it, Linux CI included. The child sees the slave TTY; the parent relays the
+ * master to captured stdout. `pty.fork()` also makes agy a process-group leader,
+ * letting the wrapper forward cancellation and clean up tool subprocesses.
  *
  * Model pinning is NO LONGER done here. agy 1.0.10 added a real `--model`
  * flag (it was a dead string in 1.0.2, which is why this used to swap
  * settings.json under flock — the source of a leftover `.brutalist-lock`
  * leak). The adapter now passes `--model <label>` natively, so the wrapper is
- * pure PTY: no settings race, no lock file, and a model pin no longer forces
- * the wrapper on Linux.
+ * PTY/process supervision only: no settings race, no lock file, and a model
+ * pin no longer forces an additional wrapper path.
  *
  * Why Python (not node-pty): node-pty is a native module (per-platform
- * prebuilds, spawn-helper chmod gotchas, install-time failures); `pty.spawn`
- * is stdlib, preinstalled on macOS and Ubuntu runners, zero install cost.
+ * prebuilds, spawn-helper chmod gotchas, install-time failures); `pty` is
+ * stdlib, preinstalled on macOS and Ubuntu runners, zero install cost.
  */
-const AGY_PYTHON_WRAPPER = `
-import pty, sys, os
+export const AGY_PYTHON_WRAPPER = `
+import os, pty, select, signal, sys, time
+
 agy_bin, agy_args = sys.argv[1], sys.argv[2:]
-status = pty.spawn([agy_bin] + agy_args)
-sys.exit(os.waitstatus_to_exitcode(status))
+
+child_pid, master_fd = pty.fork()
+if child_pid == 0:
+    os.execvp(agy_bin, [agy_bin] + agy_args)
+
+def signal_child_group(signum):
+    try:
+        os.killpg(child_pid, signum)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        try:
+            os.kill(child_pid, signum)
+        except OSError:
+            pass
+
+def child_group_exists():
+    try:
+        os.killpg(child_pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+def wait_for_group_exit(timeout, child_status=None):
+    deadline = time.monotonic() + timeout
+    while True:
+        if child_status is None:
+            try:
+                waited, status = os.waitpid(child_pid, os.WNOHANG)
+            except ChildProcessError:
+                child_status = 0
+            else:
+                if waited == child_pid:
+                    child_status = status
+        if child_status is not None and not child_group_exists():
+            return child_status, True
+        if time.monotonic() >= deadline:
+            return child_status, False
+        time.sleep(0.05)
+
+def terminate_child_group(first_signal=signal.SIGTERM, child_status=None):
+    signal_child_group(first_signal)
+    status, group_gone = wait_for_group_exit(1.5, child_status)
+    if not group_gone:
+        signal_child_group(signal.SIGKILL)
+        status, _ = wait_for_group_exit(1.5, status)
+    return status
+
+def relay_parent_signal(signum, _frame):
+    terminate_child_group(signum)
+    try:
+        os.close(master_fd)
+    except OSError:
+        pass
+    os._exit(128 + signum)
+
+for forwarded in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(forwarded, relay_parent_signal)
+
+child_status = None
+group_cleaned = False
+while True:
+    try:
+        readable, _, _ = select.select([master_fd], [], [], 0.1)
+    except InterruptedError:
+        continue
+    if master_fd in readable:
+        try:
+            data = os.read(master_fd, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+
+        view = memoryview(data)
+        try:
+            while view:
+                written = os.write(sys.stdout.fileno(), view)
+                view = view[written:]
+        except OSError:
+            terminate_child_group(child_status=child_status)
+            os._exit(1)
+
+    if child_status is None:
+        try:
+            waited, status = os.waitpid(child_pid, os.WNOHANG)
+        except ChildProcessError:
+            child_status = 0
+        else:
+            if waited == child_pid:
+                child_status = status
+
+    # Agy may exit while a tool subprocess remains in its process group.
+    # Reap/terminate that group now, then keep draining buffered PTY output.
+    if child_status is not None and not group_cleaned:
+        if child_group_exists():
+            child_status = terminate_child_group(child_status=child_status)
+        group_cleaned = True
+
+try:
+    os.close(master_fd)
+except OSError:
+    pass
+if child_status is None:
+    try:
+        _, child_status = os.waitpid(child_pid, 0)
+    except ChildProcessError:
+        child_status = 0
+if child_group_exists():
+    child_status = terminate_child_group(child_status=child_status)
+sys.exit(os.waitstatus_to_exitcode(child_status))
 `.trim();
 
 // #76 drops agy's stdout whenever it is a pipe (our subprocess capture) — on
-// EVERY platform, Linux CI included. Wrap everywhere python3 is available
-// (macOS/Linux/Windows CI+dev all ship it) so the captured stdout is non-empty.
-const PTY_WRAP_NEEDED =
-  process.platform === 'darwin' || process.platform === 'linux' || process.platform === 'win32';
+// every platform we have verified, Linux CI included. The stdlib `pty` module
+// and process-group calls used by our wrapper are POSIX-only, so native Windows
+// must fail explicitly instead of attempting a Python program that cannot even
+// import. WSL reports Linux and uses the supported wrapper path.
+export function agyPtyMode(
+  platform: NodeJS.Platform = process.platform,
+): 'python' | 'unsupported' {
+  if (platform === 'win32') return 'unsupported';
+  return 'python';
+}
 
-// Fail-fast backstop for agy. It critiques in ~10-15s when healthy but can
-// occasionally stall (the original breakage was the uncontrolled 1.0.2->1.0.10
-// self-update). Cap its run well below the global BRUTALIST_TIMEOUT so a hang
-// fails in minutes, not the full 15. Generous default (6 min) so a legitimately
-// slow run is never killed; override via BRUTALIST_AGY_TIMEOUT.
-const AGY_MAX_TIMEOUT_MS = (() => {
-  const n = parseInt(process.env.BRUTALIST_AGY_TIMEOUT ?? '', 10);
-  return Number.isFinite(n) && n > 0 ? n : 360_000;
-})();
+// Optional operator ceiling. Unset/invalid means Agy inherits the same global,
+// client, or per-call timeout as every other critic; there is no hidden shorter
+// Agy default. This remains a ceiling, so it can shorten but never lengthen the
+// caller's selected budget.
+const AGY_MAX_TIMEOUT_MS = optionalPositiveInteger(process.env.BRUTALIST_AGY_TIMEOUT);
 
 const AGY_CONFIG: CLIBuilderConfig = {
   // Routing is decided per-invocation in buildCommand() based on the platform
@@ -173,13 +280,17 @@ export class AgyAdapter implements CLIProvider {
     input: string;
     env: Record<string, string>;
     tempMcpConfigPath?: string;
-    // Set when the prompt exceeded the argv limit and was spilled to a file
-    // in agy's scratch dir. Caller (`_executeCLI`) unlinks it in its
-    // `finally`. Undefined for the common inline-argv path.
+    // Set when the prompt is routed through a task file in agy's scratch dir:
+    // always for codebase critiques, and for any oversized prompt. Caller
+    // (`_executeCLI`) unlinks it in its `finally`.
     tempPromptPath?: string;
     model?: string;
   }> {
     const log = options.log ?? rootLogger;
+    const ptyMode = agyPtyMode();
+    if (ptyMode === 'unsupported') {
+      throw new Error('Agy critic requires POSIX PTY support on Windows; run Brutalist from WSL.');
+    }
 
     // Fold the adversarial system prompt into the user prompt slot.
     // agy has no --system / --append-system-prompt equivalent
@@ -223,15 +334,13 @@ export class AgyAdapter implements CLIProvider {
       ? `${systemPrompt}\n\n---\n\n${taskBlock}`
       : taskBlock;
 
-    // ARG_MAX guard. agy --print takes the prompt on argv (it never reads
-    // stdin — see file header), and a SINGLE argv string is hard-capped by
-    // the kernel at MAX_ARG_STRLEN (≈128 KB on Linux). A large PR diff folded
-    // into the prompt (max-diff-chars defaults to 2,000,000) would make
-    // spawn() throw `E2BIG` and kill this critic. Above a safe byte threshold
-    // we spill the whole prompt to a file in agy's scratch dir — which is
-    // readable under --sandbox per agy's permission table — and hand agy a
-    // short pointer prompt instead. Small prompts (the overwhelming common
-    // case: system + code excerpt ≈ 5-30 KB) keep the reliable inline path.
+    // Compatibility + ARG_MAX guard. agy --print takes the prompt on argv
+    // (it never reads stdin — see file header), and a SINGLE argv string is
+    // hard-capped by the kernel at MAX_ARG_STRLEN (≈128 KB on Linux). Large
+    // prompts therefore spill into agy's scratch dir. Agy 1.1.4 also returns
+    // empty/no-route generations for the inline codebase_critique template
+    // while the same binary reliably completes the scratch-pointer route, so
+    // codebase critiques always take that path regardless of prompt size.
     const SAFE_ARGV_BYTES = 96 * 1024;
     const promptBytes = Buffer.byteLength(combinedPrompt, 'utf-8');
     // agy's appData dir, resolved identically to how agy resolves it at
@@ -240,9 +349,11 @@ export class AgyAdapter implements CLIProvider {
     // override into agy's env (below) so the two never diverge.
     const agyAppDataDir = process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR
       || path.join(homedir(), '.gemini', 'antigravity-cli');
+    const requiresTaskFile = options.analysisType === 'codebase';
     let tempPromptPath: string | undefined;
+    let pendingPromptPath: string | undefined;
     let effectivePrompt = combinedPrompt;
-    if (promptBytes > SAFE_ARGV_BYTES) {
+    if (requiresTaskFile || promptBytes > SAFE_ARGV_BYTES) {
       try {
         // Scratch dir = <appDataDir>/scratch (default ~/.gemini/antigravity-cli).
         // --sandbox grants read+write here, so agy can read the spilled file
@@ -255,6 +366,7 @@ export class AgyAdapter implements CLIProvider {
         const scratchDir = path.join(agyAppDataDir, 'scratch');
         mkdirSync(scratchDir, { recursive: true });
         const candidate = path.join(scratchDir, `brutalist-review-${randomBytes(16).toString('hex')}.md`);
+        pendingPromptPath = candidate;
         // Secure create (mirrors mcp-registry.writeClaudeMcpConfigSecure): O_EXCL
         // refuses a pre-existing path and O_NOFOLLOW refuses a symlink, so a
         // planted symlink can't redirect the (possibly secret-bearing) diff.
@@ -270,13 +382,28 @@ export class AgyAdapter implements CLIProvider {
           closeSync(fd);
         }
         tempPromptPath = candidate;
-        effectivePrompt = `Your complete code-review task — the reviewer instructions, the orientation, and the full unified diff under review — has been written to this file because it is too large to pass inline:\n\n${candidate}\n\nRead that ENTIRE file FIRST using your file-reading tool, then carry out the review exactly as it instructs. Give your full critique in a single response. Do not look elsewhere for the task; everything you need is in that file.`;
-        log.info('Agy prompt exceeded argv limit; spilled to scratch file', { promptBytes });
+        effectivePrompt = `Your complete review brief is stored at this absolute path:\n\n${candidate}\n\nRead that ENTIRE file FIRST using your file-reading tool. Inspect only the repository and files named in that brief, then return one complete, evidence-backed critique and stop. Do not look elsewhere for the task.`;
+        log.info(
+          requiresTaskFile
+            ? 'Agy codebase critique routed through compatibility task file'
+            : 'Agy prompt exceeded argv limit; spilled to scratch file',
+          { promptBytes },
+        );
       } catch (e) {
-        // Could not write the spill file. Fall back to the inline prompt: it
-        // may still E2BIG, but that is caught per-critic in _executeCLI and
-        // is never fatal to the panel — strictly better than failing here.
+        if (pendingPromptPath) {
+          try { unlinkSync(pendingPromptPath); } catch { /* best-effort */ }
+        }
+        // The 1.1.4 codebase compatibility path must never silently fall back
+        // to the known-wedging inline request shape. Other domains retain the
+        // legacy oversized-prompt fallback; E2BIG is isolated per critic.
         tempPromptPath = undefined;
+        if (requiresTaskFile) {
+          log.error('Agy codebase compatibility task file could not be created', {
+            code: (e as NodeJS.ErrnoException)?.code ?? 'unknown',
+            promptBytes,
+          });
+          throw new Error('Agy codebase compatibility task file could not be created');
+        }
         effectivePrompt = combinedPrompt;
         log.warn('Agy scratch spill failed; falling back to inline prompt (may exceed argv limit)', {
           code: (e as NodeJS.ErrnoException)?.code ?? 'unknown',
@@ -285,14 +412,23 @@ export class AgyAdapter implements CLIProvider {
       }
     }
 
+    // Never omit this flag: agy 1.1.4 otherwise applies its own 5m internal
+    // default. Its Go duration parser accepts this millisecond syntax, but its
+    // waiter is not a reliable wall-clock kill; spawnAsync remains authoritative.
+    // `_executeCLI` still threads the resolved budget here so Agy's internal
+    // wait is not shorter. Direct callers use the same precedence, with an
+    // explicit Agy ceiling only when BRUTALIST_AGY_TIMEOUT is set.
+    const requestedTimeoutMs = options.effectiveTimeoutMs
+      ?? options.activeClient?.timeout
+      ?? options.timeout
+      ?? positiveIntegerOr(process.env.BRUTALIST_TIMEOUT, DEFAULT_AGENT_TIMEOUT_MS);
+    const printTimeoutMs = AGY_MAX_TIMEOUT_MS
+      ? Math.min(requestedTimeoutMs, AGY_MAX_TIMEOUT_MS)
+      : requestedTimeoutMs;
     const agyArgs = [
       '--print',
       effectivePrompt,
-      // Internal polling hint; orchestrator's spawnAsync timeout
-      // (CLIAgentOptions.timeout) is what actually bounds wall-clock.
-      // 15m is comfortably above brutalist's per-CLI default but well
-      // below pathological-stall protection.
-      '--print-timeout', '15m',
+      '--print-timeout', `${printTimeoutMs}ms`,
       // Containment: writes go to ~/.gemini/antigravity-cli/scratch/
       // instead of cwd. Reads from cwd still work, so agy can inspect
       // the user's codebase for the critique.
@@ -317,10 +453,11 @@ export class AgyAdapter implements CLIProvider {
       log.info('Agy model pin requested (native --model flag)', { model: modelPin });
     }
 
-    // The Python wrapper now serves ONE concern: PTY allocation for agy #76
-    // on macOS/Windows. With the settings.json swap gone, a model pin no
-    // longer forces the wrapper on Linux.
-    const useWrapper = PTY_WRAP_NEEDED;
+    // The Python wrapper provides PTY allocation for agy #76 on supported
+    // POSIX platforms and owns descendant-aware process-group cleanup. Native
+    // Windows has neither Python's `pty` module nor POSIX process groups; fail
+    // with an actionable message instead of crashing inside the wrapper.
+    const useWrapper = ptyMode === 'python';
 
     const command = useWrapper ? 'python3' : AGY_BINARY;
     const args = useWrapper

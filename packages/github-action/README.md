@@ -146,7 +146,7 @@ The `@v1.14.0` above is an exact release. Three pinning styles, strongest supply
 - **By exact release** — `…/github-action@v1.14.8`. Immutable tag; update by bumping the line.
 - **By moving major/minor** — `…/github-action@v1` or `@v1.14`. These tags are auto-repointed to the newest release on each publish, so you receive patches without editing your workflow. Convenient, but you inherit changes you didn't pin to.
 
-Tuning knobs (env on the action's step), useful once you're on a release that supports them: `BRUTALIST_ORCHESTRATOR_TIMEOUT_MS` (wall-clock budget, default 30m) and `BRUTALIST_ORCHESTRATOR_MAX_TURNS` (agent turn cap, default 50) — raise the latter if reviews of very large diffs terminate as incomplete.
+Tuning knobs (env on the action's step), useful once you're on a release that supports them: `BRUTALIST_ORCHESTRATOR_TIMEOUT_MS` (parent wall-clock envelope, default 2h15m: a two-hour parallel critic run plus synthesis time) and `BRUTALIST_ORCHESTRATOR_MAX_TURNS` (agent turn cap, default 50) — raise the latter if reviews of very large diffs terminate as incomplete.
 
 ## Inputs
 
@@ -164,7 +164,7 @@ Tuning knobs (env on the action's step), useful once you're on a release that su
 | `custom-claude-auth-token` | no | — | Bearer token for `ANTHROPIC_AUTH_TOKEN`; store as a GitHub secret. |
 | `custom-claude-model` | no | — | Model name for the custom Claude Code critic, e.g. `glm-5.1`. |
 | `custom-claude-small-fast-model` | no | — | Optional `ANTHROPIC_SMALL_FAST_MODEL`, e.g. `glm-4.5-air`. |
-| `custom-claude-clients` | no | — | JSON array of N custom Claude-routed critics (each `{id, baseUrl, authToken, model, smallFastModel?, contextWindow?, containment?}`), up to **16**. ADDITIVE to the native critics, and additive to the singular `custom-claude-*` inputs (which append one more client; deduped by id, keep-first on collision). Per-entry tokens go in dedicated env vars (never inlined into the forwarded config); each client is isolated (`~/.brutalist/claude-clients/<id>`, mode `0700`) and hardened (no native creds, no `WebFetch`/`WebSearch`/MCP) by default — set `"containment":"standard"` to restore web/MCP tools. The diff chunker sizes chunks to the smallest participant `contextWindow`. |
+| `custom-claude-clients` | no | — | JSON array of N custom Claude-routed critics (each `{id, baseUrl, authToken, model, smallFastModel?, contextWindow?, containment?}`), up to **16**. ADDITIVE to the native critics, and additive to the singular `custom-claude-*` inputs (which append one more client; deduped by id, keep-first on collision). Per-entry tokens go in dedicated env vars (never inlined into the forwarded config); each client is credential-isolated (`~/.brutalist/claude-clients/<id>`, mode `0700`) and suppresses requested MCP by default. The backward-compatible `"hardened"` label is not a shell/network sandbox: Bash, `WebFetch`, and `WebSearch` always remain available. Set `"containment":"standard"` to restore MCP. The diff chunker sizes chunks to the smallest participant `contextWindow`. |
 | `working-directory` | no | `.` | Subtree of the repo to focus on. |
 | `minimum-severity` | no | `low` | Inline-comment threshold. One of: `critical`, `high`, `medium`, `low`, `nit`. Lower-severity findings still appear in the summary. |
 

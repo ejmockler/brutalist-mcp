@@ -138,10 +138,14 @@ describe('CLI Provider Command Construction', () => {
       expect(result.input).toContain('Analyze this code');
     });
 
-    it('should always include --disallowedTools and --permission-mode bypassPermissions (write protection + tool access in --print mode)', async () => {
+    it('should allow Bash while denying mutation tools under bypassPermissions', async () => {
       const result = await buildCommand('claude');
-      expect(result.args).toContain('--disallowedTools');
-      expect(result.args).toContain('Bash,Edit,Write,NotebookEdit');
+      const deniedToolsIdx = result.args.indexOf('--disallowedTools');
+      expect(deniedToolsIdx).toBeGreaterThanOrEqual(0);
+      expect(result.args[deniedToolsIdx + 1]).toBe('Edit,Write,NotebookEdit');
+      const allowedToolsIdx = result.args.indexOf('--allowedTools');
+      expect(allowedToolsIdx).toBeGreaterThanOrEqual(0);
+      expect(result.args[allowedToolsIdx + 1]).toBe('Bash,WebFetch,WebSearch');
       expect(result.args).toContain('--permission-mode');
       expect(result.args).toContain('bypassPermissions');
     });
@@ -150,8 +154,12 @@ describe('CLI Provider Command Construction', () => {
       const result = await buildCommand('claude', { mcpServers: ['playwright'] });
       expect(result.args).toContain('--mcp-config');
       expect(result.args).toContain('--strict-mcp-config');
-      expect(result.args).toContain('--disallowedTools');
-      expect(result.args).toContain('Bash,Edit,Write,NotebookEdit');
+      const deniedToolsIdx = result.args.indexOf('--disallowedTools');
+      expect(deniedToolsIdx).toBeGreaterThanOrEqual(0);
+      expect(result.args[deniedToolsIdx + 1]).toBe('Edit,Write,NotebookEdit');
+      const allowedToolsIdx = result.args.indexOf('--allowedTools');
+      expect(allowedToolsIdx).toBeGreaterThanOrEqual(0);
+      expect(result.args[allowedToolsIdx + 1]).toBe('Bash,WebFetch,WebSearch');
       expect(result.args).toContain('--permission-mode');
       expect(result.args).toContain('bypassPermissions');
     });
@@ -351,6 +359,39 @@ describe('CLI Provider Command Construction', () => {
       expect(prompt).toContain('Analyze this idea');
     });
 
+    it('routes a normal-sized codebase critique through a secure task file for agy 1.1.4', async () => {
+      const tmpData = mkdtempSync(join(tmpdir(), 'agy-codebase-compat-'));
+      const prev = process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR;
+      process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR = tmpData;
+      try {
+        const system = '<system_prompt domain="codebase_critique">Be brutal</system_prompt>';
+        const result = await (orchestrator as any).buildCLICommand(
+          'agy',
+          'Analyze the codebase directory at /work/repo.',
+          system,
+          { workingDirectory: '/work/repo', analysisType: 'codebase' },
+        );
+
+        expect(result.tempPromptPath).toContain(join(tmpData, 'scratch'));
+        expect(existsSync(result.tempPromptPath as string)).toBe(true);
+        const task = readFileSync(result.tempPromptPath as string, 'utf-8');
+        expect(task).toContain(system);
+        expect(task).toContain('Analyze the codebase directory at /work/repo.');
+
+        const printIdx = result.args.indexOf('--print');
+        const promptArg = result.args[printIdx + 1] as string;
+        expect(promptArg).toContain(result.tempPromptPath);
+        expect(promptArg).not.toContain('codebase_critique');
+        expect(promptArg).not.toContain('Be brutal');
+        const timeoutIdx = result.args.indexOf('--print-timeout');
+        expect(result.args[timeoutIdx + 1]).toBe('7200000ms');
+      } finally {
+        try { rmSync(tmpData, { recursive: true, force: true }); } catch { /* best-effort */ }
+        if (prev === undefined) delete process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR;
+        else process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR = prev;
+      }
+    });
+
     it('passes a model pin via the native --model flag (1.0.10+), not the legacy settings.json swap', async () => {
       const result = await buildAgy(DIFF_PROMPT, {
         workingDirectory: '/work/repo',
@@ -371,10 +412,26 @@ describe('CLI Provider Command Construction', () => {
       expect(plain.args).not.toContain('--model');
     });
 
-    it('exposes a fail-fast per-provider timeout ceiling (agy only; claude/codex use the global)', () => {
-      expect(getProvider('agy').getConfig().maxTimeoutMs).toBe(360_000);
+    it('uses the two-hour default for every Agy analysis domain', async () => {
+      const result = await buildAgy(DIFF_PROMPT, { workingDirectory: '/work/repo' });
+      const timeoutIdx = result.args.indexOf('--print-timeout');
+      expect(timeoutIdx).toBeGreaterThanOrEqual(0);
+      expect(result.args[timeoutIdx + 1]).toBe('7200000ms');
+    });
+
+    it('has no implicit provider ceiling for any CLI', () => {
+      expect(getProvider('agy').getConfig().maxTimeoutMs).toBeUndefined();
       expect(getProvider('claude').getConfig().maxTimeoutMs).toBeUndefined();
       expect(getProvider('codex').getConfig().maxTimeoutMs).toBeUndefined();
+    });
+
+    it('threads an explicit longer timeout into Agy print mode', async () => {
+      const result = await buildAgy(DIFF_PROMPT, {
+        workingDirectory: '/work/repo',
+        timeout: 3 * 60 * 60 * 1000,
+      });
+      const timeoutIdx = result.args.indexOf('--print-timeout');
+      expect(result.args[timeoutIdx + 1]).toBe('10800000ms');
     });
 
     // ARG_MAX guard. agy --print can only take the prompt on argv (no stdin),
@@ -1117,4 +1174,29 @@ describe('CLI Provider Timeout Handling', () => {
     // The error message should include the timeout value
     expect(result.error).toContain('200ms');
   }, 15000);
+
+  it('threads the resolved outer timeout into Agy --print-timeout', async () => {
+    let spawnedArgs: readonly string[] = [];
+    mockSpawn.mockImplementation((_command, args) => {
+      spawnedArgs = Array.isArray(args) ? [...args] : [];
+      const child = new MockChildProcess();
+      setTimeout(() => {
+        child.stdout.emit('data', 'Agy completed.');
+        child.emit('close', 0);
+      }, 5);
+      return child as any;
+    });
+
+    const result = await orchestrator.executeSingleCLI(
+      'agy',
+      'Analyze this idea',
+      'System prompt',
+      { timeout: 12_345, workingDirectory: process.cwd(), analysisType: 'idea' },
+    );
+
+    const timeoutIdx = spawnedArgs.indexOf('--print-timeout');
+    expect(timeoutIdx).toBeGreaterThanOrEqual(0);
+    expect(spawnedArgs[timeoutIdx + 1]).toBe('12345ms');
+    expect(result.success).toBe(true);
+  });
 });

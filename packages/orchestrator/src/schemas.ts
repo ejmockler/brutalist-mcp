@@ -158,10 +158,11 @@ export interface RunOptions {
   claudeCodeExecutablePath?: string;
 
   /**
-   * Wall-clock timeout in milliseconds. Defaults to 30 minutes.
+   * Wall-clock timeout in milliseconds. Defaults to a 2h15m orchestration
+   * envelope: two hours for the parallel critic panel plus synthesis time.
    *
    * maxTurns caps agent turns but not real time. A single stuck child
-   * CLI subprocess (each up to 30min by brutalist's own timeout) can
+   * CLI subprocess (each up to 2h by brutalist's own default timeout) can
    * hold the SDK await loop until the GitHub Actions job timeout (6h
    * default), with no OrchestratorIncompleteError thrown because the
    * iterator never terminates. The wall-clock budget aborts the query

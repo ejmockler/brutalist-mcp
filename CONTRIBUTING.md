@@ -19,7 +19,7 @@ After extensive debugging, here are the exact patterns that work for each CLI:
 ```javascript
 const args = ['--print'];
 args.push(`${systemPrompt}\n\n${userPrompt}`);
-await spawnAsync('claude', args, { cwd: workingDir, timeout: 1800000 });
+await spawnAsync('claude', args, { cwd: workingDir, timeout: 7200000 });
 ```
 
 **Codex CLI:**
@@ -34,25 +34,25 @@ await spawnAsync('codex', args, {
 **Agy (Antigravity) CLI:**
 ```javascript
 // agy --print does NOT accept stdin; prompt goes via argv (~128KB OS ARG_MAX).
-// No --system or --model flag exists at runtime; fold system prompt into the
-// user prompt slot. --sandbox redirects writes to ~/.gemini/antigravity-cli/
-// scratch/ (not the user's cwd). --dangerously-skip-permissions auto-approves
-// tool permissions (no human present in --print mode).
+// No --system flag exists; fold system prompt into the user prompt slot.
+// Agy 1.0.10+ accepts --model. --sandbox redirects writes to
+// ~/.gemini/antigravity-cli/scratch/ (not the user's cwd), while
+// --dangerously-skip-permissions auto-approves tool permissions.
 const combined = `${systemPrompt}\n\n---\n\n${userPrompt}`;
 const args = ['--print', combined,
-              '--print-timeout', '15m',
+              '--print-timeout', '7200000ms',
               '--sandbox',
               '--dangerously-skip-permissions'];
 await spawnAsync(process.env.AGY_BIN || 'agy', args, {
   cwd: workingDir,
-  timeout: 1800000  // --print-timeout is internally broken; orchestrator owns the wall clock
+  timeout: 7200000  // Authoritative wall clock; the Agy flag is an internal wait hint
 });
 ```
 
 ### Known Failure Patterns
 
 - **Claude --append-system-prompt**: Times out in spawn context
-- **Agy --print-timeout**: Internally broken — doesn't enforce wall-clock. Orchestrator's spawnAsync timeout is what actually bounds execution
+- **Agy --print-timeout**: Never omit it; Agy otherwise applies its own five-minute internal default. Agy 1.1.4 accepts Go-duration milliseconds (for example `7200000ms`), but the flag is not a reliable wall-clock kill. Pass the resolved budget as an internal hint and keep `spawnAsync` authoritative.
 - **Agy --print + stdin**: agy ignores stdin in print mode; prompt must be in argv
 - **Agy on macOS PATH**: If the Antigravity desktop IDE is installed, its wrapper at `~/.antigravity/antigravity/bin/agy` may shadow the CLI agent at `~/.local/bin/agy`. Use `AGY_BIN=$HOME/.local/bin/agy` to disambiguate
 

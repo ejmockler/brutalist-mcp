@@ -4,6 +4,8 @@
  * Defines how critique agents are orchestrated and how their results are synthesized.
  */
 
+import { DEFAULT_AGENT_TIMEOUT_MS } from '../constants.js';
+
 export type AgentCount = 1 | 3 | 'all';
 
 export type ExecutionMode =
@@ -61,8 +63,8 @@ export interface ExecutionStrategy {
  * Default execution limits
  */
 export const DEFAULT_LIMITS: ExecutionLimits = {
-  timeoutPerAgent: 1800000,  // 30 minutes per agent
-  maxTotalTime: 3600000,     // 1 hour total
+  timeoutPerAgent: DEFAULT_AGENT_TIMEOUT_MS, // 2 hours per agent
+  maxTotalTime: DEFAULT_AGENT_TIMEOUT_MS * 2, // 4 hours total
   maxMemoryMB: 2048,         // 2GB
   maxOutputSize: 1000000     // 1M characters
 };
@@ -94,7 +96,7 @@ export const ExecutionStrategies = {
     synthesis: 'concatenate' as SynthesisEngine,
     limits: {
       ...DEFAULT_LIMITS,
-      maxTotalTime: 1800000  // 30 minutes
+      maxTotalTime: DEFAULT_AGENT_TIMEOUT_MS // 2 hours
     }
   },
 
@@ -109,7 +111,7 @@ export const ExecutionStrategies = {
     synthesis: 'consensus_extraction' as SynthesisEngine,
     limits: {
       ...DEFAULT_LIMITS,
-      maxTotalTime: 5400000  // 90 minutes (multiple rounds)
+      maxTotalTime: DEFAULT_AGENT_TIMEOUT_MS * 3 // 6 hours (multiple rounds)
     }
   },
 

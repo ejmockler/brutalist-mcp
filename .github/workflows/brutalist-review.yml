@@ -16,7 +16,7 @@ permissions:
 jobs:
   brutalist:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 300
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -43,7 +43,7 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           # Pin every critic CLI — an unpinned @latest runs before secrets exist,
           # but a planted binary persists and later receives the OAuth tokens.
-          npm install -g @brutalist/mcp@1.18.6 @anthropic-ai/claude-code@2.1.162 @openai/codex@0.136.0
+          npm install -g @brutalist/mcp@1.18.8 @anthropic-ai/claude-code@2.1.162 @openai/codex@0.136.0
           # NOTE: agy installer is unpinned upstream (no published checksum) — residual supply-chain surface.
           curl -fsSL https://antigravity.google/cli/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -58,17 +58,15 @@ jobs:
         # fix (orchestrator default 50) so the brain no longer exhausts turns.
         uses: ejmockler/brutalist-mcp/packages/github-action@v1
         env:
-          # Per-critic cap (claude/codex): 30 min. As of 1.18.0 agy self-caps at
-          # 6 min (BRUTALIST_AGY_TIMEOUT) so a stall fails fast instead of burning
-          # this full 30-min budget; the orchestrator gets 45 min so the brain
-          # still has room to work after the slowest critic returns.
-          BRUTALIST_TIMEOUT: "1800000"
-          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2700000"
-          # Freeze agy's binary for the whole job. agy self-updates from a
-          # us-central1 endpoint, and an uncontrolled 1.0.2 -> 1.0.10 self-update is
-          # what originally broke this critic (15-min timeouts, no output). 1.18.0's
-          # adapter also sets this on the spawned agy process; job-level covers the
-          # `curl install.sh` step too.
+          # Two hours per critic. This checked panel has four critics and a
+          # three-slot inner pool, so the parent envelope allows two complete
+          # waves plus synthesis. The job leaves setup/posting headroom.
+          BRUTALIST_TIMEOUT: "7200000"
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "16200000"
+          # The installer fetches the latest agy; freeze that installed binary for
+          # the review step. An uncontrolled 1.0.2 -> 1.0.10 self-update originally
+          # broke this critic (15-min timeouts, no output). The v1.18.8 adapter also
+          # sets this on the spawned agy process.
           AGY_CLI_DISABLE_AUTO_UPDATE: "1"
         with:
           github-token: ${{ github.token }}
@@ -85,8 +83,9 @@ jobs:
           # better synthesis), not fewer chunks. CLI pin (2.1.162) already supports it.
           model: "claude-opus-4-8[1m]"
           # GLM routed critic — Anthropic-compatible gateway (public Tailscale Funnel).
-          # Additive 4th critic, hardened by default (no web/MCP, no native creds —
-          # verified: includeProcessAuth:false + authTokenEnv). Native critics are
+          # Additive 4th critic, credential-isolated and MCP-contained by default
+          # (Bash/WebFetch/WebSearch remain available; no native creds — verified:
+          # includeProcessAuth:false + authTokenEnv). Native critics are
           # unaffected. Latency: GLM is the SLOWEST critic (~5min even healthy). A
           # truly-DOWN gateway fails fast (~5s preflight), but an OVER-QUOTA 429
           # retries ~3-4min per chunk. Reviews are advisory, so this never gates merges.

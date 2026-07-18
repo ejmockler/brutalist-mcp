@@ -41,7 +41,7 @@
 #   AGY_FROM_KEYCHAIN 1 to extract the agy token from the macOS keychain
 #                     (default: 1 on macOS, else 0)
 #   AGY_TOKEN_FILE    raw JSON agy token file (alternative to keychain)
-#   BRUTALIST_VERSION action/package version tag to pin (default: v1.14.7)
+#   BRUTALIST_VERSION action/package version tag to pin (default: v1.18.8)
 #   MIN_SEVERITY      inline-comment severity floor: nit|low|medium|high|critical
 #                     (default: medium)
 #   ENABLE_CODEX      1 to add the codex critic (broker-push model) (default: 0)
@@ -62,7 +62,7 @@ if [[ -z "$REPO" || "$REPO" != */* ]]; then
   exit 2
 fi
 
-VERSION="${BRUTALIST_VERSION:-v1.14.7}"
+VERSION="${BRUTALIST_VERSION:-v1.18.8}"
 PKG_VERSION="${VERSION#v}"
 MIN_SEVERITY="${MIN_SEVERITY:-medium}"
 ENABLE_CODEX="${ENABLE_CODEX:-0}"
@@ -73,7 +73,7 @@ CODEX_AUTH_FILE="${CODEX_AUTH_FILE:-$HOME/.codex/auth.json}"
 # or a compromised tag-ref would hand an attacker all of them. ACTION_SHA MUST be
 # the commit the VERSION tag points at — when bumping, set both and verify with:
 #   git rev-parse <VERSION>^{commit}   (must equal ACTION_SHA)
-ACTION_SHA="${ACTION_SHA:-15cedc8159a54662fa741395746d4aa0e161a3b4}"  # = v1.14.7
+ACTION_SHA="${ACTION_SHA:-c2f8b0b696844e4045333106c14155ef2c3bb0e8}"  # = v1.18.8
 # Pin the critic CLIs (supply-chain: an unpinned @latest install runs BEFORE the
 # secrets are present, but the planted binary persists and later receives tokens).
 CLAUDE_CLI_VERSION="${CLAUDE_CLI_VERSION:-2.1.162}"
@@ -220,7 +220,7 @@ permissions:
 jobs:
   brutalist:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 180
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -244,8 +244,8 @@ jobs:
       - name: Brutalist review
         uses: ejmockler/brutalist-mcp/packages/github-action@${ACTION_SHA} # ${VERSION}
         env:
-          BRUTALIST_TIMEOUT: "900000"
-          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2100000"
+          BRUTALIST_TIMEOUT: "7200000"
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "8100000"
         with:
           github-token: \${{ github.token }}
           anthropic-oauth-token: \${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
@@ -272,7 +272,7 @@ permissions:
 jobs:
   brutalist:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 180
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -290,8 +290,8 @@ jobs:
       - name: Brutalist review
         uses: ejmockler/brutalist-mcp/packages/github-action@${ACTION_SHA} # ${VERSION}
         env:
-          BRUTALIST_TIMEOUT: "900000"
-          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2100000"
+          BRUTALIST_TIMEOUT: "7200000"
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "8100000"
         with:
           github-token: \${{ github.token }}
           anthropic-oauth-token: \${{ secrets.ANTHROPIC_OAUTH_TOKEN }}

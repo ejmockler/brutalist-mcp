@@ -130,12 +130,13 @@ inputs:
       ALONGSIDE the singular custom-claude-* inputs above: if that trio is set
       it appends ONE more client (deduped by id, keep-first — a custom-claude-
       clients entry wins on collision). containment defaults to "hardened";
-      set "standard" to restore web/MCP tools for an endpoint you fully trust.
+      set "standard" to restore requested MCP for an endpoint you trust.
       Each entry's authToken is moved into a dedicated env var and referenced via
       authTokenEnv — raw tokens are never inlined into the forwarded
       BRUTALIST_CLAUDE_CLIENTS. Every client gets an isolated config dir
-      (~/.brutalist/claude-clients/<id>, mode 0700) and is isolated + hardened
-      by default (no native creds, no WebFetch/WebSearch/MCP). The diff chunker
+      (~/.brutalist/claude-clients/<id>, mode 0700), is isolated from native
+      creds, and suppresses requested MCP by default. Bash/WebFetch/WebSearch
+      remain available. The diff chunker
       sizes chunks to the SMALLEST participant contextWindow. Example:
       custom-claude-clients: |
         [

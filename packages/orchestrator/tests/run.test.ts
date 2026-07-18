@@ -95,6 +95,27 @@ describe('orchestrator.run()', () => {
     expect(capturedQueryOptions.model).toBe('claude-opus-4-8');
   });
 
+  it('always exposes Bash and web tools to the orchestrator brain', async () => {
+    mockQuery.mockReturnValue(
+      makeMessageStream(async () => {
+        await capturedHandler!(FIXTURE_OK);
+      }),
+    );
+
+    await run({ repoPath: '/tmp/repo', oauthToken: 'x' });
+
+    expect(capturedQueryOptions.tools).toEqual([
+      'Read',
+      'Grep',
+      'Bash',
+      'WebFetch',
+      'WebSearch',
+    ]);
+    expect(capturedQueryOptions.allowedTools).toEqual(
+      expect.arrayContaining(['Bash', 'WebFetch', 'WebSearch']),
+    );
+  });
+
   it('lets an explicit model override the default', async () => {
     mockQuery.mockReturnValue(
       makeMessageStream(async () => {
@@ -248,6 +269,27 @@ describe('orchestrator.run()', () => {
     await run({ repoPath: '/tmp/repo', oauthToken: 'tok' });
 
     expect(capturedQueryOptions.abortController).toBeInstanceOf(AbortController);
+  });
+
+  it('defaults the parent envelope to 2h15m so a 2h critic can finish', async () => {
+    const previous = process.env.BRUTALIST_ORCHESTRATOR_TIMEOUT_MS;
+    const timeoutSpy = jest.spyOn(globalThis, 'setTimeout');
+    try {
+      delete process.env.BRUTALIST_ORCHESTRATOR_TIMEOUT_MS;
+      mockQuery.mockReturnValue(
+        makeMessageStream(async () => {
+          await capturedHandler!(FIXTURE_OK);
+        }),
+      );
+
+      await run({ repoPath: '/tmp/repo', oauthToken: 'tok' });
+
+      expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 8_100_000);
+    } finally {
+      timeoutSpy.mockRestore();
+      if (previous === undefined) delete process.env.BRUTALIST_ORCHESTRATOR_TIMEOUT_MS;
+      else process.env.BRUTALIST_ORCHESTRATOR_TIMEOUT_MS = previous;
+    }
   });
 
   it('caps agent turns to bound runaway loops (maxTurns)', async () => {

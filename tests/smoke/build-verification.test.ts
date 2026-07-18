@@ -251,6 +251,12 @@ describe('Configuration Validation', () => {
     expect(cliAgentsContent).toContain(
       'if (MAX_PROCESS_RUNTIME_SEC && runtimeMs > MAX_PROCESS_RUNTIME_SEC * 1000)',
     );
+    expect(cliAgentsContent.indexOf('const runtimeMs = Date.now() - processInfo.startTime')).toBeLessThan(
+      cliAgentsContent.indexOf('await getWindowsMemoryUsage(pid)'),
+    );
+    expect(cliAgentsContent).toContain('if (killed) return;');
+    expect(cliAgentsContent).toContain('if (killed || !activeProcesses.has(pid)) return;');
+    expect(cliAgentsContent).toContain('terminateChildWithEscalation();');
   });
 
   it('source modules use ES imports, not require', () => {

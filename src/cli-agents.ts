@@ -636,6 +636,31 @@ async function spawnAsync(
     let stderr = '';
     let timedOut = false;
     let killed = false;
+    let killTimer: NodeJS.Timeout | undefined;
+
+    // Shared two-phase termination for every resource guard. Sending only
+    // SIGTERM lets an uncooperative CLI survive until the much later outer
+    // timeout; one helper keeps the existing five-second SIGKILL escalation
+    // consistent for wall time, memory, runtime, and output limits.
+    const terminateChildWithEscalation = (): void => {
+      if (killed) return;
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        // The process may already have exited.
+      }
+      if (!killTimer) {
+        killTimer = setTimeout(() => {
+          if (!killed) {
+            try {
+              child.kill('SIGKILL');
+            } catch {
+              // The process may already have exited.
+            }
+          }
+        }, 5000);
+      }
+    };
     
     // Track process for resource monitoring
     if (child.pid) {
@@ -649,35 +674,39 @@ async function spawnAsync(
     let memoryTimer: NodeJS.Timeout | undefined;
     if (child.pid) {
       memoryTimer = setInterval(async () => {
+        const pid = child.pid!;
+        const processInfo = activeProcesses.get(pid);
+        if (!processInfo || killed) {
+          if (memoryTimer) clearInterval(memoryTimer);
+          return;
+        }
+
+        // Check elapsed runtime before the asynchronous memory probe. A failed
+        // or wedged probe must not bypass this independent operator backstop.
+        const runtimeMs = Date.now() - processInfo.startTime;
+        if (MAX_PROCESS_RUNTIME_SEC && runtimeMs > MAX_PROCESS_RUNTIME_SEC * 1000) {
+          terminateChildWithEscalation();
+          reject(new Error(`Process exceeded configured runtime limit: ${runtimeMs}ms > ${MAX_PROCESS_RUNTIME_SEC * 1000}ms`));
+          return;
+        }
+
+        processInfo.memoryChecks++;
+
         try {
-          const pid = child.pid!;
-          const processInfo = activeProcesses.get(pid);
-          if (!processInfo || killed) {
-            if (memoryTimer) clearInterval(memoryTimer);
-            return;
-          }
-          
-          processInfo.memoryChecks++;
-          
           // Check memory usage (cross-platform)
           const usage = process.platform === 'win32' 
             ? await getWindowsMemoryUsage(pid)
             : await getUnixMemoryUsage(pid);
-            
+
+          // The child may have closed while the probe was in flight. Never
+          // signal its stale PID or arm a timer after close cleanup completed.
+          if (killed || !activeProcesses.has(pid)) return;
+
           if (usage && usage.memoryMB > MAX_MEMORY_MB) {
-            child.kill('SIGTERM');
+            terminateChildWithEscalation();
             reject(new Error(`Process exceeded memory limit: ${usage.memoryMB}MB > ${MAX_MEMORY_MB}MB`));
             return;
           }
-          
-          // Optional elapsed-runtime backstop (legacy env name says "CPU").
-          const runtimeMs = Date.now() - processInfo.startTime;
-          if (MAX_PROCESS_RUNTIME_SEC && runtimeMs > MAX_PROCESS_RUNTIME_SEC * 1000) {
-            child.kill('SIGTERM');
-            reject(new Error(`Process exceeded configured runtime limit: ${runtimeMs}ms > ${MAX_PROCESS_RUNTIME_SEC * 1000}ms`));
-            return;
-          }
-          
         } catch (error) {
           // Memory check failed, but don't kill process for this
           logger.warn('Memory check failed:', error);
@@ -687,22 +716,9 @@ async function spawnAsync(
 
     // Set up timeout with SIGKILL escalation
     const timeoutMs = options.timeout || DEFAULT_TIMEOUT;
-    let killTimer: NodeJS.Timeout | undefined;
     const timer = setTimeout(() => {
       timedOut = true;
-      // First try SIGTERM
-      child.kill('SIGTERM');
-      // If still running after 5 seconds, escalate to SIGKILL
-      killTimer = setTimeout(() => {
-        if (!killed) {
-          try {
-            // All CLIs run non-detached now, so just kill the process directly
-            child.kill('SIGKILL');
-          } catch (e) {
-            // Process may have already exited
-          }
-        }
-      }, 5000);
+      terminateChildWithEscalation();
       reject(new Error(`Command timed out after ${timeoutMs}ms: ${command} ${args.join(' ')}`));
     }, timeoutMs);
 
@@ -719,7 +735,7 @@ async function spawnAsync(
       }
       
       if (options.maxBuffer && stdout.length > options.maxBuffer) {
-        child.kill('SIGTERM');
+        terminateChildWithEscalation();
         reject(new Error(`stdout exceeded maxBuffer size: ${options.maxBuffer}`));
       }
     });
@@ -735,7 +751,7 @@ async function spawnAsync(
       
       // Apply same buffer limit to stderr to prevent DoS
       if (options.maxBuffer && stderr.length > options.maxBuffer) {
-        child.kill('SIGTERM');
+        terminateChildWithEscalation();
         reject(new Error(`stderr exceeded maxBuffer size: ${options.maxBuffer}`));
       }
     });
@@ -842,9 +858,10 @@ export interface CLIClientSpec {
   includeProcessAuth?: boolean;
   /**
    * Tool/sandbox containment for a Claude-provider client. 'hardened'
-   * (the default for any routed client) suppresses caller-requested MCP
-   * servers. Bash, WebFetch, and WebSearch remain available in both modes.
-   * 'standard' restores requested MCP for a trusted endpoint.
+   * is a backward-compatible label: for routed clients it suppresses
+   * caller-requested MCP servers, but is not a shell/network sandbox. Bash,
+   * WebFetch, and WebSearch remain available in both modes. 'standard'
+   * restores requested MCP for a trusted endpoint.
    */
   containment?: 'hardened' | 'standard';
   workingDirectory?: string;

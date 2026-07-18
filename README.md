@@ -338,7 +338,7 @@ A client is **routed** as soon as it sets `baseUrl` (or `authToken`/`authTokenEn
 - **Isolated credentials.** A routed client never inherits the host's native `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN` — only its own endpoint + token reach the gateway process. Set `includeProcessAuth: true` to opt back into inheriting native auth. (Conversely, the native critic never inherits an ambient `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`, so a `GLM` export in your shell can't silently reroute the trusted critic.)
 - **Isolated state.** `configDir` maps to `CLAUDE_CONFIG_DIR`; if omitted, a per-client dir under `~/.brutalist/claude-clients/<id>` is created (mode `0700`).
 - **`smallFastModel`** defaults to `model` so a gateway never receives Claude's built-in haiku model name.
-- **MCP containment.** Routed critics suppress caller-requested MCP servers by default. Set `containment: "standard"` to restore requested MCP for a trusted endpoint. Bash, `WebFetch`, and `WebSearch` are available in both modes.
+- **MCP containment (legacy label: `"hardened"`).** Routed critics suppress caller-requested MCP servers by default. The backward-compatible `"hardened"` name is not a shell or network sandbox: Bash, `WebFetch`, and `WebSearch` remain available in both modes. Set `containment: "standard"` to restore requested MCP for a trusted endpoint.
 
 Custom-endpoint fields (`baseUrl`, `authToken`, `model`, `containment`, …) are only valid for `provider: "claude"`; a `codex`/`agy` client carrying them is rejected. Up to **16** named clients may run in one roast (`clients[]` cap). `roast_cli_debate` does not support `clients`.
 
@@ -357,7 +357,7 @@ The GitHub Action wires the same multi-client surface. Pass a JSON array via `cu
       ]
 ```
 
-Each entry's token is placed in a dedicated env var and referenced via `authTokenEnv` — raw tokens are never inlined into the forwarded `BRUTALIST_CLAUDE_CLIENTS`. Every client gets an isolated `~/.brutalist/claude-clients/<id>` config dir (mode `0700`), is isolated from native credentials, and suppresses caller-requested MCP by default exactly like the `roast` `clients[]` above. Bash, `WebFetch`, and `WebSearch` remain available. The diff chunker sizes chunks to the **smallest** participant window, so set each client's `contextWindow` when its model's usable window is below `context-window-tokens`.
+Each entry's token is placed in a dedicated env var and referenced via `authTokenEnv` — raw tokens are never inlined into the forwarded `BRUTALIST_CLAUDE_CLIENTS`. Every client gets an isolated `~/.brutalist/claude-clients/<id>` config dir (mode `0700`), is isolated from native credentials, and suppresses caller-requested MCP by default exactly like the `roast` `clients[]` above. The legacy `"hardened"` label does **not** mean egress-sandboxed: Bash, `WebFetch`, and `WebSearch` remain available. The diff chunker sizes chunks to the **smallest** participant window, so set each client's `contextWindow` when its model's usable window is below `context-window-tokens`.
 
 The singular `custom-claude-*` inputs remain supported for the one-client case and are **backward-compatible** — they work *alongside* `custom-claude-clients` (the singular trio, if set, appends one more client; deduped by id, keep-first on collision). Add `"containment": "standard"` to an entry to restore requested MCP for an endpoint you trust. The array cap matches the tool: **16** clients.
 

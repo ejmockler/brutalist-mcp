@@ -214,10 +214,16 @@ sys.exit(os.waitstatus_to_exitcode(child_status))
 `.trim();
 
 // #76 drops agy's stdout whenever it is a pipe (our subprocess capture) — on
-// EVERY platform, Linux CI included. Wrap everywhere python3 is available
-// (macOS/Linux/Windows CI+dev all ship it) so the captured stdout is non-empty.
-const PTY_WRAP_NEEDED =
-  process.platform === 'darwin' || process.platform === 'linux' || process.platform === 'win32';
+// every platform we have verified, Linux CI included. The stdlib `pty` module
+// and process-group calls used by our wrapper are POSIX-only, so native Windows
+// must fail explicitly instead of attempting a Python program that cannot even
+// import. WSL reports Linux and uses the supported wrapper path.
+export function agyPtyMode(
+  platform: NodeJS.Platform = process.platform,
+): 'python' | 'unsupported' {
+  if (platform === 'win32') return 'unsupported';
+  return 'python';
+}
 
 // Optional operator ceiling. Unset/invalid means Agy inherits the same global,
 // client, or per-call timeout as every other critic; there is no hidden shorter
@@ -280,6 +286,10 @@ export class AgyAdapter implements CLIProvider {
     model?: string;
   }> {
     const log = options.log ?? rootLogger;
+    const ptyMode = agyPtyMode();
+    if (ptyMode === 'unsupported') {
+      throw new Error('Agy critic requires POSIX PTY support on Windows; run Brutalist from WSL.');
+    }
 
     // Fold the adversarial system prompt into the user prompt slot.
     // agy has no --system / --append-system-prompt equivalent
@@ -441,10 +451,11 @@ export class AgyAdapter implements CLIProvider {
       log.info('Agy model pin requested (native --model flag)', { model: modelPin });
     }
 
-    // The Python wrapper provides PTY allocation for agy #76 on every current
-    // platform, and owns descendant-aware process-group cleanup.
-    // With the settings.json swap gone, model pinning adds no extra wrapper.
-    const useWrapper = PTY_WRAP_NEEDED;
+    // The Python wrapper provides PTY allocation for agy #76 on supported
+    // POSIX platforms and owns descendant-aware process-group cleanup. Native
+    // Windows has neither Python's `pty` module nor POSIX process groups; fail
+    // with an actionable message instead of crashing inside the wrapper.
+    const useWrapper = ptyMode === 'python';
 
     const command = useWrapper ? 'python3' : AGY_BINARY;
     const args = useWrapper

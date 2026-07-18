@@ -63,7 +63,7 @@ export const BASE_ROAST_SCHEMA = {
     configDir: z.string().optional().describe("Per-client CLAUDE_CONFIG_DIR for Claude Code state isolation. Defaults to ~/.brutalist/claude-clients/<id> for routed clients."),
     env: z.record(z.string()).optional().describe("Additional per-client environment variables (applied last; override resolved values)."),
     includeProcessAuth: z.boolean().optional().describe("Routed clients are isolated by default (no native Claude credentials). Set true to ALSO inherit the process ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN into this client; set false to force isolation on an otherwise-native client."),
-    containment: z.enum(["hardened", "standard"]).optional().describe("MCP policy. 'hardened' (DEFAULT for routed/custom-endpoint clients) suppresses caller-requested MCP servers; 'standard' restores them. Bash, WebFetch, and WebSearch are always available."),
+    containment: z.enum(["hardened", "standard"]).optional().describe("MCP policy. The backward-compatible 'hardened' label (DEFAULT for routed/custom-endpoint clients) suppresses caller-requested MCP only; it is not a shell/network sandbox. 'standard' restores requested MCP. Bash, WebFetch, and WebSearch are always available."),
     workingDirectory: z.string().optional(),
     timeout: z.number().int().positive().optional(),
     mcpServers: z.array(z.string()).optional()

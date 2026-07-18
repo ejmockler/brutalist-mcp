@@ -1,9 +1,18 @@
 import { describe, expect, it } from '@jest/globals';
 import { spawn, spawnSync } from 'node:child_process';
-import { AGY_PYTHON_WRAPPER } from '../../src/cli-adapters/agy-adapter.js';
+import { AGY_PYTHON_WRAPPER, agyPtyMode } from '../../src/cli-adapters/agy-adapter.js';
 
 const pythonAvailable = spawnSync('python3', ['--version'], { stdio: 'ignore' }).status === 0;
 const describePosix = process.platform !== 'win32' && pythonAvailable ? describe : describe.skip;
+
+describe('Agy PTY platform routing', () => {
+  it('uses the Python PTY only on supported POSIX platforms', () => {
+    expect(agyPtyMode('darwin')).toBe('python');
+    expect(agyPtyMode('linux')).toBe('python');
+    expect(agyPtyMode('win32')).toBe('unsupported');
+    expect(agyPtyMode('freebsd')).toBe('python');
+  });
+});
 
 function isAlive(pid: number): boolean {
   try {

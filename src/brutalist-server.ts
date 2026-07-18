@@ -33,7 +33,7 @@ import { DebateOrchestrator } from './debate/index.js';
 import { DEFAULT_AGENT_TIMEOUT_MS, positiveIntegerOr } from './constants.js';
 
 // Use environment variable or fallback to manual version
-const PACKAGE_VERSION = process.env.npm_package_version || "1.14.7";
+const PACKAGE_VERSION = process.env.npm_package_version || "1.18.8";
 
 /**
  * BrutalistServer - Composition root for the Brutalist MCP Server

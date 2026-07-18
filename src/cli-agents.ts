@@ -924,6 +924,7 @@ export class CLIAgentOrchestrator {
   private readonly CLI_CACHE_TTL = 300000; // 5 minutes cache
   private runningCLIs = 0; // Track concurrent CLI executions
   private readonly MAX_CONCURRENT_CLIS = MAX_CONCURRENT_CLIS; // Configurable concurrency limit
+  private readonly cliSlotWaiters: Array<() => void> = [];
 
   // Runtime model discovery
   public readonly modelResolver: ModelResolver;
@@ -1642,13 +1643,12 @@ export class CLIAgentOrchestrator {
     systemPromptSpec: string,
     options: CLIAgentOptions = {}
   ): Promise<CLIAgentResponse> {
-    // Wait for available slot to prevent resource exhaustion
-    await this.waitForAvailableSlot();
-
-    this.runningCLIs++;
-    this.emitLog().info(`\u{1F3AF} Executing ${cli} (${this.runningCLIs}/${this.MAX_CONCURRENT_CLIS} slots used)`);
-
+    // Reserve atomically before dispatch. A separate availability check and a
+    // post-await increment lets every same-tick caller overrun the cap.
+    await this.acquireCLISlot();
     try {
+      this.emitLog().info(`\u{1F3AF} Executing ${cli} (${this.runningCLIs}/${this.MAX_CONCURRENT_CLIS} slots used)`);
+
       // Dispatch to adapter via buildCLICommand (which delegates to provider)
       const response = await this._executeCLI(
         cli,
@@ -1690,18 +1690,36 @@ export class CLIAgentOrchestrator {
 
       return response;
     } finally {
-      this.runningCLIs--;
+      this.releaseCLISlot();
       this.emitLog().info(`\u2705 Released CLI slot (${this.runningCLIs}/${this.MAX_CONCURRENT_CLIS} slots used)`);
     }
   }
 
-  private async waitForAvailableSlot(): Promise<void> {
-    let waitTime = 100; // Start with 100ms wait time
-    while (this.runningCLIs >= this.MAX_CONCURRENT_CLIS) {
-      this.emitLog().info(`⏳ Waiting for available CLI slot (${this.runningCLIs}/${this.MAX_CONCURRENT_CLIS} in use). Next check in ${waitTime}ms...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-      waitTime = Math.min(waitTime * 2, 5000); // Exponential backoff, max 5 seconds
+  private acquireCLISlot(): Promise<void> {
+    if (this.runningCLIs >= this.MAX_CONCURRENT_CLIS) {
+      this.emitLog().info(
+        `⏳ Waiting for available CLI slot (${this.runningCLIs}/${this.MAX_CONCURRENT_CLIS} in use; ${this.cliSlotWaiters.length + 1} queued)`
+      );
     }
+    return new Promise<void>((resolve) => {
+      this.cliSlotWaiters.push(resolve);
+      this.drainCLISlots();
+    });
+  }
+
+  private drainCLISlots(): void {
+    while (
+      this.runningCLIs < this.MAX_CONCURRENT_CLIS &&
+      this.cliSlotWaiters.length > 0
+    ) {
+      this.runningCLIs++;
+      this.cliSlotWaiters.shift()!();
+    }
+  }
+
+  private releaseCLISlot(): void {
+    this.runningCLIs--;
+    this.drainCLISlots();
   }
 
   async executeCLIAgents(

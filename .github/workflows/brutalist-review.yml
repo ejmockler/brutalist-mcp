@@ -13,6 +13,10 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: brutalist-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   brutalist:
     runs-on: ubuntu-latest
@@ -63,6 +67,8 @@ jobs:
           # waves plus synthesis. The job leaves setup/posting headroom.
           BRUTALIST_TIMEOUT: "7200000"
           BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "16200000"
+          # Agy intentionally inherits the same two-hour cap. Set
+          # BRUTALIST_AGY_TIMEOUT only when a narrower override is desired.
           # The installer fetches the latest agy; freeze that installed binary for
           # the review step. An uncontrolled 1.0.2 -> 1.0.10 self-update originally
           # broke this critic (15-min timeouts, no output). The v1.18.8 adapter also

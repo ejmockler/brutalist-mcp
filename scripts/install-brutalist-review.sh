@@ -51,7 +51,8 @@
 #   CODEX_AUTH_FILE   local codex auth.json to seed CODEX_AUTH from
 #                     (default: ~/.codex/auth.json)
 #   ACTION_SHA / CLAUDE_CLI_VERSION / CODEX_CLI_VERSION  override the pinned
-#                     action commit + critic CLI versions (advanced; keep in sync)
+#                     action commit + critic CLI versions (advanced; ACTION_SHA
+#                     must resolve from BRUTALIST_VERSION's release tag)
 #
 # Secrets are always piped (never echoed). Re-running is idempotent.
 set -euo pipefail
@@ -79,6 +80,13 @@ ACTION_SHA="${ACTION_SHA:-c2f8b0b696844e4045333106c14155ef2c3bb0e8}"  # = v1.18.
 CLAUDE_CLI_VERSION="${CLAUDE_CLI_VERSION:-2.1.162}"
 CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.136.0}"
 
+# Installer-generated panels contain at most three critics, which fit one
+# three-slot wave: two hours for the critics, 30 minutes for synthesis, and
+# another 30 minutes of job-level setup/posting headroom.
+readonly CRITIC_TIMEOUT_MS="7200000"
+readonly ORCHESTRATOR_TIMEOUT_MS="9000000"
+readonly JOB_TIMEOUT_MINUTES="180"
+
 # Validate operator-supplied values before they are interpolated into the
 # generated YAML (a poisoned env must not be able to inject workflow content).
 # Version pins require >=2 dot-separated numbers (reject bare ints / trailing /
@@ -96,6 +104,17 @@ warn() { printf '⚠ %s\n' "$*" >&2; }
 command -v gh >/dev/null || { echo "gh CLI is required" >&2; exit 1; }
 command -v node >/dev/null || { echo "node is required" >&2; exit 1; }
 gh repo view "$REPO" >/dev/null 2>&1 || { echo "cannot access repo $REPO (check gh auth + permissions)" >&2; exit 1; }
+
+RELEASE_TAG="v${VERSION#v}"
+RESOLVED_ACTION_SHA=$(gh api "repos/ejmockler/brutalist-mcp/commits/$RELEASE_TAG" --jq .sha 2>/dev/null || true)
+if [[ -z "$RESOLVED_ACTION_SHA" ]]; then
+  echo "cannot resolve Brutalist release tag $RELEASE_TAG" >&2
+  exit 1
+fi
+if [[ "$RESOLVED_ACTION_SHA" != "$ACTION_SHA" ]]; then
+  echo "ACTION_SHA mismatch: $RELEASE_TAG resolves to $RESOLVED_ACTION_SHA, not $ACTION_SHA" >&2
+  exit 2
+fi
 
 CRITICS="claude + agy"
 [[ "$ENABLE_CODEX" == "1" ]] && CRITICS="claude + codex + agy"
@@ -217,10 +236,14 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: brutalist-\${{ github.workflow }}-\${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   brutalist:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: ${JOB_TIMEOUT_MINUTES}
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -231,6 +254,9 @@ jobs:
           node-version: '20'
       - name: Install CLI critics
         run: |
+          # Let codex's read-only bubblewrap sandbox create its user namespace
+          # on Ubuntu 24.04; unsupported runner images degrade without failing setup.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           npm install -g @brutalist/mcp@${PKG_VERSION} \\
                          @anthropic-ai/claude-code@${CLAUDE_CLI_VERSION} \\
                          @openai/codex@${CODEX_CLI_VERSION}
@@ -244,8 +270,10 @@ jobs:
       - name: Brutalist review
         uses: ejmockler/brutalist-mcp/packages/github-action@${ACTION_SHA} # ${VERSION}
         env:
-          BRUTALIST_TIMEOUT: "7200000"
-          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "8100000"
+          BRUTALIST_TIMEOUT: "${CRITIC_TIMEOUT_MS}"
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "${ORCHESTRATOR_TIMEOUT_MS}"
+          # Install latest agy once, then freeze it for this review.
+          AGY_CLI_DISABLE_AUTO_UPDATE: "1"
         with:
           github-token: \${{ github.token }}
           anthropic-oauth-token: \${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
@@ -269,10 +297,14 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: brutalist-\${{ github.workflow }}-\${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   brutalist:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: ${JOB_TIMEOUT_MINUTES}
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -290,8 +322,10 @@ jobs:
       - name: Brutalist review
         uses: ejmockler/brutalist-mcp/packages/github-action@${ACTION_SHA} # ${VERSION}
         env:
-          BRUTALIST_TIMEOUT: "7200000"
-          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "8100000"
+          BRUTALIST_TIMEOUT: "${CRITIC_TIMEOUT_MS}"
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "${ORCHESTRATOR_TIMEOUT_MS}"
+          # Install latest agy once, then freeze it for this review.
+          AGY_CLI_DISABLE_AUTO_UPDATE: "1"
         with:
           github-token: \${{ github.token }}
           anthropic-oauth-token: \${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
@@ -321,4 +355,6 @@ fi
 echo
 ok "Done. Next PR on $REPO triggers the review ($CRITICS)."
 note "See docs/brutalist-review-setup.md."
-[[ "$ENABLE_CODEX" == "1" ]] && note "Codex stays fresh only once $REPO is registered with the broker (runbook)."
+if [[ "$ENABLE_CODEX" == "1" ]]; then
+  note "Codex stays fresh only once $REPO is registered with the broker (runbook)."
+fi

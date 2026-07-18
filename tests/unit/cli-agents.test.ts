@@ -486,37 +486,74 @@ describe('CLIAgentOrchestrator', () => {
   });
 
   describe('Concurrent Execution Management', () => {
-    it('should respect maximum concurrent CLI limit', async () => {
-      // Mock the MAX_CONCURRENT_CLIS constant
-      const originalMax = (orchestrator as any).MAX_CONCURRENT_CLIS;
-      (orchestrator as any).MAX_CONCURRENT_CLIS = 2;
+    it('admits critics FIFO without exceeding the configured limit', async () => {
+      (orchestrator as any).MAX_CONCURRENT_CLIS = 3;
 
-      const executionPromises: Promise<any>[] = [];
-      
-      // Try to start more executions than the limit
-      for (let i = 0; i < 5; i++) {
-        const promise = (orchestrator as any).waitForAvailableSlot();
-        executionPromises.push(promise);
-      }
+      const gates = Array.from({ length: 6 }, () => {
+        let resolve!: () => void;
+        let reject!: (error: Error) => void;
+        const promise = new Promise<void>((res, rej) => {
+          resolve = res;
+          reject = rej;
+        });
+        return { promise, resolve, reject };
+      });
+      const started: number[] = [];
+      let inFlight = 0;
+      let peakInFlight = 0;
 
-      // Should queue executions beyond the limit
-      expect(executionPromises.length).toBe(5);
-      
-      // Restore original value
-      (orchestrator as any).MAX_CONCURRENT_CLIS = originalMax;
-    });
+      (orchestrator as any)._executeCLI = jest.fn(
+        async (_cli: string, userPrompt: string) => {
+          const id = Number(userPrompt.replace('critic-', ''));
+          started.push(id);
+          inFlight++;
+          peakInFlight = Math.max(peakInFlight, inFlight);
+          try {
+            await gates[id].promise;
+            return {
+              agent: 'claude',
+              success: true,
+              output: 'ok',
+              executionTime: 1,
+            };
+          } finally {
+            inFlight--;
+          }
+        }
+      );
 
-    it('should track running CLI count correctly', () => {
-      const initialCount = (orchestrator as any).runningCLIs;
-      expect(initialCount).toBe(0);
-      
-      // Simulate starting an execution
-      (orchestrator as any).runningCLIs++;
-      expect((orchestrator as any).runningCLIs).toBe(1);
-      
-      // Simulate completion
-      (orchestrator as any).runningCLIs--;
+      const executions = gates.map((_gate, id) =>
+        orchestrator.executeSingleCLI('claude', 'critic-' + id, 'system')
+      );
+      const settled = Promise.allSettled(executions);
+      const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+      await flush();
+      expect(started).toEqual([0, 1, 2]);
+      expect((orchestrator as any).runningCLIs).toBe(3);
+
+      gates[0].resolve();
+      await flush();
+      expect(started).toEqual([0, 1, 2, 3]);
+
+      // A rejected critic must release its permit to the next FIFO waiter.
+      gates[1].reject(new Error('critic failed'));
+      await flush();
+      expect(started).toEqual([0, 1, 2, 3, 4]);
+
+      gates[2].resolve();
+      await flush();
+      expect(started).toEqual([0, 1, 2, 3, 4, 5]);
+
+      gates[3].resolve();
+      gates[4].resolve();
+      gates[5].resolve();
+      const results = await settled;
+
+      expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+      expect(peakInFlight).toBe(3);
       expect((orchestrator as any).runningCLIs).toBe(0);
+      expect((orchestrator as any).cliSlotWaiters).toHaveLength(0);
     });
   });
 

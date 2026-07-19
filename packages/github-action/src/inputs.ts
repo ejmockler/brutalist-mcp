@@ -178,6 +178,13 @@ export interface ActionInputs {
   customClaudeClients: ParsedCustomClient[];
   /** Governing (smallest participant) context window, in tokens. */
   contextWindowTokens: number;
+  /**
+   * Per-participant fidelity windows (one entry per ACTIVE critic — native +
+   * custom). The per-critic chunk-stream driver chunks the diff to each
+   * participant's own window rather than the global min. Order: claude, codex?,
+   * agy?, then custom clients.
+   */
+  participantFidelityWindows: ParticipantFidelityWindow[];
   /** Working headroom reserved for the agent, as a percentage (0–90). */
   contextHeadroomPct: number;
   /**
@@ -258,7 +265,31 @@ function parseContextWindowOverride(name: string): number | undefined {
   return n;
 }
 
-function criticFidelityWindow(critic: FidelityCritic, resolvedModel: string): number {
+/**
+ * Per-participant fidelity window, exposed so the per-critic chunk-stream driver
+ * (index.ts) can chunk the diff to EACH critic's own window instead of clamping
+ * every critic to the global minimum. `id` is the native cli name or the custom
+ * client id; `window` is already capped by an explicit context-window-tokens
+ * override when the operator set one.
+ */
+export type ParticipantKind = 'native' | 'custom';
+export interface ParticipantFidelityWindow {
+  id: string;
+  kind: ParticipantKind;
+  window: number;
+}
+
+/**
+ * Convert a token window into a per-chunk char budget using the SAME headroom +
+ * chars-per-token math the governing-window path uses, so per-participant chunks
+ * and the legacy single-window chunks stay consistent. Shared by index.ts.
+ */
+export function charsForWindow(windowTokens: number, headroomPct: number): number {
+  const usableTokens = Math.floor(windowTokens * (1 - headroomPct / 100));
+  return Math.max(1000, usableTokens * CHARS_PER_TOKEN);
+}
+
+export function criticFidelityWindow(critic: FidelityCritic, resolvedModel: string): number {
   const override = parseContextWindowOverride(FIDELITY_WINDOW_ENV[critic]);
   if (override !== undefined) return override;
 
@@ -385,6 +416,14 @@ export function readInputs(): ActionInputs {
   // EVERY participating custom client's window into the min (only runnable
   // clients are in customClaudeClients, so an unused window can't shrink it).
   const configuredWindow = parseIntInput('context-window-tokens', '200000', 10_000, 2_000_000);
+  // claude is always active (its OAuth token is required). 1M holds ONLY when
+  // BOTH the brain `model` and the `claudeCriticModel` carry [1m]; a diverged
+  // critic model without it genuinely gets ~200k via OAuth. Named so the legacy
+  // min-array and the structured per-participant list below can't drift.
+  const claudeFidelityWindow =
+    /\[1m\]/i.test(model) && /\[1m\]/i.test(claudeCriticModel)
+      ? CLAUDE_1M_WINDOW_TOKENS
+      : CONSERVATIVE_FIDELITY_WINDOW_TOKENS;
   const participantWindows = [configuredWindow];
   for (const c of customClaudeClients) {
     // Every client here is ACTIVE (runnable). A client that DECLARES a window
@@ -419,11 +458,7 @@ export function readInputs(): ActionInputs {
   // An authed-but-not-installed critic therefore still constrains the window —
   // over-chunking, the SAFE direction. Under-constraining would overflow a critic
   // that IS installed, so presence-gating is intentional, not a missed check.
-  participantWindows.push(
-    /\[1m\]/i.test(model) && /\[1m\]/i.test(claudeCriticModel)
-      ? CLAUDE_1M_WINDOW_TOKENS
-      : CONSERVATIVE_FIDELITY_WINDOW_TOKENS,
-  );
+  participantWindows.push(claudeFidelityWindow);
   if (core.getInput('codex-auth') || core.getInput('openai-api-key')) {
     participantWindows.push(criticFidelityWindow('codex', DEFAULT_CODEX_MODEL));
   }
@@ -431,6 +466,43 @@ export function readInputs(): ActionInputs {
     participantWindows.push(criticFidelityWindow('agy', DEFAULT_AGY_MODEL));
   }
   const contextWindowTokens = Math.min(...participantWindows);
+
+  // Structured per-participant fidelity windows for the per-critic chunk-stream
+  // driver (index.ts). Each ACTIVE participant reviews the whole diff chunked to
+  // ITS OWN window — claude/glm (~1M) in ~1 chunk (max cross-diff correlation,
+  // no redundant re-review), codex ≤272k, agy ≤135k (verbatim). This is both
+  // leaner (big critics stop re-reading the diff N times) and higher fidelity
+  // than clamping everyone to the global min. The context-window-tokens input is
+  // applied here as a CAP only when the operator EXPLICITLY set it (an unset
+  // input leaves each participant at its native window — the dogfood default);
+  // the legacy `contextWindowTokens` min above still folds the default floor for
+  // callers that consume the single-window path.
+  const explicitWindowCap = core.getInput('context-window-tokens') ? configuredWindow : undefined;
+  const capWindow = (w: number): number => (explicitWindowCap ? Math.min(w, explicitWindowCap) : w);
+  const participantFidelityWindows: ParticipantFidelityWindow[] = [
+    { id: 'claude', kind: 'native', window: capWindow(claudeFidelityWindow) },
+  ];
+  if (core.getInput('codex-auth') || core.getInput('openai-api-key')) {
+    participantFidelityWindows.push({
+      id: 'codex',
+      kind: 'native',
+      window: capWindow(criticFidelityWindow('codex', DEFAULT_CODEX_MODEL)),
+    });
+  }
+  if (core.getInput('agy-oauth-token')) {
+    participantFidelityWindows.push({
+      id: 'agy',
+      kind: 'native',
+      window: capWindow(criticFidelityWindow('agy', DEFAULT_AGY_MODEL)),
+    });
+  }
+  for (const c of customClaudeClients) {
+    participantFidelityWindows.push({
+      id: c.id,
+      kind: 'custom',
+      window: capWindow(c.contextWindow ?? CONSERVATIVE_FIDELITY_WINDOW_TOKENS),
+    });
+  }
   // Default 15: a chunk may fill up to 85% of the governing window. Nominal
   // 15% understates the real free space — CHARS_PER_TOKEN=3 is a deliberate
   // underestimate (real diffs run ~3.5/tok), so a chunk's actual token count
@@ -476,6 +548,7 @@ export function readInputs(): ActionInputs {
     customClaudeContextWindow,
     customClaudeClients,
     contextWindowTokens,
+    participantFidelityWindows,
     contextHeadroomPct,
     maxChunkChars,
     chunkConcurrency,

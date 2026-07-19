@@ -239,6 +239,56 @@ describe('native-critic window floor (active native critics fold into the govern
     expect(inputs.contextWindowTokens).toBe(135_000);
   });
 
+  it('participantFidelityWindows exposes each active critic at its OWN window (unset context-window-tokens => no cap)', () => {
+    delete process.env['INPUT_CONTEXT-WINDOW-TOKENS'];
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CLAUDE-CRITIC-MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
+    process.env['INPUT_CUSTOM-CLAUDE-CLIENTS'] = JSON.stringify([
+      {
+        id: 'glm',
+        baseUrl: 'https://glm.example.test/v1',
+        authToken: 'sk-glm-abcdef',
+        model: 'glm-5.2',
+        contextWindow: 1_000_000,
+      },
+    ]);
+    const inputs = readInputs();
+    // Each participant streams at its own fidelity window — NOT clamped to agy's 135k min.
+    expect(inputs.participantFidelityWindows).toEqual([
+      { id: 'claude', kind: 'native', window: 1_000_000 },
+      { id: 'codex', kind: 'native', window: 272_000 },
+      { id: 'agy', kind: 'native', window: 135_000 },
+      { id: 'glm', kind: 'custom', window: 1_000_000 },
+    ]);
+    // The legacy governing min is still agy's 135k (single-window consumers).
+    expect(inputs.contextWindowTokens).toBe(135_000);
+  });
+
+  it('an EXPLICIT context-window-tokens caps every per-participant window (manual override preserved)', () => {
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '150000';
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CLAUDE-CRITIC-MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
+    const inputs = readInputs();
+    // claude 1M and codex 272k are capped to 150k; agy 135k already < cap.
+    expect(inputs.participantFidelityWindows).toEqual([
+      { id: 'claude', kind: 'native', window: 150_000 },
+      { id: 'codex', kind: 'native', window: 150_000 },
+      { id: 'agy', kind: 'native', window: 135_000 },
+    ]);
+  });
+
+  it('claude-only without [1m] exposes the single conservative-window participant', () => {
+    delete process.env['INPUT_CONTEXT-WINDOW-TOKENS'];
+    const inputs = readInputs();
+    expect(inputs.participantFidelityWindows).toEqual([
+      { id: 'claude', kind: 'native', window: 200_000 },
+    ]);
+  });
+
   it('claude-only [1m] panel (no codex/agy) can chunk above 200k', () => {
     process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
     process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '300000';

@@ -343,6 +343,34 @@ describe('BrutalistServer', () => {
         errorSpy.mockRestore();
       }
     });
+
+    it('BRUTALIST_FORCE_CLIS=custom forces clis:[] (native critics off; custom clients run) regardless of args', async () => {
+      process.env.BRUTALIST_FORCE_CLIS = 'custom';
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const server = new BrutalistServer(defaultTestConfig);
+      const args: Record<string, unknown> = {
+        domain: 'codebase',
+        target: '.',
+        force_refresh: true,
+        clis: ['claude', 'codex', 'agy'],
+      };
+
+      try {
+        await (server as any).handleUnifiedRoast(args, { _meta: {} });
+
+        expect(mockCLIOrchestrator.executeBrutalistAnalysis).toHaveBeenCalledTimes(1);
+        // clis forced to [] — the cli-agents spec filter then keeps only the
+        // custom (non-native) specs for this stream.
+        expect(mockCLIOrchestrator.executeBrutalistAnalysis.mock.calls[0][4]).toMatchObject({
+          clis: [],
+        });
+        expect(errorSpy).toHaveBeenCalledWith(
+          '[brutalist] BRUTALIST_FORCE_CLIS enforced: only custom Claude-routed clients will run',
+        );
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
   });
 
   // TODO: Fix tests after architecture refactoring - methods moved to ToolHandler

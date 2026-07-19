@@ -394,6 +394,41 @@ describe('executeBrutalistAnalysis spec assembly (C1/C4/D1)', () => {
     }
   });
 
+  it('N4: BRUTALIST_FORCE_CLIS=<native> isolates that native and DROPS every custom/other spec (per-participant stream)', async () => {
+    const previous = process.env.BRUTALIST_FORCE_CLIS;
+    process.env.BRUTALIST_FORCE_CLIS = 'agy';
+    try {
+      const o = orch();
+      const spy = stubExec(o);
+      // A custom client rides along (explicit here; env-default GLM lands in the
+      // SAME dedupedSpecs via parseDefaultClientsFromEnv, so the filter drops it
+      // identically). claude + codex + glm must all be dropped — only agy runs.
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', undefined, {
+        clients: [{ id: 'glm', provider: 'claude' }],
+      });
+      expect(ranIds(spy)).toEqual(['agy']);
+    } finally {
+      if (previous === undefined) delete process.env.BRUTALIST_FORCE_CLIS;
+      else process.env.BRUTALIST_FORCE_CLIS = previous;
+    }
+  });
+
+  it('N4: BRUTALIST_FORCE_CLIS=custom isolates the custom client(s) and DROPS all native critics', async () => {
+    const previous = process.env.BRUTALIST_FORCE_CLIS;
+    process.env.BRUTALIST_FORCE_CLIS = 'custom';
+    try {
+      const o = orch();
+      const spy = stubExec(o);
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', undefined, {
+        clients: [{ id: 'glm', provider: 'claude' }],
+      });
+      expect(ranIds(spy)).toEqual(['glm']);
+    } finally {
+      if (previous === undefined) delete process.env.BRUTALIST_FORCE_CLIS;
+      else process.env.BRUTALIST_FORCE_CLIS = previous;
+    }
+  });
+
   it('C1: clis:[] is the explicit override hatch — only the named clients run', async () => {
     const o = orch();
     const spy = stubExec(o);
@@ -743,7 +778,7 @@ describe('routed config-dir provisioning + pre-flight liveness', () => {
     const spy = stubExec(o);
     // Resolves (does not throw) despite the provisioning failure.
     const results = await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', undefined, {
-      clients: [{ id: 'glm', provider: 'claude', baseUrl: 'https://glm.x', authToken: 't' }],
+      clients: [{ id: 'glm', provider: 'claude' }],
     });
     // Native critics still ran.
     expect(ranIds(spy)).toEqual(expect.arrayContaining(['agy', 'claude', 'codex']));

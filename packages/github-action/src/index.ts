@@ -18,8 +18,9 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { run as runOrchestrator } from '@brutalist/orchestrator';
 import type { OrchestratorResult } from '@brutalist/orchestrator';
-import { chunkDiff, mergeResults, runWithConcurrency } from './chunk-diff.js';
+import { mergeResults, runWithConcurrency } from './chunk-diff.js';
 import { readInputs } from './inputs.js';
+import { buildParticipantStreams, planPasses, type StreamPass } from './streams.js';
 import { provisionCustomClaudeClient } from './custom-claude.js';
 import { fetchPullRequestContext, getPullRequestRef } from './diff.js';
 import { resolveFindings } from './resolver.js';
@@ -115,27 +116,38 @@ async function main(): Promise<void> {
     `Working directory: ${inputs.workingDirectory}`,
   ];
 
-  // Context-window-aware chunking. A diff larger than the usable context
-  // window can't be reviewed in one pass (the brain + every critic would hit
-  // "Prompt is too long"), so split it to fit and review each chunk with an
-  // independent orchestrator run, then merge into one review.
-  const { chunks, truncatedHunks } = chunkDiff(truncated.text, inputs.maxChunkChars);
-  if (truncatedHunks > 0) {
-    core.warning(
-      `${truncatedHunks} oversized hunk(s) were truncated to fit the per-chunk budget (${inputs.maxChunkChars} chars); findings on truncated regions may be missed.`,
-    );
-  }
+  // Per-participant fidelity streams (see streams.ts): each ACTIVE critic
+  // reviews the WHOLE diff chunked to ITS OWN fidelity window (claude/glm ~1
+  // chunk = max cross-diff correlation; agy ≤135k = verbatim), isolated
+  // mechanically server-side (BRUTALIST_FORCE_CLIS) so a stream never drags in
+  // another critic or an env-default custom client. Leaner AND higher fidelity
+  // than a single global-min chunk stream.
+  const streams = buildParticipantStreams(
+    inputs.participantFidelityWindows,
+    nativeCritic,
+    inputs.contextWindowTokens,
+  );
+  const { passes, summaries, warnings } = planPasses(
+    streams,
+    truncated.text,
+    inputs.contextHeadroomPct,
+  );
+  for (const w of warnings) core.warning(w);
   core.info(
-    `Diff split into ${chunks.length} chunk(s) of ≤${inputs.maxChunkChars} chars ` +
-      `(window ${inputs.contextWindowTokens} tok − ${inputs.contextHeadroomPct}% headroom). Brain model: ${inputs.model}.`,
+    `Per-participant streams [${summaries.join(', ')}]. ` +
+      `Total ${passes.length} review pass(es) — each critic reviews the whole diff at its own ` +
+      `fidelity window. Brain model: ${inputs.model}.`,
   );
 
-  const runChunk = (chunk: string, i: number): Promise<OrchestratorResult> => {
-    const orchestratorOptions: Parameters<typeof runOrchestrator>[0] & { clis?: NativeCritic[] } = {
+  const runPass = (pass: StreamPass): Promise<OrchestratorResult> => {
+    const orchestratorOptions: Parameters<typeof runOrchestrator>[0] & {
+      isolateParticipant?: NativeCritic | 'custom';
+    } = {
       repoPath,
       focus:
         `Pull request #${pull.number} diff ` +
-        `(${chunks.length > 1 ? `chunk ${i + 1}/${chunks.length}, ` : ''}commentable lines only):\n\n${chunk}`,
+        `(${pass.stream.label} stream${pass.n > 1 ? `, chunk ${pass.i + 1}/${pass.n}` : ''}, ` +
+        `commentable lines only):\n\n${pass.chunk}`,
       contextHints,
       oauthToken: inputs.anthropicOauthToken,
       // Pin the claude executable from the preflight result so the SDK
@@ -144,20 +156,23 @@ async function main(): Promise<void> {
       claudeCodeExecutablePath: preflight.claude.resolvedPath,
       model: inputs.model,
       knownClientIds,
-      ...(nativeCritic ? { clis: [nativeCritic] } : {}),
+      // Mechanical per-stream isolation; undefined only for the defensive
+      // all-critics fallback stream.
+      ...(pass.stream.tag ? { isolateParticipant: pass.stream.tag } : {}),
     };
     return runOrchestrator(orchestratorOptions);
   };
 
   let result: OrchestratorResult;
-  if (chunks.length <= 1) {
+  if (passes.length <= 1) {
     core.info('Invoking @brutalist/orchestrator...');
-    result = await runChunk(chunks[0] ?? truncated.text, 0);
+    result = await runPass(passes[0] ?? { stream: streams[0], chunk: truncated.text, i: 0, n: 1 });
   } else {
     core.info(
-      `Invoking @brutalist/orchestrator across ${chunks.length} chunks (concurrency ${inputs.chunkConcurrency})...`,
+      `Invoking @brutalist/orchestrator across ${passes.length} per-participant pass(es) ` +
+        `(concurrency ${inputs.chunkConcurrency})...`,
     );
-    const settled = await runWithConcurrency(chunks, inputs.chunkConcurrency, runChunk);
+    const settled = await runWithConcurrency(passes, inputs.chunkConcurrency, runPass);
     const ok: OrchestratorResult[] = [];
     let failedCount = 0;
     for (const r of settled) {
@@ -165,18 +180,22 @@ async function main(): Promise<void> {
         ok.push(r.value);
       } else {
         failedCount++;
+        const pass = passes[r.index];
+        const where = pass
+          ? `${pass.stream.label}${pass.n > 1 ? ` chunk ${pass.i + 1}/${pass.n}` : ''}`
+          : `pass ${r.index + 1}`;
         const msg = r.error instanceof Error ? r.error.message : String(r.error);
-        core.warning(`Chunk ${r.index + 1}/${chunks.length} review failed: ${msg}`);
+        core.warning(`Review pass ${r.index + 1}/${passes.length} (${where}) failed: ${msg}`);
       }
     }
     if (ok.length === 0) {
-      // Every chunk failed — surface a hard failure rather than an empty review.
+      // Every pass failed — surface a hard failure rather than an empty review.
       const firstErr = settled.find((r) => !r.ok) as { error: unknown } | undefined;
       const e = firstErr?.error;
-      throw e instanceof Error ? e : new Error(`All ${chunks.length} chunk reviews failed.`);
+      throw e instanceof Error ? e : new Error(`All ${passes.length} review passes failed.`);
     }
     result = mergeResults(ok);
-    core.info(`Merged ${ok.length}/${chunks.length} chunk reviews (${failedCount} failed).`);
+    core.info(`Merged ${ok.length}/${passes.length} per-participant review pass(es) (${failedCount} failed).`);
   }
   core.info(
     `Orchestrator returned ${result.findings.length} findings + ${result.outOfDiff.length} out-of-diff. perCli=${result.perCli.length}.`,

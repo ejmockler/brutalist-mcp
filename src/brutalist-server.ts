@@ -733,8 +733,16 @@ export class BrutalistServer {
 
     const forcedCli = process.env.BRUTALIST_FORCE_CLIS;
     if (forcedCli === 'claude' || forcedCli === 'codex' || forcedCli === 'agy') {
+      // Native isolation: pin the roast to this native critic. cli-agents ALSO
+      // drops env-default custom clients for this stream (the BRUTALIST_FORCE_CLIS
+      // spec filter), so a per-critic native stream never drags in GLM et al.
       args = { ...args, clis: [forcedCli] };
       console.error(`[brutalist] BRUTALIST_FORCE_CLIS enforced: only ${forcedCli} will run`);
+    } else if (forcedCli === 'custom') {
+      // Custom-client-only isolation: no native critics; cli-agents keeps only
+      // the custom (non-native) specs so the env-default clients run alone.
+      args = { ...args, clis: [] };
+      console.error(`[brutalist] BRUTALIST_FORCE_CLIS enforced: only custom Claude-routed clients will run`);
     }
 
     // Get domain config

@@ -1832,7 +1832,7 @@ export class CLIAgentOrchestrator {
     // impersonating a native one (e.g. {id:'claude', baseUrl:...}) — the
     // real native critic wins and the duplicate is dropped.
     const seenIds = new Set<string>();
-    const dedupedSpecs = executionSpecs.filter((s) => {
+    let dedupedSpecs = executionSpecs.filter((s) => {
       if (seenIds.has(s.id)) {
         this.emitLog().warn(`Dropping duplicate CLI client id: ${s.id}`);
         return false;
@@ -1840,6 +1840,22 @@ export class CLIAgentOrchestrator {
       seenIds.add(s.id);
       return true;
     });
+
+    // Per-participant stream isolation (N4). When the orchestrator pins this pass
+    // to one participant via BRUTALIST_FORCE_CLIS, drop every other spec — INCLUDING
+    // env-default custom clients that would otherwise ride along on a native
+    // stream — so each critic reviews the diff chunked to ITS OWN fidelity window
+    // without bleeding into another's stream. This is the authoritative env-default
+    // suppressor: `clients: []` does NOT drop env defaults (parseDefaultClientsFromEnv
+    // only yields to a NON-EMPTY explicit clients[]). Keyed by id: native ids
+    // (claude/codex/agy) can't collide with custom client ids (isReservedCustomClientId
+    // guards that), so id-matching is unambiguous. Absent the env var, nothing changes.
+    const forceParticipant = process.env.BRUTALIST_FORCE_CLIS;
+    if (forceParticipant === 'claude' || forceParticipant === 'codex' || forceParticipant === 'agy') {
+      dedupedSpecs = dedupedSpecs.filter((s) => s.id === forceParticipant);
+    } else if (forceParticipant === 'custom') {
+      dedupedSpecs = dedupedSpecs.filter((s) => !['claude', 'codex', 'agy'].includes(s.id));
+    }
 
     const unavailableClients = dedupedSpecs.filter(
       (client) => !this.cliContext.availableCLIs.includes(client.provider)

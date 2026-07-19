@@ -68,3 +68,31 @@ describe('single native critic selection', () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 });
+
+describe('per-participant isolation (isolateParticipant)', () => {
+  const drive = () =>
+    mockQuery.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'system' as const };
+        await capturedHandler!(FIXTURE_OK);
+        yield { type: 'result' as const };
+      },
+    });
+
+  it('a native isolateParticipant sets BRUTALIST_FORCE_CLIS and pins the prompt to that native', async () => {
+    drive();
+    await run({ repoPath: '/tmp/repo', oauthToken: 'tok', isolateParticipant: 'codex' } as any);
+    expect(capturedQueryParams.options.mcpServers.brutalist.env.BRUTALIST_FORCE_CLIS).toBe('codex');
+    expect(capturedQueryParams.options.systemPrompt).toContain(
+      'This review pass is pinned to the `codex` native critic',
+    );
+  });
+
+  it("isolateParticipant:'custom' sets BRUTALIST_FORCE_CLIS=custom and instructs custom-only (clis: [])", async () => {
+    drive();
+    await run({ repoPath: '/tmp/repo', oauthToken: 'tok', isolateParticipant: 'custom' } as any);
+    expect(capturedQueryParams.options.mcpServers.brutalist.env.BRUTALIST_FORCE_CLIS).toBe('custom');
+    expect(capturedQueryParams.options.systemPrompt).toContain('Custom-Client-Only Mode');
+    expect(capturedQueryParams.prompt).toContain('run ONLY the custom Claude-routed client(s)');
+  });
+});

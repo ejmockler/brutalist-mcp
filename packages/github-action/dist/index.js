@@ -40754,7 +40754,7 @@ async function provisionCustomClaudeClient(inputs) {
         lib_core.info(`Custom Claude Code critic enabled: ${clientId} (${c.model}).`);
     }
     process.env.BRUTALIST_CLAUDE_CLIENTS = JSON.stringify(published);
-    lib_core.info(`Custom Claude critics provisioned: ${knownClientIds.length}; governing diff-chunk window ${inputs.contextWindowTokens} tok.`);
+    lib_core.info(`Custom Claude critics provisioned: ${knownClientIds.length}; per-participant fidelity streams (smallest participant window ${inputs.contextWindowTokens} tok).`);
     return { knownClientIds, tokenEnvNames };
 }
 

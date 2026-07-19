@@ -477,8 +477,24 @@ export function readInputs(): ActionInputs {
   // input leaves each participant at its native window — the dogfood default);
   // the legacy `contextWindowTokens` min above still folds the default floor for
   // callers that consume the single-window path.
+  //
+  // CRITICAL: every participant is ALSO capped by the BRAIN window. The
+  // orchestrator brain (on `model`) reads EVERY stream's chunk and relays it to
+  // the critic as the roast `context`, so a chunk that fits the critic but not
+  // the brain trips "Prompt is too long" and silently drops that stream. The
+  // brain window keys off `model` alone (independent of the claude CRITIC model):
+  // 1M with [1m], else ~200k. Without this, a non-[1m] consumer's codex stream
+  // (272k) would overflow its ~200k brain — the exact regression the global-min
+  // never had (its min always folded claudeFidelityWindow ≤ the brain).
+  const brainFidelityWindow = /\[1m\]/i.test(model)
+    ? CLAUDE_1M_WINDOW_TOKENS
+    : CONSERVATIVE_FIDELITY_WINDOW_TOKENS;
   const explicitWindowCap = core.getInput('context-window-tokens') ? configuredWindow : undefined;
-  const capWindow = (w: number): number => (explicitWindowCap ? Math.min(w, explicitWindowCap) : w);
+  const capWindow = (w: number): number => {
+    let capped = Math.min(w, brainFidelityWindow);
+    if (explicitWindowCap) capped = Math.min(capped, explicitWindowCap);
+    return capped;
+  };
   const participantFidelityWindows: ParticipantFidelityWindow[] = [
     { id: 'claude', kind: 'native', window: capWindow(claudeFidelityWindow) },
   ];

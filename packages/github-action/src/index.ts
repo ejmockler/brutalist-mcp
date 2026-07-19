@@ -20,7 +20,12 @@ import { run as runOrchestrator } from '@brutalist/orchestrator';
 import type { OrchestratorResult } from '@brutalist/orchestrator';
 import { mergeResults, runWithConcurrency } from './chunk-diff.js';
 import { readInputs } from './inputs.js';
-import { buildParticipantStreams, planPasses, type StreamPass } from './streams.js';
+import {
+  buildParticipantStreams,
+  collapseStreamsIfDiffFits,
+  planPasses,
+  type StreamPass,
+} from './streams.js';
 import { provisionCustomClaudeClient } from './custom-claude.js';
 import { fetchPullRequestContext, getPullRequestRef } from './diff.js';
 import { resolveFindings } from './resolver.js';
@@ -122,10 +127,10 @@ async function main(): Promise<void> {
   // mechanically server-side (BRUTALIST_FORCE_CLIS) so a stream never drags in
   // another critic or an env-default custom client. Leaner AND higher fidelity
   // than a single global-min chunk stream.
-  const streams = buildParticipantStreams(
-    inputs.participantFidelityWindows,
-    nativeCritic,
-    inputs.contextWindowTokens,
+  const streams = collapseStreamsIfDiffFits(
+    buildParticipantStreams(inputs.participantFidelityWindows, nativeCritic, inputs.contextWindowTokens),
+    truncated.text.length,
+    inputs.contextHeadroomPct,
   );
   const { passes, summaries, warnings } = planPasses(
     streams,

@@ -54,9 +54,41 @@ export function buildParticipantStreams(
   }
   if (nativeCriticOverride) {
     streams = streams.filter((s) => s.tag === nativeCriticOverride);
+    if (streams.length === 0) {
+      // The operator pinned a critic that isn't active/authed — fail loudly
+      // rather than silently reviewing with everyone (matches the pre-stream
+      // "Requested CLIs not available" hard error).
+      throw new Error(
+        `native-critic override "${nativeCriticOverride}" is not an active/authed critic; ` +
+          `active participants: ${participants.map((p) => p.id).join(', ') || '(none)'}.`,
+      );
+    }
   }
   if (streams.length === 0) {
     streams = [{ tag: undefined, label: 'all', window: fallbackWindow }];
+  }
+  return streams;
+}
+
+/**
+ * If the whole diff fits the SMALLEST stream's window, every critic would review
+ * it in a single chunk regardless of stream — so per-participant streams add
+ * only redundant BRAIN passes (the orchestrator brain runs once PER stream, and
+ * it re-reads the whole diff each time). Collapse to a single all-critics stream
+ * (one brain pass, all critics) in that common case; keep per-participant streams
+ * only when the diff actually exceeds some critic's window, where big critics
+ * genuinely benefit from being chunked less finely than the smallest critic.
+ */
+export function collapseStreamsIfDiffFits(
+  streams: FidelityStream[],
+  diffLength: number,
+  headroomPct: number,
+): FidelityStream[] {
+  if (streams.length <= 1) return streams;
+  const minWindow = Math.min(...streams.map((s) => s.window));
+  if (diffLength <= charsForWindow(minWindow, headroomPct)) {
+    // tag undefined => no isolation => all critics run together in one pass.
+    return [{ tag: undefined, label: 'all', window: minWindow }];
   }
   return streams;
 }

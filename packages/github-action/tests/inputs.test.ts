@@ -289,6 +289,21 @@ describe('native-critic window floor (active native critics fold into the govern
     ]);
   });
 
+  it('caps EVERY participant to the ~200k BRAIN window when the brain model lacks [1m] (the brain reads every chunk)', () => {
+    delete process.env['INPUT_CONTEXT-WINDOW-TOKENS'];
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8'; // no [1m] => brain ~200k
+    process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
+    const inputs = readInputs();
+    // codex's 272k is clamped to the 200k brain window (else a codex chunk would
+    // overflow the brain the action runs on `model`); agy 135k already < brain.
+    expect(inputs.participantFidelityWindows).toEqual([
+      { id: 'claude', kind: 'native', window: 200_000 },
+      { id: 'codex', kind: 'native', window: 200_000 },
+      { id: 'agy', kind: 'native', window: 135_000 },
+    ]);
+  });
+
   it('claude-only [1m] panel (no codex/agy) can chunk above 200k', () => {
     process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
     process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '300000';

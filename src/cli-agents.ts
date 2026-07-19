@@ -14,6 +14,7 @@ import {
   classifyRouting,
   isRoutedClient,
   isReservedCustomClientId,
+  NATIVE_CLI_IDS,
   ROUTING_FIELDS,
 } from './cli-adapters/routing.js';
 // Re-export the routing predicates that used to live here (consumers + tests
@@ -1851,10 +1852,10 @@ export class CLIAgentOrchestrator {
     // (claude/codex/agy) can't collide with custom client ids (isReservedCustomClientId
     // guards that), so id-matching is unambiguous. Absent the env var, nothing changes.
     const forceParticipant = process.env.BRUTALIST_FORCE_CLIS;
-    if (forceParticipant === 'claude' || forceParticipant === 'codex' || forceParticipant === 'agy') {
+    if (forceParticipant && (NATIVE_CLI_IDS as readonly string[]).includes(forceParticipant)) {
       dedupedSpecs = dedupedSpecs.filter((s) => s.id === forceParticipant);
     } else if (forceParticipant === 'custom') {
-      dedupedSpecs = dedupedSpecs.filter((s) => !['claude', 'codex', 'agy'].includes(s.id));
+      dedupedSpecs = dedupedSpecs.filter((s) => !(NATIVE_CLI_IDS as readonly string[]).includes(s.id));
     }
 
     const unavailableClients = dedupedSpecs.filter(

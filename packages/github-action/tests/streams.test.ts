@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import { buildParticipantStreams, planPasses } from '../src/streams.js';
+import { buildParticipantStreams, collapseStreamsIfDiffFits, planPasses } from '../src/streams.js';
 import { charsForWindow, type ParticipantFidelityWindow } from '../src/inputs.js';
 
 const p = (id: string, kind: 'native' | 'custom', window: number): ParticipantFidelityWindow => ({
@@ -60,6 +60,37 @@ describe('buildParticipantStreams', () => {
     expect(buildParticipantStreams([], undefined, 175_000)).toEqual([
       { tag: undefined, label: 'all', window: 175_000 },
     ]);
+  });
+
+  it('a native override that names an inactive/unauthed critic throws (never silently runs everyone)', () => {
+    expect(() =>
+      buildParticipantStreams([p('claude', 'native', 200_000)], 'codex', 200_000),
+    ).toThrow(/native-critic override "codex" is not an active/);
+  });
+});
+
+describe('collapseStreamsIfDiffFits — avoid redundant brain passes on the common case', () => {
+  const streams = [
+    { tag: 'claude' as const, label: 'claude', window: 1_000_000 },
+    { tag: 'codex' as const, label: 'codex', window: 272_000 },
+    { tag: 'agy' as const, label: 'agy', window: 135_000 },
+  ];
+
+  it('collapses to ONE all-critics stream when the whole diff fits the smallest window (one brain pass)', () => {
+    const small = 'x'.repeat(100_000); // < charsForWindow(135k, 15) ≈ 344k
+    expect(collapseStreamsIfDiffFits(streams, small.length, 15)).toEqual([
+      { tag: undefined, label: 'all', window: 135_000 },
+    ]);
+  });
+
+  it('keeps per-participant streams when the diff EXCEEDS the smallest window (fidelity where it matters)', () => {
+    const big = 'x'.repeat(500_000); // > charsForWindow(135k, 15) ≈ 344k
+    expect(collapseStreamsIfDiffFits(streams, big.length, 15)).toEqual(streams);
+  });
+
+  it('never collapses a single stream (nothing to save)', () => {
+    const one = [{ tag: 'agy' as const, label: 'agy', window: 135_000 }];
+    expect(collapseStreamsIfDiffFits(one, 10, 15)).toEqual(one);
   });
 });
 

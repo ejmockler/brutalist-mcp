@@ -5,9 +5,11 @@
  * reviewed in a single pass — the brain (and each critic) would hit
  * "Prompt is too long" (the v1.16.0 E2BIG fix removed the spawn-level crash
  * and exposed this context-window wall). We split the diff into chunks that
- * each fit `maxChunkChars` — sized by the caller from the *governing*
- * (smallest) participant's context window minus working headroom — run an
- * independent orchestrator review per chunk, and merge into one review.
+ * each fit `maxChunkChars` — sized by the caller (`planPasses` in streams.ts)
+ * from EACH participant's OWN fidelity window (itself capped by the brain
+ * window) minus working headroom, so every per-participant stream chunks the
+ * whole diff to its own window — run an independent orchestrator review per
+ * chunk, and merge into one review.
  *
  * Splitting rules:
  *   - Prefer whole-file boundaries (`diff --git ...`), greedily packed.

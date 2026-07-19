@@ -26,3 +26,8 @@ test-results.txt
 
 # Local Claude Code MCP configuration (project-scoped)
 .mcp.json
+
+# CLI critic/executor local state, created when the critic CLIs run in-repo
+.antigravitycli/
+.codex/
+.gemini/

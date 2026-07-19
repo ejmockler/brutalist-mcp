@@ -80,9 +80,12 @@ jobs:
           # window. The [1m] suffix is the RELIABLE lever (Claude Code parses and
           # strips it before the request); the silent Max auto-upgrade is flaky.
           # Requires this OAuth token to be Max/Team/Enterprise — on a Pro token
-          # [1m] can error. Does NOT change chunk SIZE: codex (~200k) still governs
-          # the diff-chunk window, so this only buys claude headroom (no compaction,
-          # better synthesis), not fewer chunks. CLI pin (2.1.162) already supports it.
+          # [1m] can error. [1m] DOES affect chunking now: there is no single
+          # governing window — each critic reviews the whole diff chunked to its OWN
+          # window (claude ~1M with [1m], glm ~1M, codex 272k, agy ~135k) — and every
+          # stream is ALSO capped by the brain window (1M with [1m] on `model`, else
+          # ~200k) since the orchestrator brain reads every chunk. So a 1M brain lets
+          # the big critics keep ~1-chunk reviews. CLI pin (2.1.162) supports it.
           model: "claude-opus-4-8[1m]"
           # GLM routed critic — Anthropic-compatible gateway (public Tailscale Funnel).
           # Additive 4th critic, hardened by default (no web/MCP, no native creds —
@@ -90,9 +93,12 @@ jobs:
           # unaffected. Latency: GLM is the SLOWEST critic (~5min even healthy). A
           # truly-DOWN gateway fails fast (~5s preflight), but an OVER-QUOTA 429
           # retries ~3-4min per chunk. Reviews are advisory, so this never gates merges.
-          # glm-5.2 has a 1M context window (was glm-5.1/128k) — so GLM no longer
-          # caps the diff-chunk min; codex (~200k) governs. The declared window must
-          # match glm-5.2's real window so the min still protects GLM from overflow.
+          # glm-5.2 has a 1M context window (was glm-5.1/128k) — so GLM reviews the
+          # whole diff chunked to its OWN ~1M fidelity window (codex 272k and agy
+          # ~135k each chunk to their own windows too; no single governing window).
+          # Every stream is ALSO capped by the brain window (1M here, since `model`
+          # carries [1m]). The declared window below must still match glm-5.2's real
+          # window so GLM's own stream chunks correctly and never overflows it.
           custom-claude-client-id: glm
           custom-claude-base-url: https://immersivecommons13.tail5da903.ts.net
           custom-claude-auth-token: ${{ secrets.GLM_TOKEN }}

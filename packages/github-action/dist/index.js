@@ -31764,6 +31764,7 @@ var __webpack_exports__ = {};
 
 // EXPORTS
 __nccwpck_require__.d(__webpack_exports__, {
+  K: () => (/* binding */ readNativeCriticSelection),
   f: () => (/* binding */ redactSecrets)
 });
 
@@ -39909,6 +39910,7 @@ const ORCHESTRATOR_MCP_SERVER_NAME = 'orchestrator';
 const BRUTALIST_TOOL_PREFIX = `mcp__${BRUTALIST_MCP_SERVER_NAME}__`;
 const ORCHESTRATOR_TOOL_PREFIX = `mcp__${ORCHESTRATOR_MCP_SERVER_NAME}__`;
 const SUBMIT_FINDINGS_TOOL_NAME = 'submit_findings';
+const orchestrator_NATIVE_CLIS = Object.freeze(['claude', 'codex', 'agy']);
 // Allowlist of brutalist tools the orchestrator may call. The debate
 // tool is intentionally excluded — debate is wrong-shaped for breadth
 // PR analysis.
@@ -40004,6 +40006,16 @@ async function run(options) {
     let submitCount = 0;
     const normalizeClientId = makeClientIdNormalizer(options.knownClientIds);
     let normalizedClientIds = 0;
+    const nativeCritic = getSingleNativeCritic(options.clis);
+    // Per-participant isolation (N4). An explicit isolateParticipant wins; else
+    // fall back to the single-native selection from clis[]. `forceClis` is the
+    // value the server enforces via BRUTALIST_FORCE_CLIS. For brain-prompt
+    // coherence a native isolate reads exactly like a single-native selection;
+    // 'custom' gets its own instruction.
+    const isolate = options.isolateParticipant;
+    const forceClis = isolate ?? nativeCritic;
+    const customOnly = isolate === 'custom';
+    const promptNativeCritic = nativeCritic ?? (isolate && isolate !== 'custom' ? isolate : undefined);
     // Path to the temp file holding the PR diff, when one is written (see
     // SAFE_ENV_DIFF_BYTES). Cleaned up in the query finally regardless of
     // outcome. Declared here so it is in scope for that cleanup.
@@ -40174,6 +40186,11 @@ async function run(options) {
             // overwrite any pre-existing value with `undefined`.
             ...(process.env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY } : {}),
             ...(process.env.OPENAI_API_KEY ? { OPENAI_API_KEY: process.env.OPENAI_API_KEY } : {}),
+            // Mechanical participant isolation for every roast call made by the
+            // brain, including pagination follow-ups that omit `clis`. A native name
+            // pins to that native (+ drops env-default customs); 'custom' pins to the
+            // custom clients only.
+            ...(forceClis ? { BRUTALIST_FORCE_CLIS: forceClis } : {}),
             // Deterministic diff scoping: hand brutalist-mcp the PR diff directly
             // rather than relying on the brain to relay it verbatim in the roast
             // `context` arg. constructUserPrompt folds this in so every critic —
@@ -40235,7 +40252,7 @@ async function run(options) {
             'WebSearch',
         ],
         disallowedTools: [...DENIED_BRUTALIST_TOOLS],
-        systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
+        systemPrompt: buildSystemPrompt(promptNativeCritic, customOnly),
         // Hard cap on agent turns — the seatbelt against a confused agent looping
         // until the GitHub Actions job timeout (6h default) before failing. The
         // system prompt's single-roast rule remains the primary budget; this is the
@@ -40259,7 +40276,7 @@ async function run(options) {
             ? { pathToClaudeCodeExecutable: options.claudeCodeExecutablePath }
             : {}),
     };
-    const userPrompt = buildUserPrompt(options);
+    const userPrompt = buildUserPrompt(options, promptNativeCritic, customOnly);
     // Drain the message stream. We only consult `captured` afterwards;
     // intermediate messages are not retained (memory + downstream parsing
     // happen via the SDK tool handler boundary).
@@ -40355,7 +40372,43 @@ function filterUndefined(env) {
     }
     return out;
 }
-function buildUserPrompt(options) {
+function getSingleNativeCritic(clis) {
+    if (!clis)
+        return undefined;
+    if (clis.length !== 1) {
+        throw new Error(`run({ clis }) currently supports exactly one native critic per review pass; got ${clis.length}.`);
+    }
+    const [cli] = clis;
+    if (!orchestrator_NATIVE_CLIS.includes(cli)) {
+        throw new Error(`Invalid native critic "${String(cli)}"; expected one of ${orchestrator_NATIVE_CLIS.join(', ')}.`);
+    }
+    return cli;
+}
+function buildSystemPrompt(nativeCritic, customOnly = false) {
+    if (customOnly) {
+        return (ORCHESTRATOR_SYSTEM_PROMPT +
+            `\n\n## Custom-Client-Only Mode\n\n` +
+            `This review pass is pinned to the custom Claude-routed client(s) ONLY. ` +
+            `Your SINGLE initial \`roast\` call MUST include \`clis: []\` (an explicit ` +
+            `empty array — this runs zero native critics and lets the configured custom ` +
+            `clients run), and pagination follow-up \`roast\` calls must preserve ` +
+            `\`clis: []\`. Do not omit \`clis\`; omitting it runs all native critics. ` +
+            `Do not name any native critic. Parse and submit only the custom client's ` +
+            `per-CLI section.`);
+    }
+    if (!nativeCritic)
+        return ORCHESTRATOR_SYSTEM_PROMPT;
+    const excluded = orchestrator_NATIVE_CLIS.filter((cli) => cli !== nativeCritic);
+    return (ORCHESTRATOR_SYSTEM_PROMPT +
+        `\n\n## Single Native Critic Mode\n\n` +
+        `This review pass is pinned to the \`${nativeCritic}\` native critic. ` +
+        `Your SINGLE initial \`roast\` call MUST include \`clis: ["${nativeCritic}"]\`, ` +
+        `and pagination follow-up \`roast\` calls must preserve the same ` +
+        `\`clis: ["${nativeCritic}"]\` selection. Do not omit \`clis\`; omitting it ` +
+        `runs all available native critics. Do not include ${excluded.map((cli) => `\`${cli}\``).join(' or ')}. ` +
+        `Parse and submit only the \`${nativeCritic}\` per-CLI section.`);
+}
+function buildUserPrompt(options, nativeCritic, customOnly = false) {
     // The system prompt (ORCHESTRATOR_SYSTEM_PROMPT) carries the workflow
     // contract. The user prompt only supplies the per-run inputs.
     const parts = [];
@@ -40365,6 +40418,16 @@ function buildUserPrompt(options) {
     }
     if (options.contextHints && options.contextHints.length > 0) {
         parts.push(`\nContext hints:\n${options.contextHints.map((h) => `- ${h}`).join('\n')}`);
+    }
+    if (customOnly) {
+        parts.push(`\nParticipant selection: run ONLY the custom Claude-routed client(s). ` +
+            `The single \`codebase\` roast call must pass \`clis: []\` (explicit empty ` +
+            `array); do not run any native critic.`);
+    }
+    else if (nativeCritic) {
+        parts.push(`\nNative critic selection: run ONLY \`${nativeCritic}\`. ` +
+            `The single \`codebase\` roast call must pass \`clis: ["${nativeCritic}"]\`; ` +
+            `do not run the other native critics.`);
     }
     parts.push('\nProceed per the workflow. Run a SINGLE `codebase` roast (it already covers' +
         ' security, performance, and architecture), passing the Focus diff above' +
@@ -40821,13 +40884,84 @@ function parseCustomClaudeClients(raw) {
  * count at or under budget even for token-dense content.
  */
 const CHARS_PER_TOKEN = 3;
-// Conservative fallback window (tokens) for any critic whose real context window
-// we can't confirm: codex, a non-[1m] claude, or a routed client that omits
-// contextWindow. Over-chunking is the safe failure; under-constraining overflows.
-const CONSERVATIVE_WINDOW_TOKENS = 200_000;
-// Wide window (tokens) for critics that genuinely hold ~1M: claude on [1m]
-// (opus-4.8 via Max/Team/Enterprise OAuth) and agy (Gemini hard window).
-const WIDE_WINDOW_TOKENS = 1_000_000;
+const CLAUDE_1M_WINDOW_TOKENS = 1_000_000;
+const CONSERVATIVE_FIDELITY_WINDOW_TOKENS = 200_000;
+const AGY_VERBATIM_FIDELITY_TOKENS = 135_000;
+// Codex verbatim-input fidelity ceiling. The gpt-5.x-codex family exposes a
+// 400k total window INSIDE Codex CLI (272k input + 128k reserved output) even
+// though the raw API window is 1M; the CLI reports ~258,400 usable (272k × 0.95
+// headroom) and bills 2× above 272k input. 272k is codex's verbatim INPUT
+// ceiling — the direct analog of agy's 135k compaction threshold. We declare the
+// raw input cap; the diff chunker's own headroom keeps chunks near ~231k, safely
+// under the ~258k effective. Overrides via BRUTALIST_CODEX_CONTEXT_WINDOW.
+// Measured: OpenAI Codex CLI 0.136+, gpt-5.x-codex under ChatGPT-plan auth (2026-07).
+const CODEX_VERBATIM_INPUT_FIDELITY_TOKENS = 272_000;
+const DEFAULT_CODEX_MODEL = 'codex-cli-default';
+const DEFAULT_AGY_MODEL = 'Gemini 3.5 Flash (Medium)';
+const FIDELITY_WINDOW_ENV = {
+    codex: 'BRUTALIST_CODEX_CONTEXT_WINDOW',
+    agy: 'BRUTALIST_AGY_CONTEXT_WINDOW',
+};
+const MODEL_FIDELITY_WINDOWS = {
+    codex: {
+        [DEFAULT_CODEX_MODEL]: CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+        'gpt-5-codex': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+        'gpt-5.1-codex': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+        'gpt-5.3-codex': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+        'gpt-5.5': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+        'gpt-5.6-sol': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+    },
+    agy: {
+        [DEFAULT_AGY_MODEL]: AGY_VERBATIM_FIDELITY_TOKENS,
+        'Gemini 3.5 Flash (High)': AGY_VERBATIM_FIDELITY_TOKENS,
+        'Gemini 3.1 Pro (High)': AGY_VERBATIM_FIDELITY_TOKENS,
+        'Gemini 3.1 Pro (Low)': AGY_VERBATIM_FIDELITY_TOKENS,
+    },
+};
+const CRITIC_FIDELITY_THRESHOLDS = {
+    agy: AGY_VERBATIM_FIDELITY_TOKENS,
+    // Any gpt-5.x-codex variant folds to codex's verbatim input ceiling, so an
+    // unrecognized codex model resolves to 272k rather than the generic 200k floor.
+    codex: CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+};
+function normalizeModelName(model) {
+    return model.trim().toLowerCase();
+}
+function parseContextWindowOverride(name) {
+    const raw = process.env[name]?.trim();
+    if (!raw)
+        return undefined;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 10_000 || n > 2_000_000) {
+        throw new Error(`Invalid ${name} "${raw}" — must be an integer between 10000 and 2000000.`);
+    }
+    return n;
+}
+/**
+ * Convert a token window into a per-chunk char budget using the SAME headroom +
+ * chars-per-token math the governing-window path uses, so per-participant chunks
+ * and the legacy single-window chunks stay consistent. Shared by index.ts.
+ */
+function charsForWindow(windowTokens, headroomPct) {
+    const usableTokens = Math.floor(windowTokens * (1 - headroomPct / 100));
+    return Math.max(1000, usableTokens * CHARS_PER_TOKEN);
+}
+function criticFidelityWindow(critic, resolvedModel) {
+    const override = parseContextWindowOverride(FIDELITY_WINDOW_ENV[critic]);
+    if (override !== undefined)
+        return override;
+    const normalizedModel = normalizeModelName(resolvedModel);
+    const modelWindow = Object.entries(MODEL_FIDELITY_WINDOWS[critic])
+        .find(([model]) => normalizeModelName(model) === normalizedModel)?.[1];
+    if (modelWindow !== undefined)
+        return modelWindow;
+    const threshold = CRITIC_FIDELITY_THRESHOLDS[critic];
+    if (threshold !== undefined)
+        return threshold;
+    // Conservative fallback for native critics whose verbatim-fidelity window is
+    // not known. Over-chunking is the safe failure; under-constraining loses data.
+    return CONSERVATIVE_FIDELITY_WINDOW_TOKENS;
+}
 function parseIntInput(name, fallback, min, max) {
     const raw = lib_core.getInput(name) || fallback;
     const n = parseInt(raw, 10);
@@ -40916,6 +41050,13 @@ function readInputs() {
     // EVERY participating custom client's window into the min (only runnable
     // clients are in customClaudeClients, so an unused window can't shrink it).
     const configuredWindow = parseIntInput('context-window-tokens', '200000', 10_000, 2_000_000);
+    // claude is always active (its OAuth token is required). 1M holds ONLY when
+    // BOTH the brain `model` and the `claudeCriticModel` carry [1m]; a diverged
+    // critic model without it genuinely gets ~200k via OAuth. Named so the legacy
+    // min-array and the structured per-participant list below can't drift.
+    const claudeFidelityWindow = /\[1m\]/i.test(model) && /\[1m\]/i.test(claudeCriticModel)
+        ? CLAUDE_1M_WINDOW_TOKENS
+        : CONSERVATIVE_FIDELITY_WINDOW_TOKENS;
     const participantWindows = [configuredWindow];
     for (const c of customClaudeClients) {
         // Every client here is ACTIVE (runnable). A client that DECLARES a window
@@ -40923,15 +41064,15 @@ function readInputs() {
         // the (possibly raised) configured window — fold the conservative floor so a
         // 1M chunk can't silently overflow it. (Previously an omitted window was
         // skipped entirely, leaving exactly that overflow.)
-        participantWindows.push(c.contextWindow ?? CONSERVATIVE_WINDOW_TOKENS);
+        participantWindows.push(c.contextWindow ?? CONSERVATIVE_FIDELITY_WINDOW_TOKENS);
     }
     // Native critics (claude/codex/agy) ALSO bound each chunk: a chunk larger than
-    // a critic's real hard context window overflows it ("Prompt is too long").
-    // They have no contextWindow input like the routed clients, so they were
-    // invisible to this min — a raised context-window-tokens would silently
-    // overflow them. Fold each ACTIVE native critic's conservative hard window in
-    // (same rule as the custom clients: only a critic that actually runs constrains
-    // the min).
+    // a critic's usable hard or verbatim-fidelity window either overflows it
+    // ("Prompt is too long") or loses quote fidelity. They have no contextWindow
+    // input like the routed clients, so they were invisible to this min — a raised
+    // context-window-tokens could silently overrun them. Fold each ACTIVE native
+    // critic's usable window in (same rule as the custom clients: only a critic
+    // that actually runs constrains the min).
     //   claude: always active (its OAuth token is required). The brain reads every
     //           chunk on `model` and the critic reads it on `claudeCriticModel`, so
     //           1M holds ONLY when BOTH carry the [1m] suffix (opus-4.8 on Max/Team/
@@ -40940,20 +41081,77 @@ function readInputs() {
     //           and strips it to turn on the 1M beta context) — NOT a guess at
     //           Anthropic's model naming. A model without [1m] genuinely gets ~200k
     //           via OAuth, so the conservative fallback is correct, not fragile.
-    //   codex:  gpt-5.x-codex floor ~200k (conservative; some tiers run higher).
-    //   agy:    Gemini hard window 1M (its ~135k auto-compaction is a fidelity
-    //           limit, not an overflow, so it does not cap the chunk).
-    // The codex/agy floors key off INPUT PRESENCE, not whether the binary is
+    //   codex:  verbatim-fidelity window from env/model table, else conservative
+    //           ~200k (some tiers run higher).
+    //   agy:    verbatim-fidelity window from env/model table, else ~135k. This
+    //           tracks agy's auto-compaction threshold, NOT Gemini's 1M hard
+    //           context window, because chunks above it lose quote fidelity.
+    // The codex/agy windows key off INPUT PRESENCE, not whether the binary is
     // installed (readInputs runs before runPreflight, and agy isn't probed there).
     // An authed-but-not-installed critic therefore still constrains the window —
     // over-chunking, the SAFE direction. Under-constraining would overflow a critic
     // that IS installed, so presence-gating is intentional, not a missed check.
-    participantWindows.push(/\[1m\]/i.test(model) && /\[1m\]/i.test(claudeCriticModel) ? WIDE_WINDOW_TOKENS : CONSERVATIVE_WINDOW_TOKENS);
-    if (lib_core.getInput('codex-auth') || lib_core.getInput('openai-api-key'))
-        participantWindows.push(CONSERVATIVE_WINDOW_TOKENS);
-    if (lib_core.getInput('agy-oauth-token'))
-        participantWindows.push(WIDE_WINDOW_TOKENS);
+    participantWindows.push(claudeFidelityWindow);
+    if (lib_core.getInput('codex-auth') || lib_core.getInput('openai-api-key')) {
+        participantWindows.push(criticFidelityWindow('codex', DEFAULT_CODEX_MODEL));
+    }
+    if (lib_core.getInput('agy-oauth-token')) {
+        participantWindows.push(criticFidelityWindow('agy', DEFAULT_AGY_MODEL));
+    }
     const contextWindowTokens = Math.min(...participantWindows);
+    // Structured per-participant fidelity windows for the per-critic chunk-stream
+    // driver (index.ts). Each ACTIVE participant reviews the whole diff chunked to
+    // ITS OWN window — claude/glm (~1M) in ~1 chunk (max cross-diff correlation,
+    // no redundant re-review), codex ≤272k, agy ≤135k (verbatim). This is both
+    // leaner (big critics stop re-reading the diff N times) and higher fidelity
+    // than clamping everyone to the global min. The context-window-tokens input is
+    // applied here as a CAP only when the operator EXPLICITLY set it (an unset
+    // input leaves each participant at its native window — the dogfood default);
+    // the legacy `contextWindowTokens` min above still folds the default floor for
+    // callers that consume the single-window path.
+    //
+    // CRITICAL: every participant is ALSO capped by the BRAIN window. The
+    // orchestrator brain (on `model`) reads EVERY stream's chunk and relays it to
+    // the critic as the roast `context`, so a chunk that fits the critic but not
+    // the brain trips "Prompt is too long" and silently drops that stream. The
+    // brain window keys off `model` alone (independent of the claude CRITIC model):
+    // 1M with [1m], else ~200k. Without this, a non-[1m] consumer's codex stream
+    // (272k) would overflow its ~200k brain — the exact regression the global-min
+    // never had (its min always folded claudeFidelityWindow ≤ the brain).
+    const brainFidelityWindow = /\[1m\]/i.test(model)
+        ? CLAUDE_1M_WINDOW_TOKENS
+        : CONSERVATIVE_FIDELITY_WINDOW_TOKENS;
+    const explicitWindowCap = lib_core.getInput('context-window-tokens') ? configuredWindow : undefined;
+    const capWindow = (w) => {
+        let capped = Math.min(w, brainFidelityWindow);
+        if (explicitWindowCap)
+            capped = Math.min(capped, explicitWindowCap);
+        return capped;
+    };
+    const participantFidelityWindows = [
+        { id: 'claude', kind: 'native', window: capWindow(claudeFidelityWindow) },
+    ];
+    if (lib_core.getInput('codex-auth') || lib_core.getInput('openai-api-key')) {
+        participantFidelityWindows.push({
+            id: 'codex',
+            kind: 'native',
+            window: capWindow(criticFidelityWindow('codex', DEFAULT_CODEX_MODEL)),
+        });
+    }
+    if (lib_core.getInput('agy-oauth-token')) {
+        participantFidelityWindows.push({
+            id: 'agy',
+            kind: 'native',
+            window: capWindow(criticFidelityWindow('agy', DEFAULT_AGY_MODEL)),
+        });
+    }
+    for (const c of customClaudeClients) {
+        participantFidelityWindows.push({
+            id: c.id,
+            kind: 'custom',
+            window: capWindow(c.contextWindow ?? CONSERVATIVE_FIDELITY_WINDOW_TOKENS),
+        });
+    }
     // Default 15: a chunk may fill up to 85% of the governing window. Nominal
     // 15% understates the real free space — CHARS_PER_TOKEN=3 is a deliberate
     // underestimate (real diffs run ~3.5/tok), so a chunk's actual token count
@@ -40998,6 +41196,7 @@ function readInputs() {
         customClaudeContextWindow,
         customClaudeClients,
         contextWindowTokens,
+        participantFidelityWindows,
         contextHeadroomPct,
         maxChunkChars,
         chunkConcurrency,
@@ -41010,6 +41209,93 @@ function readInputs() {
  */
 function meetsSeverityThreshold(severity, threshold) {
     return SEVERITY_RANK[severity] >= SEVERITY_RANK[threshold];
+}
+
+;// CONCATENATED MODULE: ./src/streams.ts
+// Per-participant fidelity streams. Instead of clamping every critic to the
+// SMALLEST participant window and re-reviewing the diff N times, each ACTIVE
+// critic reviews the WHOLE diff chunked to ITS OWN fidelity window: claude/glm
+// (~1M) in ~1 chunk (max cross-diff correlation, no redundant re-review), codex
+// ≤272k, agy ≤135k (verbatim). Critics are agentic — window pressure is the
+// diff/context, not the codebase they read themselves — so this is both leaner
+// and higher fidelity than a single global-min chunk stream. Pure + testable;
+// the driver (index.ts) wires these to the orchestrator + core logging.
+
+
+/**
+ * Select the review streams for the active participants. Each NATIVE critic is
+ * its own stream; ALL custom clients collapse into one `'custom'` stream chunked
+ * to the smallest of their windows (they run together server-side). A single
+ * native override restricts to that one native stream; an empty participant set
+ * falls back to a single all-critics stream at the governing window.
+ */
+function buildParticipantStreams(participants, nativeCriticOverride, fallbackWindow) {
+    const custom = participants.filter((p) => p.kind === 'custom');
+    let streams = participants
+        .filter((p) => p.kind === 'native')
+        .map((p) => ({ tag: p.id, label: p.id, window: p.window }));
+    if (custom.length > 0) {
+        streams.push({
+            tag: 'custom',
+            label: `custom(${custom.map((c) => c.id).join('+')})`,
+            window: Math.min(...custom.map((c) => c.window)),
+        });
+    }
+    if (nativeCriticOverride) {
+        streams = streams.filter((s) => s.tag === nativeCriticOverride);
+        if (streams.length === 0) {
+            // The operator pinned a critic that isn't active/authed — fail loudly
+            // rather than silently reviewing with everyone (matches the pre-stream
+            // "Requested CLIs not available" hard error).
+            throw new Error(`native-critic override "${nativeCriticOverride}" is not an active/authed critic; ` +
+                `active participants: ${participants.map((p) => p.id).join(', ') || '(none)'}.`);
+        }
+    }
+    if (streams.length === 0) {
+        streams = [{ tag: undefined, label: 'all', window: fallbackWindow }];
+    }
+    return streams;
+}
+/**
+ * If the whole diff fits the SMALLEST stream's window, every critic would review
+ * it in a single chunk regardless of stream — so per-participant streams add
+ * only redundant BRAIN passes (the orchestrator brain runs once PER stream, and
+ * it re-reads the whole diff each time). Collapse to a single all-critics stream
+ * (one brain pass, all critics) in that common case; keep per-participant streams
+ * only when the diff actually exceeds some critic's window, where big critics
+ * genuinely benefit from being chunked less finely than the smallest critic.
+ */
+function collapseStreamsIfDiffFits(streams, diffLength, headroomPct) {
+    if (streams.length <= 1)
+        return streams;
+    const minWindow = Math.min(...streams.map((s) => s.window));
+    if (diffLength <= charsForWindow(minWindow, headroomPct)) {
+        // tag undefined => no isolation => all critics run together in one pass.
+        return [{ tag: undefined, label: 'all', window: minWindow }];
+    }
+    return streams;
+}
+/**
+ * Chunk the diff per stream (each to its own window − headroom) and flatten
+ * every (stream, chunk) into one work list so total concurrency is bounded
+ * across ALL streams — not per-stream. Returns human-readable per-stream
+ * summaries and any oversized-hunk truncation warnings for the caller to log.
+ */
+function planPasses(streams, diff, headroomPct) {
+    const passes = [];
+    const summaries = [];
+    const warnings = [];
+    for (const stream of streams) {
+        const budget = charsForWindow(stream.window, headroomPct);
+        const { chunks, truncatedHunks } = chunkDiff(diff, budget);
+        if (truncatedHunks > 0) {
+            warnings.push(`${stream.label} stream: ${truncatedHunks} oversized hunk(s) truncated to fit its ` +
+                `${stream.window}-tok window (≤${budget} chars); findings on those regions may be missed for this critic.`);
+        }
+        summaries.push(`${stream.label}=${chunks.length}×≤${budget}c@${stream.window}tok`);
+        chunks.forEach((chunk, i) => passes.push({ stream, chunk, i, n: chunks.length }));
+    }
+    return { passes, summaries, warnings };
 }
 
 ;// CONCATENATED MODULE: ./src/diff.ts
@@ -42524,8 +42810,16 @@ const FILE_PERMS_OWNER_RW = external_node_fs_.constants.S_IRUSR | external_node_
 
 
 
+
+const NATIVE_CRITICS = Object.freeze(['claude', 'codex', 'agy']);
 async function main() {
     const inputs = readInputs();
+    // Reads the `native-critic` input / BRUTALIST_NATIVE_CRITIC env; ActionInputs
+    // has no nativeCritic field, so pass nothing (the optional arg is for tests).
+    const nativeCritic = readNativeCriticSelection();
+    if (nativeCritic) {
+        lib_core.info(`Native critic selection: running only ${nativeCritic}.`);
+    }
     // Preflight: fail fast with an actionable error if `brutalist-mcp` or
     // `claude` aren't on PATH (these are hard requirements). Warn — but
     // don't block — when only one critic is installed.
@@ -42586,37 +42880,48 @@ async function main() {
         `PR head SHA: ${pull.headSha}`,
         `Working directory: ${inputs.workingDirectory}`,
     ];
-    // Context-window-aware chunking. A diff larger than the usable context
-    // window can't be reviewed in one pass (the brain + every critic would hit
-    // "Prompt is too long"), so split it to fit and review each chunk with an
-    // independent orchestrator run, then merge into one review.
-    const { chunks, truncatedHunks } = chunkDiff(truncated.text, inputs.maxChunkChars);
-    if (truncatedHunks > 0) {
-        lib_core.warning(`${truncatedHunks} oversized hunk(s) were truncated to fit the per-chunk budget (${inputs.maxChunkChars} chars); findings on truncated regions may be missed.`);
-    }
-    lib_core.info(`Diff split into ${chunks.length} chunk(s) of ≤${inputs.maxChunkChars} chars ` +
-        `(window ${inputs.contextWindowTokens} tok − ${inputs.contextHeadroomPct}% headroom). Brain model: ${inputs.model}.`);
-    const runChunk = (chunk, i) => run({
-        repoPath,
-        focus: `Pull request #${pull.number} diff ` +
-            `(${chunks.length > 1 ? `chunk ${i + 1}/${chunks.length}, ` : ''}commentable lines only):\n\n${chunk}`,
-        contextHints,
-        oauthToken: inputs.anthropicOauthToken,
-        // Pin the claude executable from the preflight result so the SDK
-        // doesn't fall back to bundle-internal native package lookup,
-        // which isn't available in the ncc-bundled action runtime.
-        claudeCodeExecutablePath: preflight.claude.resolvedPath,
-        model: inputs.model,
-        knownClientIds,
-    });
+    // Per-participant fidelity streams (see streams.ts): each ACTIVE critic
+    // reviews the WHOLE diff chunked to ITS OWN fidelity window (claude/glm ~1
+    // chunk = max cross-diff correlation; agy ≤135k = verbatim), isolated
+    // mechanically server-side (BRUTALIST_FORCE_CLIS) so a stream never drags in
+    // another critic or an env-default custom client. Leaner AND higher fidelity
+    // than a single global-min chunk stream.
+    const streams = collapseStreamsIfDiffFits(buildParticipantStreams(inputs.participantFidelityWindows, nativeCritic, inputs.contextWindowTokens), truncated.text.length, inputs.contextHeadroomPct);
+    const { passes, summaries, warnings } = planPasses(streams, truncated.text, inputs.contextHeadroomPct);
+    for (const w of warnings)
+        lib_core.warning(w);
+    lib_core.info(`Per-participant streams [${summaries.join(', ')}]. ` +
+        `Total ${passes.length} review pass(es) — each critic reviews the whole diff at its own ` +
+        `fidelity window. Brain model: ${inputs.model}.`);
+    const runPass = (pass) => {
+        const orchestratorOptions = {
+            repoPath,
+            focus: `Pull request #${pull.number} diff ` +
+                `(${pass.stream.label} stream${pass.n > 1 ? `, chunk ${pass.i + 1}/${pass.n}` : ''}, ` +
+                `commentable lines only):\n\n${pass.chunk}`,
+            contextHints,
+            oauthToken: inputs.anthropicOauthToken,
+            // Pin the claude executable from the preflight result so the SDK
+            // doesn't fall back to bundle-internal native package lookup,
+            // which isn't available in the ncc-bundled action runtime.
+            claudeCodeExecutablePath: preflight.claude.resolvedPath,
+            model: inputs.model,
+            knownClientIds,
+            // Mechanical per-stream isolation; undefined only for the defensive
+            // all-critics fallback stream.
+            ...(pass.stream.tag ? { isolateParticipant: pass.stream.tag } : {}),
+        };
+        return run(orchestratorOptions);
+    };
     let result;
-    if (chunks.length <= 1) {
+    if (passes.length <= 1) {
         lib_core.info('Invoking @brutalist/orchestrator...');
-        result = await runChunk(chunks[0] ?? truncated.text, 0);
+        result = await runPass(passes[0] ?? { stream: streams[0], chunk: truncated.text, i: 0, n: 1 });
     }
     else {
-        lib_core.info(`Invoking @brutalist/orchestrator across ${chunks.length} chunks (concurrency ${inputs.chunkConcurrency})...`);
-        const settled = await runWithConcurrency(chunks, inputs.chunkConcurrency, runChunk);
+        lib_core.info(`Invoking @brutalist/orchestrator across ${passes.length} per-participant pass(es) ` +
+            `(concurrency ${inputs.chunkConcurrency})...`);
+        const settled = await runWithConcurrency(passes, inputs.chunkConcurrency, runPass);
         const ok = [];
         let failedCount = 0;
         for (const r of settled) {
@@ -42625,18 +42930,22 @@ async function main() {
             }
             else {
                 failedCount++;
+                const pass = passes[r.index];
+                const where = pass
+                    ? `${pass.stream.label}${pass.n > 1 ? ` chunk ${pass.i + 1}/${pass.n}` : ''}`
+                    : `pass ${r.index + 1}`;
                 const msg = r.error instanceof Error ? r.error.message : String(r.error);
-                lib_core.warning(`Chunk ${r.index + 1}/${chunks.length} review failed: ${msg}`);
+                lib_core.warning(`Review pass ${r.index + 1}/${passes.length} (${where}) failed: ${msg}`);
             }
         }
         if (ok.length === 0) {
-            // Every chunk failed — surface a hard failure rather than an empty review.
+            // Every pass failed — surface a hard failure rather than an empty review.
             const firstErr = settled.find((r) => !r.ok);
             const e = firstErr?.error;
-            throw e instanceof Error ? e : new Error(`All ${chunks.length} chunk reviews failed.`);
+            throw e instanceof Error ? e : new Error(`All ${passes.length} review passes failed.`);
         }
         result = mergeResults(ok);
-        lib_core.info(`Merged ${ok.length}/${chunks.length} chunk reviews (${failedCount} failed).`);
+        lib_core.info(`Merged ${ok.length}/${passes.length} per-participant review pass(es) (${failedCount} failed).`);
     }
     lib_core.info(`Orchestrator returned ${result.findings.length} findings + ${result.outOfDiff.length} out-of-diff. perCli=${result.perCli.length}.`);
     // Resolve every finding against the head SHA. Drops fabricated quotes.
@@ -42786,6 +43095,17 @@ function redactSecrets(message, secrets) {
     }
     return out;
 }
+function readNativeCriticSelection(inputs = {}) {
+    const raw = (inputs.nativeCritic || lib_core.getInput('native-critic') || process.env.BRUTALIST_NATIVE_CRITIC || '')
+        .trim()
+        .toLowerCase();
+    if (!raw)
+        return undefined;
+    if (!NATIVE_CRITICS.includes(raw)) {
+        throw new Error(`Invalid native-critic "${raw}". Valid: ${NATIVE_CRITICS.join(', ')}.`);
+    }
+    return raw;
+}
 /**
  * Write `model` into ~/.claude/settings.json so the claude CRITIC (spawned
  * by brutalist-mcp via the claude CLI) defaults to it — the CLI and
@@ -42817,7 +43137,8 @@ async function ensureClaudeSettingsModel(model) {
     }
 }
 
+var __webpack_exports__readNativeCriticSelection = __webpack_exports__.K;
 var __webpack_exports__redactSecrets = __webpack_exports__.f;
-export { __webpack_exports__redactSecrets as redactSecrets };
+export { __webpack_exports__readNativeCriticSelection as readNativeCriticSelection, __webpack_exports__redactSecrets as redactSecrets };
 
 //# sourceMappingURL=index.js.map

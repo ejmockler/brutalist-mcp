@@ -180,20 +180,21 @@ describe('native-critic window floor (active native critics fold into the govern
     expect(inputs.contextWindowTokens).toBe(500_000);
   });
 
-  it('active codex (codex-auth) caps the governing window at ~200k even with claude on [1m]', () => {
+  it('active codex (codex-auth) folds to its ~272k verbatim-input window (gpt-5.x-codex 400k cap = 272k input), not the claude 1M or the old 200k guess', () => {
     process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
     process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
     process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    // min(500k, claude 1M, codex 272k verbatim-input fidelity) = 272k.
     const inputs = readInputs();
-    expect(inputs.contextWindowTokens).toBe(200_000);
+    expect(inputs.contextWindowTokens).toBe(272_000);
   });
 
-  it('active codex via openai-api-key also caps at ~200k', () => {
+  it('active codex via openai-api-key also folds to its ~272k verbatim-input window', () => {
     process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
     process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
     process.env['INPUT_OPENAI-API-KEY'] = 'sk-test-key';
     const inputs = readInputs();
-    expect(inputs.contextWindowTokens).toBe(200_000);
+    expect(inputs.contextWindowTokens).toBe(272_000);
   });
 
   it('active agy alone folds at its ~135k verbatim-fidelity window, not the Gemini 1M hard window', () => {
@@ -213,7 +214,7 @@ describe('native-critic window floor (active native critics fold into the govern
     process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
     process.env['BRUTALIST_CODEX_CONTEXT_WINDOW'] = '300000';
     process.env['BRUTALIST_AGY_CONTEXT_WINDOW'] = '250000';
-    // Without overrides this panel would fold to agy's 135k (and codex 200k).
+    // Without overrides this panel would fold to agy's 135k (and codex 272k).
     const inputs = readInputs();
     expect(inputs.contextWindowTokens).toBe(250_000);
   });
@@ -233,7 +234,7 @@ describe('native-critic window floor (active native critics fold into the govern
         contextWindow: 1_000_000,
       },
     ]);
-    // min(configured 200k, claude 1M, codex 200k, agy 135k, GLM 1M) = 135k.
+    // min(configured 200k, claude 1M, codex 272k, agy 135k, GLM 1M) = 135k.
     const inputs = readInputs();
     expect(inputs.contextWindowTokens).toBe(135_000);
   });

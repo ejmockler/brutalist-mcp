@@ -204,6 +204,15 @@ type FidelityCritic = 'codex' | 'agy';
 const CLAUDE_1M_WINDOW_TOKENS = 1_000_000;
 const CONSERVATIVE_FIDELITY_WINDOW_TOKENS = 200_000;
 const AGY_VERBATIM_FIDELITY_TOKENS = 135_000;
+// Codex verbatim-input fidelity ceiling. The gpt-5.x-codex family exposes a
+// 400k total window INSIDE Codex CLI (272k input + 128k reserved output) even
+// though the raw API window is 1M; the CLI reports ~258,400 usable (272k × 0.95
+// headroom) and bills 2× above 272k input. 272k is codex's verbatim INPUT
+// ceiling — the direct analog of agy's 135k compaction threshold. We declare the
+// raw input cap; the diff chunker's own headroom keeps chunks near ~231k, safely
+// under the ~258k effective. Overrides via BRUTALIST_CODEX_CONTEXT_WINDOW.
+// Measured: OpenAI Codex CLI 0.136+, gpt-5.x-codex under ChatGPT-plan auth (2026-07).
+const CODEX_VERBATIM_INPUT_FIDELITY_TOKENS = 272_000;
 const DEFAULT_CODEX_MODEL = 'codex-cli-default';
 const DEFAULT_AGY_MODEL = 'Gemini 3.5 Flash (Medium)';
 const FIDELITY_WINDOW_ENV: Record<FidelityCritic, string> = {
@@ -213,8 +222,12 @@ const FIDELITY_WINDOW_ENV: Record<FidelityCritic, string> = {
 
 const MODEL_FIDELITY_WINDOWS: Record<FidelityCritic, Record<string, number>> = {
   codex: {
-    [DEFAULT_CODEX_MODEL]: CONSERVATIVE_FIDELITY_WINDOW_TOKENS,
-    'gpt-5-codex': CONSERVATIVE_FIDELITY_WINDOW_TOKENS,
+    [DEFAULT_CODEX_MODEL]: CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+    'gpt-5-codex': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+    'gpt-5.1-codex': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+    'gpt-5.3-codex': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+    'gpt-5.5': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+    'gpt-5.6-sol': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
   },
   agy: {
     [DEFAULT_AGY_MODEL]: AGY_VERBATIM_FIDELITY_TOKENS,
@@ -226,6 +239,9 @@ const MODEL_FIDELITY_WINDOWS: Record<FidelityCritic, Record<string, number>> = {
 
 const CRITIC_FIDELITY_THRESHOLDS: Partial<Record<FidelityCritic, number>> = {
   agy: AGY_VERBATIM_FIDELITY_TOKENS,
+  // Any gpt-5.x-codex variant folds to codex's verbatim input ceiling, so an
+  // unrecognized codex model resolves to 272k rather than the generic 200k floor.
+  codex: CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
 };
 
 function normalizeModelName(model: string): string {

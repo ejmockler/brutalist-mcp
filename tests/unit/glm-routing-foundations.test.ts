@@ -378,6 +378,22 @@ describe('executeBrutalistAnalysis spec assembly (C1/C4/D1)', () => {
     expect(ranIds(spy)).toEqual(['agy', 'claude', 'codex', 'extra']);
   });
 
+  it('defaults to all available native critics when clis and BRUTALIST_FORCE_CLIS are omitted', async () => {
+    const previous = process.env.BRUTALIST_FORCE_CLIS;
+    delete process.env.BRUTALIST_FORCE_CLIS;
+    try {
+      const o = orch();
+      const spy = stubExec(o);
+
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec');
+
+      expect(ranIds(spy)).toEqual(['agy', 'claude', 'codex']);
+    } finally {
+      if (previous === undefined) delete process.env.BRUTALIST_FORCE_CLIS;
+      else process.env.BRUTALIST_FORCE_CLIS = previous;
+    }
+  });
+
   it('C1: clis:[] is the explicit override hatch — only the named clients run', async () => {
     const o = orch();
     const spy = stubExec(o);

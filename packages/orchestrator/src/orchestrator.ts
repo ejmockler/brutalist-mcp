@@ -341,6 +341,9 @@ export async function run(options: OrchestratorRunOptions): Promise<Orchestrator
       // overwrite any pre-existing value with `undefined`.
       ...(process.env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY } : {}),
       ...(process.env.OPENAI_API_KEY ? { OPENAI_API_KEY: process.env.OPENAI_API_KEY } : {}),
+      // Mechanical single-critic enforcement for every roast call made by
+      // the brain, including pagination follow-ups that omit `clis`.
+      ...(nativeCritic ? { BRUTALIST_FORCE_CLIS: nativeCritic } : {}),
       // Deterministic diff scoping: hand brutalist-mcp the PR diff directly
       // rather than relying on the brain to relay it verbatim in the roast
       // `context` arg. constructUserPrompt folds this in so every critic —

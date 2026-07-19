@@ -731,6 +731,12 @@ export class BrutalistServer {
       };
     }
 
+    const forcedCli = process.env.BRUTALIST_FORCE_CLIS;
+    if (forcedCli === 'claude' || forcedCli === 'codex' || forcedCli === 'agy') {
+      args = { ...args, clis: [forcedCli] };
+      console.error(`[brutalist] BRUTALIST_FORCE_CLIS enforced: only ${forcedCli} will run`);
+    }
+
     // Get domain config
     const domain = getDomain(args.domain);
     if (!domain) {

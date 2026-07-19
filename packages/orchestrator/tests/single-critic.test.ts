@@ -38,7 +38,7 @@ beforeEach(() => {
 });
 
 describe('single native critic selection', () => {
-  it('instructs the one roast pass to run only the requested native critic', async () => {
+  it('instructs and mechanically forces the one requested native critic', async () => {
     mockQuery.mockReturnValue({
       async *[Symbol.asyncIterator]() {
         yield { type: 'system' as const };
@@ -56,6 +56,9 @@ describe('single native critic selection', () => {
     expect(capturedQueryParams.options.systemPrompt).toContain('Do not include `claude` or `agy`');
     expect(capturedQueryParams.prompt).toContain('run ONLY `codex`');
     expect(capturedQueryParams.prompt).toContain('`clis: ["codex"]`');
+    expect(
+      capturedQueryParams.options.mcpServers.brutalist.env.BRUTALIST_FORCE_CLIS,
+    ).toBe('codex');
   });
 
   it('rejects multi-critic selections at the orchestrator boundary', async () => {

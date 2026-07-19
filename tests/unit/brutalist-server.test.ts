@@ -63,6 +63,7 @@ jest.mock('../../src/logger.js', () => {
 type TestToolHandler = (args: unknown) => CallToolResult | Promise<CallToolResult>;
 
 describe('BrutalistServer', () => {
+  let originalForceClis: string | undefined;
   let mockMcpServer: jest.Mocked<McpServer>;
   let mockCLIOrchestrator: jest.Mocked<CLIAgentOrchestrator>;
   let mockTool: jest.MockedFunction<(name: string, ...args: unknown[]) => RegisteredTool>;
@@ -72,6 +73,8 @@ describe('BrutalistServer', () => {
   let createMockRegisteredTool: (name: string) => RegisteredTool;
 
   beforeEach(() => {
+    originalForceClis = process.env.BRUTALIST_FORCE_CLIS;
+    delete process.env.BRUTALIST_FORCE_CLIS;
     jest.clearAllMocks();
     toolHandlers = {};
     
@@ -170,6 +173,11 @@ describe('BrutalistServer', () => {
   });
 
   afterEach(() => {
+    if (originalForceClis === undefined) {
+      delete process.env.BRUTALIST_FORCE_CLIS;
+    } else {
+      process.env.BRUTALIST_FORCE_CLIS = originalForceClis;
+    }
     // Reset the orchestrator for each test to ensure clean state
     (CLIAgentOrchestrator as jest.MockedClass<typeof CLIAgentOrchestrator>).mockClear();
   });
@@ -302,6 +310,38 @@ describe('BrutalistServer', () => {
         domain: 'codebase', target: '.',
         clients: [{ id: 'x', provider: 'codex', baseUrl: 'https://e.x' }],
       })).toThrow();
+    });
+  });
+
+  describe('BRUTALIST_FORCE_CLIS enforcement', () => {
+    it.each([
+      ['overrides a conflicting panel', ['claude', 'codex', 'agy']],
+      ['fills an omitted clis argument', undefined],
+    ])('%s before the roast reaches CLI execution', async (_label, clis) => {
+      process.env.BRUTALIST_FORCE_CLIS = 'agy';
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const server = new BrutalistServer(defaultTestConfig);
+      const args: Record<string, unknown> = {
+        domain: 'codebase',
+        target: '.',
+        force_refresh: true,
+      };
+      if (clis) args.clis = clis;
+
+      try {
+        await (server as any).handleUnifiedRoast(args, { _meta: {} });
+
+        expect(mockCLIOrchestrator.executeBrutalistAnalysis).toHaveBeenCalledTimes(1);
+        expect(mockCLIOrchestrator.executeBrutalistAnalysis.mock.calls[0][4]).toMatchObject({
+          clis: ['agy'],
+        });
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+        expect(errorSpy).toHaveBeenCalledWith(
+          '[brutalist] BRUTALIST_FORCE_CLIS enforced: only agy will run',
+        );
+      } finally {
+        errorSpy.mockRestore();
+      }
     });
   });
 

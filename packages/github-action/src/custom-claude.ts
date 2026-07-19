@@ -106,7 +106,7 @@ export async function provisionCustomClaudeClient(
 
   process.env.BRUTALIST_CLAUDE_CLIENTS = JSON.stringify(published);
   core.info(
-    `Custom Claude critics provisioned: ${knownClientIds.length}; governing diff-chunk window ${inputs.contextWindowTokens} tok.`,
+    `Custom Claude critics provisioned: ${knownClientIds.length}; per-participant fidelity streams (smallest participant window ${inputs.contextWindowTokens} tok).`,
   );
   return { knownClientIds, tokenEnvNames };
 }

@@ -30,6 +30,8 @@ const MANAGED_VARS = [
   'INPUT_OPENAI-API-KEY',
   'INPUT_CODEX-AUTH',
   'INPUT_AGY-OAUTH-TOKEN',
+  'BRUTALIST_CODEX_CONTEXT_WINDOW',
+  'BRUTALIST_AGY_CONTEXT_WINDOW',
   'GITHUB_TOKEN',
 ];
 
@@ -194,13 +196,46 @@ describe('native-critic window floor (active native critics fold into the govern
     expect(inputs.contextWindowTokens).toBe(200_000);
   });
 
-  it('active agy alone (Gemini 1M hard window) does not cap below a raised window', () => {
+  it('active agy alone folds at its ~135k verbatim-fidelity window, not the Gemini 1M hard window', () => {
     process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
     process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
     process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
-    // min(500k, claude 1M, agy 1M) = 500k — agy's ~135k compaction is fidelity, not overflow.
+    // min(500k, claude 1M, agy ~135k fidelity) = 135k.
     const inputs = readInputs();
-    expect(inputs.contextWindowTokens).toBe(500_000);
+    expect(inputs.contextWindowTokens).toBe(135_000);
+  });
+
+  it('codex and agy context-window env overrides win over model/default fidelity windows', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CLAUDE-CRITIC-MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
+    process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
+    process.env['BRUTALIST_CODEX_CONTEXT_WINDOW'] = '300000';
+    process.env['BRUTALIST_AGY_CONTEXT_WINDOW'] = '250000';
+    // Without overrides this panel would fold to agy's 135k (and codex 200k).
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(250_000);
+  });
+
+  it('dogfood panel with claude[1m], codex, agy, and GLM 1M still uses the smallest participant window', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CLAUDE-CRITIC-MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '200000';
+    process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
+    process.env['INPUT_CUSTOM-CLAUDE-CLIENTS'] = JSON.stringify([
+      {
+        id: 'glm',
+        baseUrl: 'https://glm.example.test/v1',
+        authToken: 'sk-glm-abcdef',
+        model: 'glm-5.2',
+        contextWindow: 1_000_000,
+      },
+    ]);
+    // min(configured 200k, claude 1M, codex 200k, agy 135k, GLM 1M) = 135k.
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(135_000);
   });
 
   it('claude-only [1m] panel (no codex/agy) can chunk above 200k', () => {

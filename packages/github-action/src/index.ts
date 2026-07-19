@@ -29,8 +29,17 @@ import { runPreflight, assertPreflight } from './preflight.js';
 import { truncateDiff } from './truncate-diff.js';
 import { provisionCredentials, detectRefreshRotation, extractOauthSecrets } from './oauth-provisioning.js';
 
+type NativeCritic = 'claude' | 'codex' | 'agy';
+const NATIVE_CRITICS: readonly NativeCritic[] = Object.freeze(['claude', 'codex', 'agy']);
+
 async function main(): Promise<void> {
   const inputs = readInputs();
+  // Reads the `native-critic` input / BRUTALIST_NATIVE_CRITIC env; ActionInputs
+  // has no nativeCritic field, so pass nothing (the optional arg is for tests).
+  const nativeCritic = readNativeCriticSelection();
+  if (nativeCritic) {
+    core.info(`Native critic selection: running only ${nativeCritic}.`);
+  }
 
   // Preflight: fail fast with an actionable error if `brutalist-mcp` or
   // `claude` aren't on PATH (these are hard requirements). Warn — but
@@ -121,8 +130,8 @@ async function main(): Promise<void> {
       `(window ${inputs.contextWindowTokens} tok − ${inputs.contextHeadroomPct}% headroom). Brain model: ${inputs.model}.`,
   );
 
-  const runChunk = (chunk: string, i: number): Promise<OrchestratorResult> =>
-    runOrchestrator({
+  const runChunk = (chunk: string, i: number): Promise<OrchestratorResult> => {
+    const orchestratorOptions: Parameters<typeof runOrchestrator>[0] & { clis?: NativeCritic[] } = {
       repoPath,
       focus:
         `Pull request #${pull.number} diff ` +
@@ -135,7 +144,10 @@ async function main(): Promise<void> {
       claudeCodeExecutablePath: preflight.claude.resolvedPath,
       model: inputs.model,
       knownClientIds,
-    });
+      ...(nativeCritic ? { clis: [nativeCritic] } : {}),
+    };
+    return runOrchestrator(orchestratorOptions);
+  };
 
   let result: OrchestratorResult;
   if (chunks.length <= 1) {
@@ -338,6 +350,19 @@ export function redactSecrets(message: string, secrets: readonly string[]): stri
     out = out.split(secret).join('[REDACTED]');
   }
   return out;
+}
+
+export function readNativeCriticSelection(inputs: { nativeCritic?: string } = {}): NativeCritic | undefined {
+  const raw = (inputs.nativeCritic || core.getInput('native-critic') || process.env.BRUTALIST_NATIVE_CRITIC || '')
+    .trim()
+    .toLowerCase();
+  if (!raw) return undefined;
+  if (!NATIVE_CRITICS.includes(raw as NativeCritic)) {
+    throw new Error(
+      `Invalid native-critic "${raw}". Valid: ${NATIVE_CRITICS.join(', ')}.`,
+    );
+  }
+  return raw as NativeCritic;
 }
 
 /**

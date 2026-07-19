@@ -24,7 +24,7 @@ import { constants as fsConstants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import type { RunOptions, OrchestratorResult } from './schemas.js';
+import type { RunOptions, OrchestratorResult, CliName } from './schemas.js';
 import { OrchestratorResultSchema } from './schemas.js';
 import { ORCHESTRATOR_SYSTEM_PROMPT } from './system-prompt.js';
 import { makeClientIdNormalizer, dedupePerCli } from './attribution.js';
@@ -36,6 +36,15 @@ const BRUTALIST_TOOL_PREFIX = `mcp__${BRUTALIST_MCP_SERVER_NAME}__` as const;
 const ORCHESTRATOR_TOOL_PREFIX = `mcp__${ORCHESTRATOR_MCP_SERVER_NAME}__` as const;
 
 const SUBMIT_FINDINGS_TOOL_NAME = 'submit_findings';
+const NATIVE_CLIS: readonly CliName[] = Object.freeze(['claude', 'codex', 'agy']);
+
+type OrchestratorRunOptions = RunOptions & {
+  /**
+   * Optional single native brutalist critic to run for this review pass. Omit
+   * to keep the existing behavior: all available native critics participate.
+   */
+  clis?: readonly CliName[];
+};
 
 // Allowlist of brutalist tools the orchestrator may call. The debate
 // tool is intentionally excluded — debate is wrong-shaped for breadth
@@ -133,13 +142,14 @@ function focusIsUnifiedDiff(focus: string | undefined): focus is string {
   return !!focus && (/diff --git /.test(focus) || /(^|\n)@@ .+ @@/.test(focus));
 }
 
-export async function run(options: RunOptions): Promise<OrchestratorResult> {
+export async function run(options: OrchestratorRunOptions): Promise<OrchestratorResult> {
   // Closure-scoped capture for the structured output. The submit_findings
   // tool's handler writes here; run() reads after query() drains.
   let captured: OrchestratorResult | undefined;
   let submitCount = 0;
   const normalizeClientId = makeClientIdNormalizer(options.knownClientIds);
   let normalizedClientIds = 0;
+  const nativeCritic = getSingleNativeCritic(options.clis);
 
   // Path to the temp file holding the PR diff, when one is written (see
   // SAFE_ENV_DIFF_BYTES). Cleaned up in the query finally regardless of
@@ -394,7 +404,7 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
       'WebSearch',
     ],
     disallowedTools: [...DENIED_BRUTALIST_TOOLS],
-    systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
+    systemPrompt: buildSystemPrompt(nativeCritic),
     // Hard cap on agent turns — the seatbelt against a confused agent looping
     // until the GitHub Actions job timeout (6h default) before failing. The
     // system prompt's single-roast rule remains the primary budget; this is the
@@ -419,7 +429,7 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
       : {}),
   };
 
-  const userPrompt = buildUserPrompt(options);
+  const userPrompt = buildUserPrompt(options, nativeCritic);
 
   // Drain the message stream. We only consult `captured` afterwards;
   // intermediate messages are not retained (memory + downstream parsing
@@ -512,7 +522,39 @@ function filterUndefined(env: NodeJS.ProcessEnv): Record<string, string> {
   return out;
 }
 
-function buildUserPrompt(options: RunOptions): string {
+function getSingleNativeCritic(clis: readonly CliName[] | undefined): CliName | undefined {
+  if (!clis) return undefined;
+  if (clis.length !== 1) {
+    throw new Error(
+      `run({ clis }) currently supports exactly one native critic per review pass; got ${clis.length}.`,
+    );
+  }
+  const [cli] = clis;
+  if (!NATIVE_CLIS.includes(cli)) {
+    throw new Error(
+      `Invalid native critic "${String(cli)}"; expected one of ${NATIVE_CLIS.join(', ')}.`,
+    );
+  }
+  return cli;
+}
+
+function buildSystemPrompt(nativeCritic: CliName | undefined): string {
+  if (!nativeCritic) return ORCHESTRATOR_SYSTEM_PROMPT;
+
+  const excluded = NATIVE_CLIS.filter((cli) => cli !== nativeCritic);
+  return (
+    ORCHESTRATOR_SYSTEM_PROMPT +
+    `\n\n## Single Native Critic Mode\n\n` +
+    `This review pass is pinned to the \`${nativeCritic}\` native critic. ` +
+    `Your SINGLE initial \`roast\` call MUST include \`clis: ["${nativeCritic}"]\`, ` +
+    `and pagination follow-up \`roast\` calls must preserve the same ` +
+    `\`clis: ["${nativeCritic}"]\` selection. Do not omit \`clis\`; omitting it ` +
+    `runs all available native critics. Do not include ${excluded.map((cli) => `\`${cli}\``).join(' or ')}. ` +
+    `Parse and submit only the \`${nativeCritic}\` per-CLI section.`
+  );
+}
+
+function buildUserPrompt(options: OrchestratorRunOptions, nativeCritic: CliName | undefined): string {
   // The system prompt (ORCHESTRATOR_SYSTEM_PROMPT) carries the workflow
   // contract. The user prompt only supplies the per-run inputs.
   const parts: string[] = [];
@@ -522,6 +564,13 @@ function buildUserPrompt(options: RunOptions): string {
   }
   if (options.contextHints && options.contextHints.length > 0) {
     parts.push(`\nContext hints:\n${options.contextHints.map((h) => `- ${h}`).join('\n')}`);
+  }
+  if (nativeCritic) {
+    parts.push(
+      `\nNative critic selection: run ONLY \`${nativeCritic}\`. ` +
+        `The single \`codebase\` roast call must pass \`clis: ["${nativeCritic}"]\`; ` +
+        `do not run the other native critics.`,
+    );
   }
   parts.push(
     '\nProceed per the workflow. Run a SINGLE `codebase` roast (it already covers' +

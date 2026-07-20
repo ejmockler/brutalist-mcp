@@ -797,6 +797,8 @@ describe('routed config-dir provisioning + pre-flight liveness', () => {
 
     afterEach(() => {
       delete process.env.BRUTALIST_FORCE_CLIS;
+      delete process.env.BRUTALIST_PR_DIFF;
+      delete process.env.BRUTALIST_PR_DIFF_FILE;
     });
 
     it('trims an oversized context to the SMALL critic (agy) while big critics keep it verbatim', async () => {
@@ -826,6 +828,18 @@ describe('routed config-dir provisioning + pre-flight liveness', () => {
       const spy = stubExec(o);
       await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', bigContext);
       expect(ranIds(spy)).toEqual(['agy']);
+      expect(promptFor(spy, 'agy')).toContain('TAIL_SENTINEL');
+      expect(promptFor(spy, 'agy')).not.toContain(CONTEXT_TRUNCATION_MARKER);
+    });
+
+    it('an injected diff (BRUTALIST_PR_DIFF) short-circuits the fit too — the COLLAPSED action pass (no FORCE_CLIS) does not double-trim', async () => {
+      // The action's collapse-if-fits path runs all critics with tag=undefined
+      // (no FORCE_CLIS) but still injects the diff, which it already sized.
+      process.env.BRUTALIST_PR_DIFF = 'diff --git a/x b/x\n@@ -1 +1 @@\n+x';
+      const o = orch();
+      const spy = stubExec(o);
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', bigContext);
+      // agy would normally trim a 450k context, but the action already sized it.
       expect(promptFor(spy, 'agy')).toContain('TAIL_SENTINEL');
       expect(promptFor(spy, 'agy')).not.toContain(CONTEXT_TRUNCATION_MARKER);
     });

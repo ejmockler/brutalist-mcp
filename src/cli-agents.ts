@@ -851,13 +851,6 @@ export interface CLIClientSpec {
   id: string;
   provider: 'claude' | 'codex' | 'agy';
   model?: string;
-  /**
-   * Declared usable context window (tokens) for a routed/custom client, used by
-   * the raw-roast per-critic context fit (N5). Native critics ignore this (their
-   * window is model-derived). Not yet exposed on the inline roast schema, so
-   * omitted routed clients fall back to the conservative floor (safe over-trim).
-   */
-  contextWindow?: number;
   smallFastModel?: string;
   baseUrl?: string;
   authToken?: string;
@@ -2144,11 +2137,22 @@ export class CLIAgentOrchestrator {
   /**
    * Build one critic's final prompt, fitting the supplementary context to THAT
    * critic's fidelity window (N5). A large `context` (e.g. a diff) otherwise
-   * overflows a small critic (agy ~135k, claude ~200k without [1m]); here each
-   * critic keeps the head that fits its own window, and reads the target for the
-   * rest (critics are agentic). No-op when the context already fits, and skipped
-   * entirely when BRUTALIST_FORCE_CLIS is set — the Action already chunked the
-   * diff per-participant upstream, so re-fitting would double-trim.
+   * overflows a small critic (agy ~135k, claude ~200k without [1m]); each critic
+   * keeps the head that fits its own window and reads the target for the rest
+   * (critics are agentic).
+   *
+   * The fit is SKIPPED whenever the orchestrator/Action is driving — signalled by
+   * BRUTALIST_FORCE_CLIS (an isolated per-participant stream) OR an injected diff
+   * (BRUTALIST_PR_DIFF_FILE / BRUTALIST_PR_DIFF, set for every action run
+   * INCLUDING the collapsed all-critics pass, which does NOT set FORCE_CLIS).
+   * That layer already sized the diff per-participant; re-fitting here with a
+   * possibly-different headroom (the action honors context-headroom-pct; the root
+   * hardcodes 15) would double-trim the smallest critic and silently drop hunks.
+   *
+   * NOTE: abstract domains (idea/research/data/…) also carry the payload in
+   * primaryContent (untrimmed, inside specificPrompt), so this fit only
+   * de-duplicates their redundant Context: copy — it neither loses their data nor
+   * prevents their overflow. N5 targets the repo-grounded (diff/filesystem) case.
    */
   private fitUserPrompt(
     specificPrompt: string,
@@ -2156,16 +2160,14 @@ export class CLIAgentOrchestrator {
     client: CLIClientSpec,
     options: CLIAgentOptions,
   ): string {
-    if (!effectiveContext) return specificPrompt;
-    const budget = process.env.BRUTALIST_FORCE_CLIS
+    if (!effectiveContext) return `${specificPrompt} `;
+    const alreadySizedUpstream =
+      !!process.env.BRUTALIST_FORCE_CLIS ||
+      !!process.env.BRUTALIST_PR_DIFF_FILE ||
+      !!process.env.BRUTALIST_PR_DIFF;
+    const budget = alreadySizedUpstream
       ? Infinity
-      : charsForWindow(
-          providerFidelityWindow(
-            client.provider,
-            client.model ?? options.models?.[client.provider],
-            client.contextWindow,
-          ),
-        );
+      : charsForWindow(providerFidelityWindow(client.provider, client.model ?? options.models?.[client.provider]));
     return `${specificPrompt} Context: ${fitContextToWindow(effectiveContext, budget)}`;
   }
 }

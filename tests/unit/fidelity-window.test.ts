@@ -14,26 +14,27 @@ const noEnv = {} as NodeJS.ProcessEnv;
 
 describe('providerFidelityWindow', () => {
   it('claude: 1M only with the [1m] suffix, else the conservative ~200k', () => {
-    expect(providerFidelityWindow('claude', 'claude-opus-4-8[1m]', undefined, noEnv)).toBe(CLAUDE_1M_WINDOW_TOKENS);
-    expect(providerFidelityWindow('claude', 'claude-opus-4-8', undefined, noEnv)).toBe(CONSERVATIVE_FIDELITY_WINDOW_TOKENS);
-    expect(providerFidelityWindow('claude', undefined, undefined, noEnv)).toBe(CONSERVATIVE_FIDELITY_WINDOW_TOKENS);
+    expect(providerFidelityWindow('claude', 'claude-opus-4-8[1m]', noEnv)).toBe(CLAUDE_1M_WINDOW_TOKENS);
+    expect(providerFidelityWindow('claude', 'claude-opus-4-8', noEnv)).toBe(CONSERVATIVE_FIDELITY_WINDOW_TOKENS);
+    expect(providerFidelityWindow('claude', undefined, noEnv)).toBe(CONSERVATIVE_FIDELITY_WINDOW_TOKENS);
   });
 
   it('codex ~272k and agy ~135k are model-independent verbatim thresholds', () => {
-    expect(providerFidelityWindow('codex', 'gpt-5.6-sol', undefined, noEnv)).toBe(CODEX_VERBATIM_INPUT_FIDELITY_TOKENS);
-    expect(providerFidelityWindow('agy', 'Gemini 3.5 Flash (Medium)', undefined, noEnv)).toBe(AGY_VERBATIM_FIDELITY_TOKENS);
+    expect(providerFidelityWindow('codex', 'gpt-5.6-sol', noEnv)).toBe(CODEX_VERBATIM_INPUT_FIDELITY_TOKENS);
+    expect(providerFidelityWindow('agy', 'Gemini 3.5 Flash (Medium)', noEnv)).toBe(AGY_VERBATIM_FIDELITY_TOKENS);
   });
 
   it('honors BRUTALIST_{CODEX,AGY}_CONTEXT_WINDOW overrides, ignoring invalid ones', () => {
-    expect(providerFidelityWindow('codex', 'x', undefined, { BRUTALIST_CODEX_CONTEXT_WINDOW: '300000' } as any)).toBe(300_000);
-    expect(providerFidelityWindow('agy', 'x', undefined, { BRUTALIST_AGY_CONTEXT_WINDOW: '250000' } as any)).toBe(250_000);
-    expect(providerFidelityWindow('codex', 'x', undefined, { BRUTALIST_CODEX_CONTEXT_WINDOW: 'abc' } as any)).toBe(CODEX_VERBATIM_INPUT_FIDELITY_TOKENS);
-    expect(providerFidelityWindow('codex', 'x', undefined, { BRUTALIST_CODEX_CONTEXT_WINDOW: '999' } as any)).toBe(CODEX_VERBATIM_INPUT_FIDELITY_TOKENS);
+    expect(providerFidelityWindow('codex', 'x', { BRUTALIST_CODEX_CONTEXT_WINDOW: '300000' } as any)).toBe(300_000);
+    expect(providerFidelityWindow('agy', 'x', { BRUTALIST_AGY_CONTEXT_WINDOW: '250000' } as any)).toBe(250_000);
+    expect(providerFidelityWindow('codex', 'x', { BRUTALIST_CODEX_CONTEXT_WINDOW: 'abc' } as any)).toBe(CODEX_VERBATIM_INPUT_FIDELITY_TOKENS);
+    expect(providerFidelityWindow('codex', 'x', { BRUTALIST_CODEX_CONTEXT_WINDOW: '999' } as any)).toBe(CODEX_VERBATIM_INPUT_FIDELITY_TOKENS);
   });
 
-  it('an unknown provider uses its declared window, else the conservative floor', () => {
-    expect(providerFidelityWindow('other', 'm', 1_000_000, noEnv)).toBe(1_000_000);
-    expect(providerFidelityWindow('other', 'm', undefined, noEnv)).toBe(CONSERVATIVE_FIDELITY_WINDOW_TOKENS);
+  it('routed/unexpected providers resolve to the conservative floor (declared windows deferred)', () => {
+    expect(providerFidelityWindow('other', 'm', noEnv)).toBe(CONSERVATIVE_FIDELITY_WINDOW_TOKENS);
+    // a routed GLM client is provider "claude" without [1m] => conservative over-trim
+    expect(providerFidelityWindow('claude', 'glm-5.2', noEnv)).toBe(CONSERVATIVE_FIDELITY_WINDOW_TOKENS);
   });
 });
 
@@ -69,5 +70,11 @@ describe('fitContextToWindow', () => {
 
   it('passes an empty context through unchanged', () => {
     expect(fitContextToWindow('', 100)).toBe('');
+  });
+
+  it('degrades to a hard head slice (never exceeds budget) when the budget is smaller than the marker', () => {
+    const out = fitContextToWindow('x'.repeat(1000), 20);
+    expect(out.length).toBe(20);
+    expect(out).toBe('x'.repeat(20));
   });
 });

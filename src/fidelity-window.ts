@@ -44,12 +44,17 @@ function parseContextWindowOverride(name: string, env: NodeJS.ProcessEnv): numbe
  *   claude: 1M only when the model carries the [1m] enablement suffix, else ~200k.
  *   codex:  ~272k (gpt-5.x-codex 400k cap = 272k input + 128k output).
  *   agy:    ~135k (auto-compaction threshold, NOT Gemini's 1M hard window).
- *   other (routed/custom claude): declaredContextWindow ?? the conservative floor.
+ *   other:  the conservative floor (defensive default for an unexpected provider).
+ *
+ * NOTE on routed/custom clients: a routed client (e.g. GLM) has provider
+ * 'claude', so it takes the claude branch and — lacking [1m] — resolves to the
+ * conservative ~200k (safe over-trim on a direct roast). Honoring a routed
+ * client's DECLARED window would need routing metadata, not just provider/model;
+ * deferred until a real oversized-routed direct caller appears.
  */
 export function providerFidelityWindow(
   provider: string,
   model: string | undefined,
-  declaredContextWindow?: number,
   env: NodeJS.ProcessEnv = process.env,
 ): number {
   if (provider === 'claude') {
@@ -61,7 +66,7 @@ export function providerFidelityWindow(
   if (provider === 'agy') {
     return parseContextWindowOverride(FIDELITY_WINDOW_ENV.agy, env) ?? AGY_VERBATIM_FIDELITY_TOKENS;
   }
-  return declaredContextWindow ?? CONSERVATIVE_FIDELITY_WINDOW_TOKENS;
+  return CONSERVATIVE_FIDELITY_WINDOW_TOKENS;
 }
 
 /** Token window → per-context char budget (working headroom + conservative chars/token). */
@@ -73,18 +78,22 @@ export function charsForWindow(
   return Math.max(1000, usableTokens * CHARS_PER_TOKEN);
 }
 
+// Domain-neutral: "read the target" only makes sense for repo-grounded reviews,
+// so the marker just records the truncation (the filesystem/diff domains already
+// carry "read the changed files" framing in the prompt itself).
 export const CONTEXT_TRUNCATION_MARKER =
-  "\n\n[brutalist: supplementary context truncated to fit this critic's window — read the target directly for the remainder]";
+  "\n\n[brutalist: context truncated to fit this critic's window; content beyond this point was omitted]";
 
 /**
  * Fit a supplementary context to a char budget: verbatim if it fits, else the
  * head that fits plus a truncation marker. A non-finite budget (Infinity) is an
- * explicit no-op — the caller already chunked upstream (e.g. the Action's
- * per-participant streams, signalled via BRUTALIST_FORCE_CLIS), so re-fitting
- * would double-trim.
+ * explicit no-op — the caller already sized the context upstream (e.g. the
+ * Action's per-participant streams), so re-fitting would double-trim. The output
+ * never exceeds budgetChars: a budget too small even for the marker degrades to
+ * a hard head slice.
  */
 export function fitContextToWindow(context: string, budgetChars: number): string {
   if (!context || !Number.isFinite(budgetChars) || context.length <= budgetChars) return context;
-  const headLen = Math.max(0, budgetChars - CONTEXT_TRUNCATION_MARKER.length);
-  return context.slice(0, headLen) + CONTEXT_TRUNCATION_MARKER;
+  if (budgetChars <= CONTEXT_TRUNCATION_MARKER.length) return context.slice(0, budgetChars);
+  return context.slice(0, budgetChars - CONTEXT_TRUNCATION_MARKER.length) + CONTEXT_TRUNCATION_MARKER;
 }

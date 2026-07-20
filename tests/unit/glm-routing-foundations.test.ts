@@ -35,6 +35,7 @@ import {
   CLIAgentOptions,
 } from '../../src/cli-agents.js';
 import { promises as fs } from 'fs';
+import { CONTEXT_TRUNCATION_MARKER } from '../../src/fidelity-window.js';
 import { buildClaudeProviderEnv, classifyClaudeErrorReason } from '../../src/cli-adapters/claude-adapter.js';
 import { getProvider } from '../../src/cli-adapters/index.js';
 import { BASE_ROAST_SCHEMA } from '../../src/types/tool-config.js';
@@ -783,5 +784,50 @@ describe('routed config-dir provisioning + pre-flight liveness', () => {
     // Native critics still ran.
     expect(ranIds(spy)).toEqual(expect.arrayContaining(['agy', 'claude', 'codex']));
     expect(results.filter((r) => r.success).length).toBeGreaterThanOrEqual(3);
+  });
+
+  describe('N5: per-critic context fit (raw roast)', () => {
+    // executeSingleCLI(cli, userPrompt, systemPromptSpec, options) — a[1] is the
+    // per-critic prompt, a[3].activeClient.id the critic.
+    const promptFor = (spy: any, id: string): string =>
+      spy.mock.calls.find((c: any[]) => c[3]?.activeClient?.id === id)?.[1] ?? '';
+    // ~450k chars: over agy's ~344k budget (135k window), under claude's ~510k
+    // (200k) and codex's ~694k (272k).
+    const bigContext = `diff --git a/big.txt b/big.txt\n@@ -1 +1 @@\n+${'x'.repeat(450_000)}\nTAIL_SENTINEL`;
+
+    afterEach(() => {
+      delete process.env.BRUTALIST_FORCE_CLIS;
+    });
+
+    it('trims an oversized context to the SMALL critic (agy) while big critics keep it verbatim', async () => {
+      const o = orch();
+      const spy = stubExec(o);
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', bigContext);
+      expect(promptFor(spy, 'agy')).toContain(CONTEXT_TRUNCATION_MARKER);
+      expect(promptFor(spy, 'agy')).not.toContain('TAIL_SENTINEL');
+      expect(promptFor(spy, 'claude')).toContain('TAIL_SENTINEL');
+      expect(promptFor(spy, 'claude')).not.toContain(CONTEXT_TRUNCATION_MARKER);
+      expect(promptFor(spy, 'codex')).toContain('TAIL_SENTINEL');
+    });
+
+    it('passes a context that fits every window verbatim to ALL critics (no-op)', async () => {
+      const o = orch();
+      const spy = stubExec(o);
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', 'short context TAIL_SENTINEL');
+      for (const id of ['agy', 'claude', 'codex']) {
+        expect(promptFor(spy, id)).toContain('TAIL_SENTINEL');
+        expect(promptFor(spy, id)).not.toContain(CONTEXT_TRUNCATION_MARKER);
+      }
+    });
+
+    it('BRUTALIST_FORCE_CLIS short-circuits the fit — the isolated critic gets the context VERBATIM (action already chunked)', async () => {
+      process.env.BRUTALIST_FORCE_CLIS = 'agy';
+      const o = orch();
+      const spy = stubExec(o);
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', bigContext);
+      expect(ranIds(spy)).toEqual(['agy']);
+      expect(promptFor(spy, 'agy')).toContain('TAIL_SENTINEL');
+      expect(promptFor(spy, 'agy')).not.toContain(CONTEXT_TRUNCATION_MARKER);
+    });
   });
 });

@@ -17,6 +17,7 @@ import {
   NATIVE_CLI_IDS,
   ROUTING_FIELDS,
 } from './cli-adapters/routing.js';
+import { providerFidelityWindow, charsForWindow, fitContextToWindow } from './fidelity-window.js';
 // Re-export the routing predicates that used to live here (consumers + tests
 // import them from cli-agents); the defs moved to the leaf module to break the
 // cli-agents ↔ cli-adapters value cycle.
@@ -850,6 +851,13 @@ export interface CLIClientSpec {
   id: string;
   provider: 'claude' | 'codex' | 'agy';
   model?: string;
+  /**
+   * Declared usable context window (tokens) for a routed/custom client, used by
+   * the raw-roast per-critic context fit (N5). Native critics ignore this (their
+   * window is model-derived). Not yet exposed on the inline roast schema, so
+   * omitted routed clients fall back to the conservative floor (safe over-trim).
+   */
+  contextWindow?: number;
   smallFastModel?: string;
   baseUrl?: string;
   authToken?: string;
@@ -1790,7 +1798,14 @@ export class CLIAgentOrchestrator {
       throw new Error(`Security validation failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     
-    const userPrompt = this.constructUserPrompt(analysisType, primaryContent, context);
+    // Build the prompt parts ONCE (context resolution + diff injection is a file
+    // read); each critic's final prompt is assembled per-critic below so the
+    // supplementary context can be fit to that critic's own window (N5).
+    const { specificPrompt, effectiveContext } = this.buildPromptParts(
+      analysisType,
+      primaryContent,
+      context,
+    );
 
     const explicitClients = options.clients && options.clients.length > 0
       ? options.clients.map((client) => {
@@ -1926,7 +1941,9 @@ export class CLIAgentOrchestrator {
     const promises = liveSpecs.map(async (client) => {
       const cli = client.provider;
       try {
-        const response = await this.executeSingleCLI(cli, userPrompt, systemPromptSpec, {
+        // Fit the supplementary context to THIS critic's window (N5).
+        const clientUserPrompt = this.fitUserPrompt(specificPrompt, effectiveContext, client, options);
+        const response = await this.executeSingleCLI(cli, clientUserPrompt, systemPromptSpec, {
           ...options,
           activeClient: client,
           workingDirectory: client.workingDirectory || options.workingDirectory,
@@ -2037,11 +2054,11 @@ export class CLIAgentOrchestrator {
     return synthesis.trim();
   }
 
-  private constructUserPrompt(
-    analysisType: string, 
-    primaryContent: string, 
-    context?: string
-  ): string {
+  private buildPromptParts(
+    analysisType: string,
+    primaryContent: string,
+    context?: string,
+  ): { specificPrompt: string; effectiveContext: string | undefined } {
     // Trust CLI tools to handle their own security
     const sanitizedContent = primaryContent;
 
@@ -2078,8 +2095,6 @@ export class CLIAgentOrchestrator {
     const effectiveContext = (!contextHasDiff && injectedDiff)
       ? (context ? `${context}\n\n${injectedDiff}` : injectedDiff)
       : context;
-    const sanitizedContext = effectiveContext || 'No additional context provided';
-
     // A unified diff marks this as a change/PR review. Direct critics to
     // focus on the changed files instead of auditing the whole tree:
     // "Analyze the codebase directory" otherwise makes every critic
@@ -2110,6 +2125,47 @@ export class CLIAgentOrchestrator {
 
     const specificPrompt = prompts[analysisType as keyof typeof prompts] || `Analyze ${sanitizedContent} for ${analysisType} issues.`;
 
-    return `${specificPrompt} ${effectiveContext ? `Context: ${sanitizedContext}` : ''}`;
+    // Return the parts so the caller can fit `effectiveContext` to EACH critic's
+    // own window before appending it (N5). hasDiff/specificPrompt are computed
+    // from the FULL context so a per-critic trim never changes the framing.
+    return { specificPrompt, effectiveContext };
+  }
+
+  /**
+   * Assemble the full user prompt with the context appended VERBATIM (no
+   * per-critic fit). The reference assembly (also exercised by the prompt tests);
+   * the live fan-out builds per-critic prompts via fitUserPrompt instead.
+   */
+  private constructUserPrompt(analysisType: string, primaryContent: string, context?: string): string {
+    const { specificPrompt, effectiveContext } = this.buildPromptParts(analysisType, primaryContent, context);
+    return `${specificPrompt} ${effectiveContext ? `Context: ${effectiveContext}` : ''}`;
+  }
+
+  /**
+   * Build one critic's final prompt, fitting the supplementary context to THAT
+   * critic's fidelity window (N5). A large `context` (e.g. a diff) otherwise
+   * overflows a small critic (agy ~135k, claude ~200k without [1m]); here each
+   * critic keeps the head that fits its own window, and reads the target for the
+   * rest (critics are agentic). No-op when the context already fits, and skipped
+   * entirely when BRUTALIST_FORCE_CLIS is set — the Action already chunked the
+   * diff per-participant upstream, so re-fitting would double-trim.
+   */
+  private fitUserPrompt(
+    specificPrompt: string,
+    effectiveContext: string | undefined,
+    client: CLIClientSpec,
+    options: CLIAgentOptions,
+  ): string {
+    if (!effectiveContext) return specificPrompt;
+    const budget = process.env.BRUTALIST_FORCE_CLIS
+      ? Infinity
+      : charsForWindow(
+          providerFidelityWindow(
+            client.provider,
+            client.model ?? options.models?.[client.provider],
+            client.contextWindow,
+          ),
+        );
+    return `${specificPrompt} Context: ${fitContextToWindow(effectiveContext, budget)}`;
   }
 }

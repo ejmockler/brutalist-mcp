@@ -22,8 +22,18 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
+// Source of truth for the version the built server must report. The server is
+// spawned as the raw binary (no `npm run`), so it must resolve its version from
+// package.json — this guards against the hardcoded-fallback drift that once left
+// it pinned at 1.18.8 while package.json moved on. (jest runs from the repo root.)
+const EXPECTED_VERSION = (
+  JSON.parse(readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')) as { version: string }
+).version;
 import {
   InitializeResultSchema,
   ListToolsResultSchema,
@@ -115,10 +125,11 @@ describe('MCP Client Validation Tests', () => {
       expect(initResult).toHaveProperty('capabilities');
       expect(initResult).toHaveProperty('serverInfo');
 
-      // Server info validation
+      // Server info validation — version must match package.json (not a stale
+      // hardcoded fallback; the raw binary resolves it from package.json).
       expect(initResult.serverInfo).toMatchObject({
         name: 'brutalist-mcp',
-        version: expect.any(String)
+        version: EXPECTED_VERSION
       });
 
       // Capabilities validation

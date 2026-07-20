@@ -74,7 +74,20 @@ const CLAUDE_CONFIG: CLIBuilderConfig = {
   // help text claims it "only works with --print", but that annotation
   // is stale — verified empirically against v2.1.142 and confirmed by
   // the Agent SDK source, which spawns the binary without --print.
-  defaultArgs: ['--input-format', 'stream-json'],
+  //
+  // `--setting-sources user`: the claude critic IS Claude Code, so it would
+  // otherwise inherit the TARGET repo's `.claude/settings.json` (project) and
+  // `.claude/settings.local.json` (local) — including HOOKS. A hostile/looping
+  // hook there (e.g. a SubagentStop "evaluator") hijacks the critic and hangs it
+  // (~25 min, zero output); codex/agy are immune because they aren't Claude Code.
+  // Dropping the project+local sources isolates the critic from repo-defined
+  // hooks/skills/plugins while keeping OAuth auth (CLAUDE_CODE_OAUTH_TOKEN) and
+  // the explicit --model/--allowedTools/--mcp-config flags intact (verified:
+  // `--bare` would also drop hooks but BREAKS OAuth, and `--setting-sources` has
+  // no "none" value, so `user` is the isolating floor). Caveat: org-managed
+  // policy hooks and user-level (~/.claude) hooks are out of scope — the target
+  // repo's hooks, the reported failure, are fully suppressed.
+  defaultArgs: ['--input-format', 'stream-json', '--setting-sources', 'user'],
   modelArgName: '--model',
   mpcEnvCleanup: ['CLAUDE_MCP_CONFIG', 'MCP_ENABLED', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'],
   streamingArgs: () => ['--output-format', 'stream-json', '--verbose'],

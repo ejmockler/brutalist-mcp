@@ -157,13 +157,16 @@ export async function run(options: OrchestratorRunOptions): Promise<Orchestrator
   let submitCount = 0;
   const normalizeClientId = makeClientIdNormalizer(options.knownClientIds);
   let normalizedClientIds = 0;
-  const nativeCritic = getSingleNativeCritic(options.clis);
   // Per-participant isolation (N4). An explicit isolateParticipant wins; else
   // fall back to the single-native selection from clis[]. `forceClis` is the
   // value the server enforces via BRUTALIST_FORCE_CLIS. For brain-prompt
   // coherence a native isolate reads exactly like a single-native selection;
   // 'custom' gets its own instruction.
   const isolate = options.isolateParticipant;
+  // isolateParticipant takes precedence over clis[] (per its documented
+  // contract), so skip the single-native derivation — and its multi-clis throw —
+  // whenever an isolate is set. Only clis[] governs when no isolate is given.
+  const nativeCritic = isolate ? undefined : getSingleNativeCritic(options.clis);
   const forceClis: CliName | 'custom' | undefined = isolate ?? nativeCritic;
   const customOnly = isolate === 'custom';
   const promptNativeCritic: CliName | undefined =

@@ -255,6 +255,13 @@ function normalizeModelName(model: string): string {
   return model.trim().toLowerCase();
 }
 
+// DELIBERATE asymmetry vs the same-named helper in src/fidelity-window.ts (the
+// raw-roast path), which SILENTLY IGNORES an invalid value and falls back to the
+// default window. Here — the GitHub Action's config-load time — a malformed
+// BRUTALIST_{CODEX,AGY}_CONTEXT_WINDOW is an operator typo in workflow config, so
+// we fail LOUD once at readInputs() rather than silently mis-sizing every chunk
+// for the whole run. The runtime roast tool cannot afford to crash on a stray
+// env, hence it degrades instead. Both are intentional for their context.
 function parseContextWindowOverride(name: string): number | undefined {
   const raw = process.env[name]?.trim();
   if (!raw) return undefined;

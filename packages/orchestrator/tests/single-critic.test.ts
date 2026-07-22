@@ -95,4 +95,22 @@ describe('per-participant isolation (isolateParticipant)', () => {
     expect(capturedQueryParams.options.systemPrompt).toContain('Custom-Client-Only Mode');
     expect(capturedQueryParams.prompt).toContain('run ONLY the custom Claude-routed client(s)');
   });
+
+  it('isolateParticipant takes precedence over clis[] — no multi-clis throw, and enforcement+prompt both use the isolate', async () => {
+    drive();
+    // A conflicting, multi-entry clis[] would throw via getSingleNativeCritic if
+    // it were still evaluated; the isolate must win and suppress that path.
+    await run({
+      repoPath: '/tmp/repo',
+      oauthToken: 'tok',
+      isolateParticipant: 'codex',
+      clis: ['claude', 'agy'],
+    } as any);
+    expect(capturedQueryParams.options.mcpServers.brutalist.env.BRUTALIST_FORCE_CLIS).toBe('codex');
+    // The prompt is pinned to codex too (not claude/agy from clis[]).
+    expect(capturedQueryParams.options.systemPrompt).toContain(
+      'This review pass is pinned to the `codex` native critic',
+    );
+    expect(capturedQueryParams.options.systemPrompt).not.toContain('pinned to the `claude`');
+  });
 });

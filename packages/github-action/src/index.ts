@@ -125,8 +125,18 @@ async function main(): Promise<void> {
   // reviews the WHOLE diff chunked to ITS OWN fidelity window (claude/glm ~1
   // chunk = max cross-diff correlation; agy ≤135k = verbatim), isolated
   // mechanically server-side (BRUTALIST_FORCE_CLIS) so a stream never drags in
-  // another critic or an env-default custom client. Leaner AND higher fidelity
-  // than a single global-min chunk stream.
+  // another critic or an env-default custom client.
+  //
+  // TRADEOFF (honest): this is fewer CRITIC invocations and higher fidelity, and
+  // for a diff that fits the smallest window it collapses to the old single pass.
+  // But for a LARGE diff (uncollapsed) it runs Σ_critic ⌈diff/criticWindow⌉
+  // separate orchestrator passes — each a full brain (`model`) re-reading its
+  // chunk — so BRAIN-side token cost and the count of concurrent brain sessions
+  // go UP vs the old all-critics-per-chunk loop. `chunk-concurrency` bounds
+  // PASSES (brain panels), not total critic subprocesses. A rate-limited pass is
+  // dropped (core.warning) and the merge proceeds over survivors, so an entire
+  // critic's stream can thin out while the review still reports success — an
+  // accepted cost for an advisory, non-gating review.
   const streams = collapseStreamsIfDiffFits(
     buildParticipantStreams(inputs.participantFidelityWindows, nativeCritic, inputs.contextWindowTokens),
     truncated.text.length,

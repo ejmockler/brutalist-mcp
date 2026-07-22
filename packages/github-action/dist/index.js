@@ -40006,13 +40006,16 @@ async function run(options) {
     let submitCount = 0;
     const normalizeClientId = makeClientIdNormalizer(options.knownClientIds);
     let normalizedClientIds = 0;
-    const nativeCritic = getSingleNativeCritic(options.clis);
     // Per-participant isolation (N4). An explicit isolateParticipant wins; else
     // fall back to the single-native selection from clis[]. `forceClis` is the
     // value the server enforces via BRUTALIST_FORCE_CLIS. For brain-prompt
     // coherence a native isolate reads exactly like a single-native selection;
     // 'custom' gets its own instruction.
     const isolate = options.isolateParticipant;
+    // isolateParticipant takes precedence over clis[] (per its documented
+    // contract), so skip the single-native derivation — and its multi-clis throw —
+    // whenever an isolate is set. Only clis[] governs when no isolate is given.
+    const nativeCritic = isolate ? undefined : getSingleNativeCritic(options.clis);
     const forceClis = isolate ?? nativeCritic;
     const customOnly = isolate === 'custom';
     const promptNativeCritic = nativeCritic ?? (isolate && isolate !== 'custom' ? isolate : undefined);
@@ -40927,6 +40930,13 @@ const CRITIC_FIDELITY_THRESHOLDS = {
 function normalizeModelName(model) {
     return model.trim().toLowerCase();
 }
+// DELIBERATE asymmetry vs the same-named helper in src/fidelity-window.ts (the
+// raw-roast path), which SILENTLY IGNORES an invalid value and falls back to the
+// default window. Here — the GitHub Action's config-load time — a malformed
+// BRUTALIST_{CODEX,AGY}_CONTEXT_WINDOW is an operator typo in workflow config, so
+// we fail LOUD once at readInputs() rather than silently mis-sizing every chunk
+// for the whole run. The runtime roast tool cannot afford to crash on a stray
+// env, hence it degrades instead. Both are intentional for their context.
 function parseContextWindowOverride(name) {
     const raw = process.env[name]?.trim();
     if (!raw)
@@ -41217,8 +41227,10 @@ function meetsSeverityThreshold(severity, threshold) {
 // critic reviews the WHOLE diff chunked to ITS OWN fidelity window: claude/glm
 // (~1M) in ~1 chunk (max cross-diff correlation, no redundant re-review), codex
 // ≤272k, agy ≤135k (verbatim). Critics are agentic — window pressure is the
-// diff/context, not the codebase they read themselves — so this is both leaner
-// and higher fidelity than a single global-min chunk stream. Pure + testable;
+// diff/context, not the codebase they read themselves — so this cuts CRITIC
+// invocations and raises fidelity. NB it is not universally "leaner": a large
+// (uncollapsed) diff runs more separate orchestrator BRAIN passes than the old
+// all-critics-per-chunk loop (see the tradeoff note in index.ts). Pure + testable;
 // the driver (index.ts) wires these to the orchestrator + core logging.
 
 
@@ -42884,8 +42896,18 @@ async function main() {
     // reviews the WHOLE diff chunked to ITS OWN fidelity window (claude/glm ~1
     // chunk = max cross-diff correlation; agy ≤135k = verbatim), isolated
     // mechanically server-side (BRUTALIST_FORCE_CLIS) so a stream never drags in
-    // another critic or an env-default custom client. Leaner AND higher fidelity
-    // than a single global-min chunk stream.
+    // another critic or an env-default custom client.
+    //
+    // TRADEOFF (honest): this is fewer CRITIC invocations and higher fidelity, and
+    // for a diff that fits the smallest window it collapses to the old single pass.
+    // But for a LARGE diff (uncollapsed) it runs Σ_critic ⌈diff/criticWindow⌉
+    // separate orchestrator passes — each a full brain (`model`) re-reading its
+    // chunk — so BRAIN-side token cost and the count of concurrent brain sessions
+    // go UP vs the old all-critics-per-chunk loop. `chunk-concurrency` bounds
+    // PASSES (brain panels), not total critic subprocesses. A rate-limited pass is
+    // dropped (core.warning) and the merge proceeds over survivors, so an entire
+    // critic's stream can thin out while the review still reports success — an
+    // accepted cost for an advisory, non-gating review.
     const streams = collapseStreamsIfDiffFits(buildParticipantStreams(inputs.participantFidelityWindows, nativeCritic, inputs.contextWindowTokens), truncated.text.length, inputs.contextHeadroomPct);
     const { passes, summaries, warnings } = planPasses(streams, truncated.text, inputs.contextHeadroomPct);
     for (const w of warnings)

@@ -3,8 +3,10 @@
 // critic reviews the WHOLE diff chunked to ITS OWN fidelity window: claude/glm
 // (~1M) in ~1 chunk (max cross-diff correlation, no redundant re-review), codex
 // ≤272k, agy ≤135k (verbatim). Critics are agentic — window pressure is the
-// diff/context, not the codebase they read themselves — so this is both leaner
-// and higher fidelity than a single global-min chunk stream. Pure + testable;
+// diff/context, not the codebase they read themselves — so this cuts CRITIC
+// invocations and raises fidelity. NB it is not universally "leaner": a large
+// (uncollapsed) diff runs more separate orchestrator BRAIN passes than the old
+// all-critics-per-chunk loop (see the tradeoff note in index.ts). Pure + testable;
 // the driver (index.ts) wires these to the orchestrator + core logging.
 import { chunkDiff } from './chunk-diff.js';
 import { charsForWindow, type ParticipantFidelityWindow } from './inputs.js';

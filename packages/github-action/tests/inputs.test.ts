@@ -30,6 +30,8 @@ const MANAGED_VARS = [
   'INPUT_OPENAI-API-KEY',
   'INPUT_CODEX-AUTH',
   'INPUT_AGY-OAUTH-TOKEN',
+  'BRUTALIST_CODEX_CONTEXT_WINDOW',
+  'BRUTALIST_AGY_CONTEXT_WINDOW',
   'GITHUB_TOKEN',
 ];
 
@@ -178,29 +180,128 @@ describe('native-critic window floor (active native critics fold into the govern
     expect(inputs.contextWindowTokens).toBe(500_000);
   });
 
-  it('active codex (codex-auth) caps the governing window at ~200k even with claude on [1m]', () => {
+  it('active codex (codex-auth) folds to its ~272k verbatim-input window (gpt-5.x-codex 400k cap = 272k input), not the claude 1M or the old 200k guess', () => {
     process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
     process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
     process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    // min(500k, claude 1M, codex 272k verbatim-input fidelity) = 272k.
     const inputs = readInputs();
-    expect(inputs.contextWindowTokens).toBe(200_000);
+    expect(inputs.contextWindowTokens).toBe(272_000);
   });
 
-  it('active codex via openai-api-key also caps at ~200k', () => {
+  it('active codex via openai-api-key also folds to its ~272k verbatim-input window', () => {
     process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
     process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
     process.env['INPUT_OPENAI-API-KEY'] = 'sk-test-key';
     const inputs = readInputs();
-    expect(inputs.contextWindowTokens).toBe(200_000);
+    expect(inputs.contextWindowTokens).toBe(272_000);
   });
 
-  it('active agy alone (Gemini 1M hard window) does not cap below a raised window', () => {
+  it('active agy alone folds at its ~135k verbatim-fidelity window, not the Gemini 1M hard window', () => {
     process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
     process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
     process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
-    // min(500k, claude 1M, agy 1M) = 500k — agy's ~135k compaction is fidelity, not overflow.
+    // min(500k, claude 1M, agy ~135k fidelity) = 135k.
     const inputs = readInputs();
-    expect(inputs.contextWindowTokens).toBe(500_000);
+    expect(inputs.contextWindowTokens).toBe(135_000);
+  });
+
+  it('codex and agy context-window env overrides win over model/default fidelity windows', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CLAUDE-CRITIC-MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '500000';
+    process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
+    process.env['BRUTALIST_CODEX_CONTEXT_WINDOW'] = '300000';
+    process.env['BRUTALIST_AGY_CONTEXT_WINDOW'] = '250000';
+    // Without overrides this panel would fold to agy's 135k (and codex 272k).
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(250_000);
+  });
+
+  it('dogfood panel with claude[1m], codex, agy, and GLM 1M still uses the smallest participant window', () => {
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CLAUDE-CRITIC-MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '200000';
+    process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
+    process.env['INPUT_CUSTOM-CLAUDE-CLIENTS'] = JSON.stringify([
+      {
+        id: 'glm',
+        baseUrl: 'https://glm.example.test/v1',
+        authToken: 'sk-glm-abcdef',
+        model: 'glm-5.2',
+        contextWindow: 1_000_000,
+      },
+    ]);
+    // min(configured 200k, claude 1M, codex 272k, agy 135k, GLM 1M) = 135k.
+    const inputs = readInputs();
+    expect(inputs.contextWindowTokens).toBe(135_000);
+  });
+
+  it('participantFidelityWindows exposes each active critic at its OWN window (unset context-window-tokens => no cap)', () => {
+    delete process.env['INPUT_CONTEXT-WINDOW-TOKENS'];
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CLAUDE-CRITIC-MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
+    process.env['INPUT_CUSTOM-CLAUDE-CLIENTS'] = JSON.stringify([
+      {
+        id: 'glm',
+        baseUrl: 'https://glm.example.test/v1',
+        authToken: 'sk-glm-abcdef',
+        model: 'glm-5.2',
+        contextWindow: 1_000_000,
+      },
+    ]);
+    const inputs = readInputs();
+    // Each participant streams at its own fidelity window — NOT clamped to agy's 135k min.
+    expect(inputs.participantFidelityWindows).toEqual([
+      { id: 'claude', kind: 'native', window: 1_000_000 },
+      { id: 'codex', kind: 'native', window: 272_000 },
+      { id: 'agy', kind: 'native', window: 135_000 },
+      { id: 'glm', kind: 'custom', window: 1_000_000 },
+    ]);
+    // The legacy governing min is still agy's 135k (single-window consumers).
+    expect(inputs.contextWindowTokens).toBe(135_000);
+  });
+
+  it('an EXPLICIT context-window-tokens caps every per-participant window (manual override preserved)', () => {
+    process.env['INPUT_CONTEXT-WINDOW-TOKENS'] = '150000';
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CLAUDE-CRITIC-MODEL'] = 'claude-opus-4-8[1m]';
+    process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
+    const inputs = readInputs();
+    // claude 1M and codex 272k are capped to 150k; agy 135k already < cap.
+    expect(inputs.participantFidelityWindows).toEqual([
+      { id: 'claude', kind: 'native', window: 150_000 },
+      { id: 'codex', kind: 'native', window: 150_000 },
+      { id: 'agy', kind: 'native', window: 135_000 },
+    ]);
+  });
+
+  it('claude-only without [1m] exposes the single conservative-window participant', () => {
+    delete process.env['INPUT_CONTEXT-WINDOW-TOKENS'];
+    const inputs = readInputs();
+    expect(inputs.participantFidelityWindows).toEqual([
+      { id: 'claude', kind: 'native', window: 200_000 },
+    ]);
+  });
+
+  it('caps EVERY participant to the ~200k BRAIN window when the brain model lacks [1m] (the brain reads every chunk)', () => {
+    delete process.env['INPUT_CONTEXT-WINDOW-TOKENS'];
+    process.env['INPUT_MODEL'] = 'claude-opus-4-8'; // no [1m] => brain ~200k
+    process.env['INPUT_CODEX-AUTH'] = 'codex-oauth-token';
+    process.env['INPUT_AGY-OAUTH-TOKEN'] = 'agy-oauth-token';
+    const inputs = readInputs();
+    // codex's 272k is clamped to the 200k brain window (else a codex chunk would
+    // overflow the brain the action runs on `model`); agy 135k already < brain.
+    expect(inputs.participantFidelityWindows).toEqual([
+      { id: 'claude', kind: 'native', window: 200_000 },
+      { id: 'codex', kind: 'native', window: 200_000 },
+      { id: 'agy', kind: 'native', window: 135_000 },
+    ]);
   });
 
   it('claude-only [1m] panel (no codex/agy) can chunk above 200k', () => {

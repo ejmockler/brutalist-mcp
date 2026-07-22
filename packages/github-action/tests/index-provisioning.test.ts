@@ -67,6 +67,7 @@ function baseInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
     customClaudeClientId: 'custom-claude',
     customClaudeClients: [],
     contextWindowTokens: 200_000,
+    participantFidelityWindows: [{ id: 'claude', kind: 'native' as const, window: 200_000 }],
     contextHeadroomPct: 40,
     maxChunkChars: 360_000,
     chunkConcurrency: 2,

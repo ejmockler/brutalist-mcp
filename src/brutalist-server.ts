@@ -32,8 +32,15 @@ import { filterToolsByIntent, getMatchingDomainIds } from './tool-router.js';
 import { DebateOrchestrator } from './debate/index.js';
 import { DEFAULT_AGENT_TIMEOUT_MS, positiveIntegerOr } from './constants.js';
 
-// Use environment variable or fallback to manual version
-const PACKAGE_VERSION = process.env.npm_package_version || "1.18.8";
+// MCP hosts spawn this binary DIRECTLY (not via `npm run`), so
+// process.env.npm_package_version is usually unset and the fallback is what
+// production actually reports. It MUST track package.json — a mismatch is caught
+// in CI by tests/integration/mcp-client-validation.test.ts (which asserts the
+// spawned binary's serverInfo.version === package.json.version). A file read
+// from package.json would be cleaner but can't reference import.meta here: jest
+// compiles this module to CommonJS (TS1343), so the constant + the guard test is
+// the portable fix.
+const PACKAGE_VERSION = process.env.npm_package_version || "1.18.9";
 
 /**
  * BrutalistServer - Composition root for the Brutalist MCP Server
@@ -729,6 +736,20 @@ export class BrutalistServer {
           text: `ERROR: Brutalist MCP tools cannot be used from within a brutalist-spawned CLI subprocess (recursion prevented)`
         }]
       };
+    }
+
+    const forcedCli = process.env.BRUTALIST_FORCE_CLIS;
+    if (forcedCli === 'claude' || forcedCli === 'codex' || forcedCli === 'agy') {
+      // Native isolation: pin the roast to this native critic. cli-agents ALSO
+      // drops env-default custom clients for this stream (the BRUTALIST_FORCE_CLIS
+      // spec filter), so a per-critic native stream never drags in GLM et al.
+      args = { ...args, clis: [forcedCli] };
+      console.error(`[brutalist] BRUTALIST_FORCE_CLIS enforced: only ${forcedCli} will run`);
+    } else if (forcedCli === 'custom') {
+      // Custom-client-only isolation: no native critics; cli-agents keeps only
+      // the custom (non-native) specs so the env-default clients run alone.
+      args = { ...args, clis: [] };
+      console.error(`[brutalist] BRUTALIST_FORCE_CLIS enforced: only custom Claude-routed clients will run`);
     }
 
     // Get domain config

@@ -178,6 +178,13 @@ export interface ActionInputs {
   customClaudeClients: ParsedCustomClient[];
   /** Governing (smallest participant) context window, in tokens. */
   contextWindowTokens: number;
+  /**
+   * Per-participant fidelity windows (one entry per ACTIVE critic — native +
+   * custom). The per-critic chunk-stream driver chunks the diff to each
+   * participant's own window rather than the global min. Order: claude, codex?,
+   * agy?, then custom clients.
+   */
+  participantFidelityWindows: ParticipantFidelityWindow[];
   /** Working headroom reserved for the agent, as a percentage (0–90). */
   contextHeadroomPct: number;
   /**
@@ -199,13 +206,112 @@ export interface ActionInputs {
  */
 const CHARS_PER_TOKEN = 3;
 
-// Conservative fallback window (tokens) for any critic whose real context window
-// we can't confirm: codex, a non-[1m] claude, or a routed client that omits
-// contextWindow. Over-chunking is the safe failure; under-constraining overflows.
-const CONSERVATIVE_WINDOW_TOKENS = 200_000;
-// Wide window (tokens) for critics that genuinely hold ~1M: claude on [1m]
-// (opus-4.8 via Max/Team/Enterprise OAuth) and agy (Gemini hard window).
-const WIDE_WINDOW_TOKENS = 1_000_000;
+type FidelityCritic = 'codex' | 'agy';
+
+const CLAUDE_1M_WINDOW_TOKENS = 1_000_000;
+const CONSERVATIVE_FIDELITY_WINDOW_TOKENS = 200_000;
+const AGY_VERBATIM_FIDELITY_TOKENS = 135_000;
+// Codex verbatim-input fidelity ceiling. The gpt-5.x-codex family exposes a
+// 400k total window INSIDE Codex CLI (272k input + 128k reserved output) even
+// though the raw API window is 1M; the CLI reports ~258,400 usable (272k × 0.95
+// headroom) and bills 2× above 272k input. 272k is codex's verbatim INPUT
+// ceiling — the direct analog of agy's 135k compaction threshold. We declare the
+// raw input cap; the diff chunker's own headroom keeps chunks near ~231k, safely
+// under the ~258k effective. Overrides via BRUTALIST_CODEX_CONTEXT_WINDOW.
+// Measured: OpenAI Codex CLI 0.136+, gpt-5.x-codex under ChatGPT-plan auth (2026-07).
+const CODEX_VERBATIM_INPUT_FIDELITY_TOKENS = 272_000;
+const DEFAULT_CODEX_MODEL = 'codex-cli-default';
+const DEFAULT_AGY_MODEL = 'Gemini 3.5 Flash (Medium)';
+const FIDELITY_WINDOW_ENV: Record<FidelityCritic, string> = {
+  codex: 'BRUTALIST_CODEX_CONTEXT_WINDOW',
+  agy: 'BRUTALIST_AGY_CONTEXT_WINDOW',
+};
+
+const MODEL_FIDELITY_WINDOWS: Record<FidelityCritic, Record<string, number>> = {
+  codex: {
+    [DEFAULT_CODEX_MODEL]: CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+    'gpt-5-codex': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+    'gpt-5.1-codex': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+    'gpt-5.3-codex': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+    'gpt-5.5': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+    'gpt-5.6-sol': CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+  },
+  agy: {
+    [DEFAULT_AGY_MODEL]: AGY_VERBATIM_FIDELITY_TOKENS,
+    'Gemini 3.5 Flash (High)': AGY_VERBATIM_FIDELITY_TOKENS,
+    'Gemini 3.1 Pro (High)': AGY_VERBATIM_FIDELITY_TOKENS,
+    'Gemini 3.1 Pro (Low)': AGY_VERBATIM_FIDELITY_TOKENS,
+  },
+};
+
+const CRITIC_FIDELITY_THRESHOLDS: Partial<Record<FidelityCritic, number>> = {
+  agy: AGY_VERBATIM_FIDELITY_TOKENS,
+  // Any gpt-5.x-codex variant folds to codex's verbatim input ceiling, so an
+  // unrecognized codex model resolves to 272k rather than the generic 200k floor.
+  codex: CODEX_VERBATIM_INPUT_FIDELITY_TOKENS,
+};
+
+function normalizeModelName(model: string): string {
+  return model.trim().toLowerCase();
+}
+
+// DELIBERATE asymmetry vs the same-named helper in src/fidelity-window.ts (the
+// raw-roast path), which SILENTLY IGNORES an invalid value and falls back to the
+// default window. Here — the GitHub Action's config-load time — a malformed
+// BRUTALIST_{CODEX,AGY}_CONTEXT_WINDOW is an operator typo in workflow config, so
+// we fail LOUD once at readInputs() rather than silently mis-sizing every chunk
+// for the whole run. The runtime roast tool cannot afford to crash on a stray
+// env, hence it degrades instead. Both are intentional for their context.
+function parseContextWindowOverride(name: string): number | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 10_000 || n > 2_000_000) {
+    throw new Error(`Invalid ${name} "${raw}" — must be an integer between 10000 and 2000000.`);
+  }
+  return n;
+}
+
+/**
+ * Per-participant fidelity window, exposed so the per-critic chunk-stream driver
+ * (index.ts) can chunk the diff to EACH critic's own window instead of clamping
+ * every critic to the global minimum. `id` is the native cli name or the custom
+ * client id; `window` is already capped by an explicit context-window-tokens
+ * override when the operator set one.
+ */
+export type ParticipantKind = 'native' | 'custom';
+export interface ParticipantFidelityWindow {
+  id: string;
+  kind: ParticipantKind;
+  window: number;
+}
+
+/**
+ * Convert a token window into a per-chunk char budget using the SAME headroom +
+ * chars-per-token math the governing-window path uses, so per-participant chunks
+ * and the legacy single-window chunks stay consistent. Shared by index.ts.
+ */
+export function charsForWindow(windowTokens: number, headroomPct: number): number {
+  const usableTokens = Math.floor(windowTokens * (1 - headroomPct / 100));
+  return Math.max(1000, usableTokens * CHARS_PER_TOKEN);
+}
+
+export function criticFidelityWindow(critic: FidelityCritic, resolvedModel: string): number {
+  const override = parseContextWindowOverride(FIDELITY_WINDOW_ENV[critic]);
+  if (override !== undefined) return override;
+
+  const normalizedModel = normalizeModelName(resolvedModel);
+  const modelWindow = Object.entries(MODEL_FIDELITY_WINDOWS[critic])
+    .find(([model]) => normalizeModelName(model) === normalizedModel)?.[1];
+  if (modelWindow !== undefined) return modelWindow;
+
+  const threshold = CRITIC_FIDELITY_THRESHOLDS[critic];
+  if (threshold !== undefined) return threshold;
+
+  // Conservative fallback for native critics whose verbatim-fidelity window is
+  // not known. Over-chunking is the safe failure; under-constraining loses data.
+  return CONSERVATIVE_FIDELITY_WINDOW_TOKENS;
+}
 
 function parseIntInput(name: string, fallback: string, min: number, max: number): number {
   const raw = core.getInput(name) || fallback;
@@ -317,6 +423,14 @@ export function readInputs(): ActionInputs {
   // EVERY participating custom client's window into the min (only runnable
   // clients are in customClaudeClients, so an unused window can't shrink it).
   const configuredWindow = parseIntInput('context-window-tokens', '200000', 10_000, 2_000_000);
+  // claude is always active (its OAuth token is required). 1M holds ONLY when
+  // BOTH the brain `model` and the `claudeCriticModel` carry [1m]; a diverged
+  // critic model without it genuinely gets ~200k via OAuth. Named so the legacy
+  // min-array and the structured per-participant list below can't drift.
+  const claudeFidelityWindow =
+    /\[1m\]/i.test(model) && /\[1m\]/i.test(claudeCriticModel)
+      ? CLAUDE_1M_WINDOW_TOKENS
+      : CONSERVATIVE_FIDELITY_WINDOW_TOKENS;
   const participantWindows = [configuredWindow];
   for (const c of customClaudeClients) {
     // Every client here is ACTIVE (runnable). A client that DECLARES a window
@@ -324,15 +438,15 @@ export function readInputs(): ActionInputs {
     // the (possibly raised) configured window — fold the conservative floor so a
     // 1M chunk can't silently overflow it. (Previously an omitted window was
     // skipped entirely, leaving exactly that overflow.)
-    participantWindows.push(c.contextWindow ?? CONSERVATIVE_WINDOW_TOKENS);
+    participantWindows.push(c.contextWindow ?? CONSERVATIVE_FIDELITY_WINDOW_TOKENS);
   }
   // Native critics (claude/codex/agy) ALSO bound each chunk: a chunk larger than
-  // a critic's real hard context window overflows it ("Prompt is too long").
-  // They have no contextWindow input like the routed clients, so they were
-  // invisible to this min — a raised context-window-tokens would silently
-  // overflow them. Fold each ACTIVE native critic's conservative hard window in
-  // (same rule as the custom clients: only a critic that actually runs constrains
-  // the min).
+  // a critic's usable hard or verbatim-fidelity window either overflows it
+  // ("Prompt is too long") or loses quote fidelity. They have no contextWindow
+  // input like the routed clients, so they were invisible to this min — a raised
+  // context-window-tokens could silently overrun them. Fold each ACTIVE native
+  // critic's usable window in (same rule as the custom clients: only a critic
+  // that actually runs constrains the min).
   //   claude: always active (its OAuth token is required). The brain reads every
   //           chunk on `model` and the critic reads it on `claudeCriticModel`, so
   //           1M holds ONLY when BOTH carry the [1m] suffix (opus-4.8 on Max/Team/
@@ -341,20 +455,77 @@ export function readInputs(): ActionInputs {
   //           and strips it to turn on the 1M beta context) — NOT a guess at
   //           Anthropic's model naming. A model without [1m] genuinely gets ~200k
   //           via OAuth, so the conservative fallback is correct, not fragile.
-  //   codex:  gpt-5.x-codex floor ~200k (conservative; some tiers run higher).
-  //   agy:    Gemini hard window 1M (its ~135k auto-compaction is a fidelity
-  //           limit, not an overflow, so it does not cap the chunk).
-  // The codex/agy floors key off INPUT PRESENCE, not whether the binary is
+  //   codex:  verbatim-fidelity window from env/model table, else conservative
+  //           ~200k (some tiers run higher).
+  //   agy:    verbatim-fidelity window from env/model table, else ~135k. This
+  //           tracks agy's auto-compaction threshold, NOT Gemini's 1M hard
+  //           context window, because chunks above it lose quote fidelity.
+  // The codex/agy windows key off INPUT PRESENCE, not whether the binary is
   // installed (readInputs runs before runPreflight, and agy isn't probed there).
   // An authed-but-not-installed critic therefore still constrains the window —
   // over-chunking, the SAFE direction. Under-constraining would overflow a critic
   // that IS installed, so presence-gating is intentional, not a missed check.
-  participantWindows.push(
-    /\[1m\]/i.test(model) && /\[1m\]/i.test(claudeCriticModel) ? WIDE_WINDOW_TOKENS : CONSERVATIVE_WINDOW_TOKENS,
-  );
-  if (core.getInput('codex-auth') || core.getInput('openai-api-key')) participantWindows.push(CONSERVATIVE_WINDOW_TOKENS);
-  if (core.getInput('agy-oauth-token')) participantWindows.push(WIDE_WINDOW_TOKENS);
+  participantWindows.push(claudeFidelityWindow);
+  if (core.getInput('codex-auth') || core.getInput('openai-api-key')) {
+    participantWindows.push(criticFidelityWindow('codex', DEFAULT_CODEX_MODEL));
+  }
+  if (core.getInput('agy-oauth-token')) {
+    participantWindows.push(criticFidelityWindow('agy', DEFAULT_AGY_MODEL));
+  }
   const contextWindowTokens = Math.min(...participantWindows);
+
+  // Structured per-participant fidelity windows for the per-critic chunk-stream
+  // driver (index.ts). Each ACTIVE participant reviews the whole diff chunked to
+  // ITS OWN window — claude/glm (~1M) in ~1 chunk (max cross-diff correlation,
+  // no redundant re-review), codex ≤272k, agy ≤135k (verbatim). This is both
+  // leaner (big critics stop re-reading the diff N times) and higher fidelity
+  // than clamping everyone to the global min. The context-window-tokens input is
+  // applied here as a CAP only when the operator EXPLICITLY set it (an unset
+  // input leaves each participant at its native window — the dogfood default);
+  // the legacy `contextWindowTokens` min above still folds the default floor for
+  // callers that consume the single-window path.
+  //
+  // CRITICAL: every participant is ALSO capped by the BRAIN window. The
+  // orchestrator brain (on `model`) reads EVERY stream's chunk and relays it to
+  // the critic as the roast `context`, so a chunk that fits the critic but not
+  // the brain trips "Prompt is too long" and silently drops that stream. The
+  // brain window keys off `model` alone (independent of the claude CRITIC model):
+  // 1M with [1m], else ~200k. Without this, a non-[1m] consumer's codex stream
+  // (272k) would overflow its ~200k brain — the exact regression the global-min
+  // never had (its min always folded claudeFidelityWindow ≤ the brain).
+  const brainFidelityWindow = /\[1m\]/i.test(model)
+    ? CLAUDE_1M_WINDOW_TOKENS
+    : CONSERVATIVE_FIDELITY_WINDOW_TOKENS;
+  const explicitWindowCap = core.getInput('context-window-tokens') ? configuredWindow : undefined;
+  const capWindow = (w: number): number => {
+    let capped = Math.min(w, brainFidelityWindow);
+    if (explicitWindowCap) capped = Math.min(capped, explicitWindowCap);
+    return capped;
+  };
+  const participantFidelityWindows: ParticipantFidelityWindow[] = [
+    { id: 'claude', kind: 'native', window: capWindow(claudeFidelityWindow) },
+  ];
+  if (core.getInput('codex-auth') || core.getInput('openai-api-key')) {
+    participantFidelityWindows.push({
+      id: 'codex',
+      kind: 'native',
+      window: capWindow(criticFidelityWindow('codex', DEFAULT_CODEX_MODEL)),
+    });
+  }
+  if (core.getInput('agy-oauth-token')) {
+    participantFidelityWindows.push({
+      id: 'agy',
+      kind: 'native',
+      window: capWindow(criticFidelityWindow('agy', DEFAULT_AGY_MODEL)),
+    });
+  }
+  for (const c of customClaudeClients) {
+    participantFidelityWindows.push({
+      id: c.id,
+      kind: 'custom',
+      window: capWindow(c.contextWindow ?? CONSERVATIVE_FIDELITY_WINDOW_TOKENS),
+    });
+  }
   // Default 15: a chunk may fill up to 85% of the governing window. Nominal
   // 15% understates the real free space — CHARS_PER_TOKEN=3 is a deliberate
   // underestimate (real diffs run ~3.5/tok), so a chunk's actual token count
@@ -400,6 +571,7 @@ export function readInputs(): ActionInputs {
     customClaudeContextWindow,
     customClaudeClients,
     contextWindowTokens,
+    participantFidelityWindows,
     contextHeadroomPct,
     maxChunkChars,
     chunkConcurrency,

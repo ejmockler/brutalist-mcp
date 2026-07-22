@@ -18,8 +18,14 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { run as runOrchestrator } from '@brutalist/orchestrator';
 import type { OrchestratorResult } from '@brutalist/orchestrator';
-import { chunkDiff, mergeResults, runWithConcurrency } from './chunk-diff.js';
+import { mergeResults, runWithConcurrency } from './chunk-diff.js';
 import { readInputs } from './inputs.js';
+import {
+  buildParticipantStreams,
+  collapseStreamsIfDiffFits,
+  planPasses,
+  type StreamPass,
+} from './streams.js';
 import { provisionCustomClaudeClient } from './custom-claude.js';
 import { fetchPullRequestContext, getPullRequestRef } from './diff.js';
 import { resolveFindings } from './resolver.js';
@@ -29,8 +35,17 @@ import { runPreflight, assertPreflight } from './preflight.js';
 import { truncateDiff } from './truncate-diff.js';
 import { provisionCredentials, detectRefreshRotation, extractOauthSecrets } from './oauth-provisioning.js';
 
+type NativeCritic = 'claude' | 'codex' | 'agy';
+const NATIVE_CRITICS: readonly NativeCritic[] = Object.freeze(['claude', 'codex', 'agy']);
+
 async function main(): Promise<void> {
   const inputs = readInputs();
+  // Reads the `native-critic` input / BRUTALIST_NATIVE_CRITIC env; ActionInputs
+  // has no nativeCritic field, so pass nothing (the optional arg is for tests).
+  const nativeCritic = readNativeCriticSelection();
+  if (nativeCritic) {
+    core.info(`Native critic selection: running only ${nativeCritic}.`);
+  }
 
   // Preflight: fail fast with an actionable error if `brutalist-mcp` or
   // `claude` aren't on PATH (these are hard requirements). Warn — but
@@ -106,27 +121,48 @@ async function main(): Promise<void> {
     `Working directory: ${inputs.workingDirectory}`,
   ];
 
-  // Context-window-aware chunking. A diff larger than the usable context
-  // window can't be reviewed in one pass (the brain + every critic would hit
-  // "Prompt is too long"), so split it to fit and review each chunk with an
-  // independent orchestrator run, then merge into one review.
-  const { chunks, truncatedHunks } = chunkDiff(truncated.text, inputs.maxChunkChars);
-  if (truncatedHunks > 0) {
-    core.warning(
-      `${truncatedHunks} oversized hunk(s) were truncated to fit the per-chunk budget (${inputs.maxChunkChars} chars); findings on truncated regions may be missed.`,
-    );
-  }
+  // Per-participant fidelity streams (see streams.ts): each ACTIVE critic
+  // reviews the WHOLE diff chunked to ITS OWN fidelity window (claude/glm ~1
+  // chunk = max cross-diff correlation; agy ≤135k = verbatim), isolated
+  // mechanically server-side (BRUTALIST_FORCE_CLIS) so a stream never drags in
+  // another critic or an env-default custom client.
+  //
+  // TRADEOFF (honest): this is fewer CRITIC invocations and higher fidelity, and
+  // for a diff that fits the smallest window it collapses to the old single pass.
+  // But for a LARGE diff (uncollapsed) it runs Σ_critic ⌈diff/criticWindow⌉
+  // separate orchestrator passes — each a full brain (`model`) re-reading its
+  // chunk — so BRAIN-side token cost and the count of concurrent brain sessions
+  // go UP vs the old all-critics-per-chunk loop. `chunk-concurrency` bounds
+  // PASSES (brain panels), not total critic subprocesses. A rate-limited pass is
+  // dropped (core.warning) and the merge proceeds over survivors, so an entire
+  // critic's stream can thin out while the review still reports success — an
+  // accepted cost for an advisory, non-gating review.
+  const streams = collapseStreamsIfDiffFits(
+    buildParticipantStreams(inputs.participantFidelityWindows, nativeCritic, inputs.contextWindowTokens),
+    truncated.text.length,
+    inputs.contextHeadroomPct,
+  );
+  const { passes, summaries, warnings } = planPasses(
+    streams,
+    truncated.text,
+    inputs.contextHeadroomPct,
+  );
+  for (const w of warnings) core.warning(w);
   core.info(
-    `Diff split into ${chunks.length} chunk(s) of ≤${inputs.maxChunkChars} chars ` +
-      `(window ${inputs.contextWindowTokens} tok − ${inputs.contextHeadroomPct}% headroom). Brain model: ${inputs.model}.`,
+    `Per-participant streams [${summaries.join(', ')}]. ` +
+      `Total ${passes.length} review pass(es) — each critic reviews the whole diff at its own ` +
+      `fidelity window. Brain model: ${inputs.model}.`,
   );
 
-  const runChunk = (chunk: string, i: number): Promise<OrchestratorResult> =>
-    runOrchestrator({
+  const runPass = (pass: StreamPass): Promise<OrchestratorResult> => {
+    const orchestratorOptions: Parameters<typeof runOrchestrator>[0] & {
+      isolateParticipant?: NativeCritic | 'custom';
+    } = {
       repoPath,
       focus:
         `Pull request #${pull.number} diff ` +
-        `(${chunks.length > 1 ? `chunk ${i + 1}/${chunks.length}, ` : ''}commentable lines only):\n\n${chunk}`,
+        `(${pass.stream.label} stream${pass.n > 1 ? `, chunk ${pass.i + 1}/${pass.n}` : ''}, ` +
+        `commentable lines only):\n\n${pass.chunk}`,
       contextHints,
       oauthToken: inputs.anthropicOauthToken,
       // Pin the claude executable from the preflight result so the SDK
@@ -135,17 +171,23 @@ async function main(): Promise<void> {
       claudeCodeExecutablePath: preflight.claude.resolvedPath,
       model: inputs.model,
       knownClientIds,
-    });
+      // Mechanical per-stream isolation; undefined only for the defensive
+      // all-critics fallback stream.
+      ...(pass.stream.tag ? { isolateParticipant: pass.stream.tag } : {}),
+    };
+    return runOrchestrator(orchestratorOptions);
+  };
 
   let result: OrchestratorResult;
-  if (chunks.length <= 1) {
+  if (passes.length <= 1) {
     core.info('Invoking @brutalist/orchestrator...');
-    result = await runChunk(chunks[0] ?? truncated.text, 0);
+    result = await runPass(passes[0] ?? { stream: streams[0], chunk: truncated.text, i: 0, n: 1 });
   } else {
     core.info(
-      `Invoking @brutalist/orchestrator across ${chunks.length} chunks (concurrency ${inputs.chunkConcurrency})...`,
+      `Invoking @brutalist/orchestrator across ${passes.length} per-participant pass(es) ` +
+        `(concurrency ${inputs.chunkConcurrency})...`,
     );
-    const settled = await runWithConcurrency(chunks, inputs.chunkConcurrency, runChunk);
+    const settled = await runWithConcurrency(passes, inputs.chunkConcurrency, runPass);
     const ok: OrchestratorResult[] = [];
     let failedCount = 0;
     for (const r of settled) {
@@ -153,18 +195,22 @@ async function main(): Promise<void> {
         ok.push(r.value);
       } else {
         failedCount++;
+        const pass = passes[r.index];
+        const where = pass
+          ? `${pass.stream.label}${pass.n > 1 ? ` chunk ${pass.i + 1}/${pass.n}` : ''}`
+          : `pass ${r.index + 1}`;
         const msg = r.error instanceof Error ? r.error.message : String(r.error);
-        core.warning(`Chunk ${r.index + 1}/${chunks.length} review failed: ${msg}`);
+        core.warning(`Review pass ${r.index + 1}/${passes.length} (${where}) failed: ${msg}`);
       }
     }
     if (ok.length === 0) {
-      // Every chunk failed — surface a hard failure rather than an empty review.
+      // Every pass failed — surface a hard failure rather than an empty review.
       const firstErr = settled.find((r) => !r.ok) as { error: unknown } | undefined;
       const e = firstErr?.error;
-      throw e instanceof Error ? e : new Error(`All ${chunks.length} chunk reviews failed.`);
+      throw e instanceof Error ? e : new Error(`All ${passes.length} review passes failed.`);
     }
     result = mergeResults(ok);
-    core.info(`Merged ${ok.length}/${chunks.length} chunk reviews (${failedCount} failed).`);
+    core.info(`Merged ${ok.length}/${passes.length} per-participant review pass(es) (${failedCount} failed).`);
   }
   core.info(
     `Orchestrator returned ${result.findings.length} findings + ${result.outOfDiff.length} out-of-diff. perCli=${result.perCli.length}.`,
@@ -338,6 +384,19 @@ export function redactSecrets(message: string, secrets: readonly string[]): stri
     out = out.split(secret).join('[REDACTED]');
   }
   return out;
+}
+
+export function readNativeCriticSelection(inputs: { nativeCritic?: string } = {}): NativeCritic | undefined {
+  const raw = (inputs.nativeCritic || core.getInput('native-critic') || process.env.BRUTALIST_NATIVE_CRITIC || '')
+    .trim()
+    .toLowerCase();
+  if (!raw) return undefined;
+  if (!NATIVE_CRITICS.includes(raw as NativeCritic)) {
+    throw new Error(
+      `Invalid native-critic "${raw}". Valid: ${NATIVE_CRITICS.join(', ')}.`,
+    );
+  }
+  return raw as NativeCritic;
 }
 
 /**

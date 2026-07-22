@@ -24,7 +24,7 @@ import { constants as fsConstants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import type { RunOptions, OrchestratorResult } from './schemas.js';
+import type { RunOptions, OrchestratorResult, CliName } from './schemas.js';
 import { OrchestratorResultSchema } from './schemas.js';
 import { ORCHESTRATOR_SYSTEM_PROMPT } from './system-prompt.js';
 import { makeClientIdNormalizer, dedupePerCli } from './attribution.js';
@@ -36,6 +36,23 @@ const BRUTALIST_TOOL_PREFIX = `mcp__${BRUTALIST_MCP_SERVER_NAME}__` as const;
 const ORCHESTRATOR_TOOL_PREFIX = `mcp__${ORCHESTRATOR_MCP_SERVER_NAME}__` as const;
 
 const SUBMIT_FINDINGS_TOOL_NAME = 'submit_findings';
+const NATIVE_CLIS: readonly CliName[] = Object.freeze(['claude', 'codex', 'agy']);
+
+type OrchestratorRunOptions = RunOptions & {
+  /**
+   * Optional single native brutalist critic to run for this review pass. Omit
+   * to keep the existing behavior: all available native critics participate.
+   */
+  clis?: readonly CliName[];
+  /**
+   * Per-participant chunk-stream isolation. A native critic name pins the pass
+   * to that native (and suppresses env-default custom clients); the literal
+   * `'custom'` pins it to the custom Claude-routed clients only (no natives).
+   * Mechanically enforced server-side via BRUTALIST_FORCE_CLIS regardless of the
+   * brain's args. Takes precedence over `clis` when both are set.
+   */
+  isolateParticipant?: CliName | 'custom';
+};
 
 // Allowlist of brutalist tools the orchestrator may call. The debate
 // tool is intentionally excluded — debate is wrong-shaped for breadth
@@ -133,13 +150,27 @@ function focusIsUnifiedDiff(focus: string | undefined): focus is string {
   return !!focus && (/diff --git /.test(focus) || /(^|\n)@@ .+ @@/.test(focus));
 }
 
-export async function run(options: RunOptions): Promise<OrchestratorResult> {
+export async function run(options: OrchestratorRunOptions): Promise<OrchestratorResult> {
   // Closure-scoped capture for the structured output. The submit_findings
   // tool's handler writes here; run() reads after query() drains.
   let captured: OrchestratorResult | undefined;
   let submitCount = 0;
   const normalizeClientId = makeClientIdNormalizer(options.knownClientIds);
   let normalizedClientIds = 0;
+  // Per-participant isolation (N4). An explicit isolateParticipant wins; else
+  // fall back to the single-native selection from clis[]. `forceClis` is the
+  // value the server enforces via BRUTALIST_FORCE_CLIS. For brain-prompt
+  // coherence a native isolate reads exactly like a single-native selection;
+  // 'custom' gets its own instruction.
+  const isolate = options.isolateParticipant;
+  // isolateParticipant takes precedence over clis[] (per its documented
+  // contract), so skip the single-native derivation — and its multi-clis throw —
+  // whenever an isolate is set. Only clis[] governs when no isolate is given.
+  const nativeCritic = isolate ? undefined : getSingleNativeCritic(options.clis);
+  const forceClis: CliName | 'custom' | undefined = isolate ?? nativeCritic;
+  const customOnly = isolate === 'custom';
+  const promptNativeCritic: CliName | undefined =
+    nativeCritic ?? (isolate && isolate !== 'custom' ? isolate : undefined);
 
   // Path to the temp file holding the PR diff, when one is written (see
   // SAFE_ENV_DIFF_BYTES). Cleaned up in the query finally regardless of
@@ -331,6 +362,11 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
       // overwrite any pre-existing value with `undefined`.
       ...(process.env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY } : {}),
       ...(process.env.OPENAI_API_KEY ? { OPENAI_API_KEY: process.env.OPENAI_API_KEY } : {}),
+      // Mechanical participant isolation for every roast call made by the
+      // brain, including pagination follow-ups that omit `clis`. A native name
+      // pins to that native (+ drops env-default customs); 'custom' pins to the
+      // custom clients only.
+      ...(forceClis ? { BRUTALIST_FORCE_CLIS: forceClis } : {}),
       // Deterministic diff scoping: hand brutalist-mcp the PR diff directly
       // rather than relying on the brain to relay it verbatim in the roast
       // `context` arg. constructUserPrompt folds this in so every critic —
@@ -394,7 +430,7 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
       'WebSearch',
     ],
     disallowedTools: [...DENIED_BRUTALIST_TOOLS],
-    systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
+    systemPrompt: buildSystemPrompt(promptNativeCritic, customOnly),
     // Hard cap on agent turns — the seatbelt against a confused agent looping
     // until the GitHub Actions job timeout (6h default) before failing. The
     // system prompt's single-roast rule remains the primary budget; this is the
@@ -419,7 +455,7 @@ export async function run(options: RunOptions): Promise<OrchestratorResult> {
       : {}),
   };
 
-  const userPrompt = buildUserPrompt(options);
+  const userPrompt = buildUserPrompt(options, promptNativeCritic, customOnly);
 
   // Drain the message stream. We only consult `captured` afterwards;
   // intermediate messages are not retained (memory + downstream parsing
@@ -512,7 +548,56 @@ function filterUndefined(env: NodeJS.ProcessEnv): Record<string, string> {
   return out;
 }
 
-function buildUserPrompt(options: RunOptions): string {
+function getSingleNativeCritic(clis: readonly CliName[] | undefined): CliName | undefined {
+  if (!clis) return undefined;
+  if (clis.length !== 1) {
+    throw new Error(
+      `run({ clis }) currently supports exactly one native critic per review pass; got ${clis.length}.`,
+    );
+  }
+  const [cli] = clis;
+  if (!NATIVE_CLIS.includes(cli)) {
+    throw new Error(
+      `Invalid native critic "${String(cli)}"; expected one of ${NATIVE_CLIS.join(', ')}.`,
+    );
+  }
+  return cli;
+}
+
+function buildSystemPrompt(nativeCritic: CliName | undefined, customOnly = false): string {
+  if (customOnly) {
+    return (
+      ORCHESTRATOR_SYSTEM_PROMPT +
+      `\n\n## Custom-Client-Only Mode\n\n` +
+      `This review pass is pinned to the custom Claude-routed client(s) ONLY. ` +
+      `Your SINGLE initial \`roast\` call MUST include \`clis: []\` (an explicit ` +
+      `empty array — this runs zero native critics and lets the configured custom ` +
+      `clients run), and pagination follow-up \`roast\` calls must preserve ` +
+      `\`clis: []\`. Do not omit \`clis\`; omitting it runs all native critics. ` +
+      `Do not name any native critic. Parse and submit only the custom client's ` +
+      `per-CLI section.`
+    );
+  }
+  if (!nativeCritic) return ORCHESTRATOR_SYSTEM_PROMPT;
+
+  const excluded = NATIVE_CLIS.filter((cli) => cli !== nativeCritic);
+  return (
+    ORCHESTRATOR_SYSTEM_PROMPT +
+    `\n\n## Single Native Critic Mode\n\n` +
+    `This review pass is pinned to the \`${nativeCritic}\` native critic. ` +
+    `Your SINGLE initial \`roast\` call MUST include \`clis: ["${nativeCritic}"]\`, ` +
+    `and pagination follow-up \`roast\` calls must preserve the same ` +
+    `\`clis: ["${nativeCritic}"]\` selection. Do not omit \`clis\`; omitting it ` +
+    `runs all available native critics. Do not include ${excluded.map((cli) => `\`${cli}\``).join(' or ')}. ` +
+    `Parse and submit only the \`${nativeCritic}\` per-CLI section.`
+  );
+}
+
+function buildUserPrompt(
+  options: OrchestratorRunOptions,
+  nativeCritic: CliName | undefined,
+  customOnly = false,
+): string {
   // The system prompt (ORCHESTRATOR_SYSTEM_PROMPT) carries the workflow
   // contract. The user prompt only supplies the per-run inputs.
   const parts: string[] = [];
@@ -522,6 +607,19 @@ function buildUserPrompt(options: RunOptions): string {
   }
   if (options.contextHints && options.contextHints.length > 0) {
     parts.push(`\nContext hints:\n${options.contextHints.map((h) => `- ${h}`).join('\n')}`);
+  }
+  if (customOnly) {
+    parts.push(
+      `\nParticipant selection: run ONLY the custom Claude-routed client(s). ` +
+        `The single \`codebase\` roast call must pass \`clis: []\` (explicit empty ` +
+        `array); do not run any native critic.`,
+    );
+  } else if (nativeCritic) {
+    parts.push(
+      `\nNative critic selection: run ONLY \`${nativeCritic}\`. ` +
+        `The single \`codebase\` roast call must pass \`clis: ["${nativeCritic}"]\`; ` +
+        `do not run the other native critics.`,
+    );
   }
   parts.push(
     '\nProceed per the workflow. Run a SINGLE `codebase` roast (it already covers' +

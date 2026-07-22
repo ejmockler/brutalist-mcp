@@ -117,6 +117,17 @@ describe('CLI Provider Command Construction', () => {
       expect(result.args).not.toContain('--print');
     });
 
+    it('isolates the critic from the target repo\'s hooks via --setting-sources user', async () => {
+      // The claude critic IS Claude Code, so without this it inherits the target
+      // repo's .claude/settings.json hooks — a looping SubagentStop "evaluator"
+      // there hangs the critic (~25 min). Dropping project+local sources isolates
+      // it while keeping OAuth + explicit flags. Do NOT remove without a replacement.
+      const result = await buildCommand('claude');
+      const idx = result.args.indexOf('--setting-sources');
+      expect(idx).toBeGreaterThan(-1);
+      expect(result.args[idx + 1]).toBe('user');
+    });
+
     it('should include streaming args (--output-format stream-json --verbose)', async () => {
       const result = await buildCommand('claude');
       expect(result.args).toContain('--output-format');

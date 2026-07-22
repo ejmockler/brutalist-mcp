@@ -137,8 +137,9 @@ inputs:
       BRUTALIST_CLAUDE_CLIENTS. Every client gets an isolated config dir
       (~/.brutalist/claude-clients/<id>, mode 0700), is isolated from native
       creds, and suppresses requested MCP by default. Bash/WebFetch/WebSearch
-      remain available in both modes. The diff chunker
-      sizes chunks to the SMALLEST participant contextWindow. Example:
+      remain available in both modes. Each participant reviews the whole diff
+      chunked to its OWN contextWindow (a per-participant fidelity stream, also
+      capped by the brain window); a small client shrinks only its own stream. Example:
       custom-claude-clients: |
         [
           { "id": "glm", "baseUrl": "https://glm.example/v1",
@@ -149,26 +150,27 @@ inputs:
   custom-claude-context-window:
     description: |
       Context window (tokens) of the custom Claude-routed critic model, e.g.
-      128000 for GLM-4.5. The diff chunker sizes chunks to the SMALLEST
-      participant window, so set this when the routed model's window is below
-      context-window-tokens to avoid 'prompt too long'. If OMITTED, an active
-      routed critic is treated as the conservative 200000 floor — so a routed
-      critic with a genuinely LARGER window (e.g. 1M) MUST declare it here, or
-      chunks are capped at 200000 (safe over-chunking, not an overflow).
+      128000 for GLM-4.5. Each critic reviews the whole diff chunked to its OWN
+      window, so this sizes the routed critic's own fidelity stream (further
+      capped by the brain window — 1M with [1m] on `model`, else ~200k). If
+      OMITTED, an active routed critic is treated as the conservative 200000
+      floor — so a routed critic with a genuinely LARGER window (e.g. 1M) MUST
+      declare it here, or its stream is capped at 200000 (safe over-chunking,
+      not an overflow).
     required: false
   context-window-tokens:
     description: |
-      Governing context window (in tokens) used to size diff chunks. Set this
-      to the SMALLEST context window among the participating models so every
-      critic can review every chunk. opus-4.8's 1M window IS usable via Claude
-      Code OAuth on Max/Team/Enterprise when the model carries the [1m] suffix
-      (e.g. claude-opus-4-8[1m]); without [1m], or on Pro, claude is ~200K. The
-      chunker also folds each active native critic's hard window (claude, codex
-      ~200K, agy 1M) into this min, so a raised value can't exceed the smallest
-      participating critic — codex caps a claude+codex+agy panel at ~200K.
-      Default: 200000.
+      OPTIONAL manual cap (tokens) on every critic's per-participant chunk
+      window. By default each active critic reviews the whole diff chunked to
+      its OWN fidelity window — claude ~1M with the [1m] suffix (e.g.
+      claude-opus-4-8[1m]) on Max/Team/Enterprise OAuth, else ~200K; codex 272K;
+      agy ~135K; routed clients at their declared contextWindow — each also
+      capped by the brain window (1M with [1m] on `model`, else ~200K, since the
+      brain reads every chunk). Set this ONLY to force a SMALLER window across
+      every critic; when UNSET (no default), each critic uses its own window.
+      MUST be left unset for per-participant fidelity — a default here would be
+      injected by the runner and silently clamp every critic to it.
     required: false
-    default: '200000'
   context-headroom-pct:
     description: |
       Percentage of the context window reserved as working room for the agent

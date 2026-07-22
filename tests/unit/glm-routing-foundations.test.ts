@@ -35,6 +35,7 @@ import {
   CLIAgentOptions,
 } from '../../src/cli-agents.js';
 import { promises as fs } from 'fs';
+import { CONTEXT_TRUNCATION_MARKER } from '../../src/fidelity-window.js';
 import { buildClaudeProviderEnv, classifyClaudeErrorReason } from '../../src/cli-adapters/claude-adapter.js';
 import { getProvider } from '../../src/cli-adapters/index.js';
 import { BASE_ROAST_SCHEMA } from '../../src/types/tool-config.js';
@@ -376,6 +377,57 @@ describe('executeBrutalistAnalysis spec assembly (C1/C4/D1)', () => {
       clients: [{ id: 'extra', provider: 'claude' }],
     });
     expect(ranIds(spy)).toEqual(['agy', 'claude', 'codex', 'extra']);
+  });
+
+  it('defaults to all available native critics when clis and BRUTALIST_FORCE_CLIS are omitted', async () => {
+    const previous = process.env.BRUTALIST_FORCE_CLIS;
+    delete process.env.BRUTALIST_FORCE_CLIS;
+    try {
+      const o = orch();
+      const spy = stubExec(o);
+
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec');
+
+      expect(ranIds(spy)).toEqual(['agy', 'claude', 'codex']);
+    } finally {
+      if (previous === undefined) delete process.env.BRUTALIST_FORCE_CLIS;
+      else process.env.BRUTALIST_FORCE_CLIS = previous;
+    }
+  });
+
+  it('N4: BRUTALIST_FORCE_CLIS=<native> isolates that native and DROPS every custom/other spec (per-participant stream)', async () => {
+    const previous = process.env.BRUTALIST_FORCE_CLIS;
+    process.env.BRUTALIST_FORCE_CLIS = 'agy';
+    try {
+      const o = orch();
+      const spy = stubExec(o);
+      // A custom client rides along (explicit here; env-default GLM lands in the
+      // SAME dedupedSpecs via parseDefaultClientsFromEnv, so the filter drops it
+      // identically). claude + codex + glm must all be dropped — only agy runs.
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', undefined, {
+        clients: [{ id: 'glm', provider: 'claude' }],
+      });
+      expect(ranIds(spy)).toEqual(['agy']);
+    } finally {
+      if (previous === undefined) delete process.env.BRUTALIST_FORCE_CLIS;
+      else process.env.BRUTALIST_FORCE_CLIS = previous;
+    }
+  });
+
+  it('N4: BRUTALIST_FORCE_CLIS=custom isolates the custom client(s) and DROPS all native critics', async () => {
+    const previous = process.env.BRUTALIST_FORCE_CLIS;
+    process.env.BRUTALIST_FORCE_CLIS = 'custom';
+    try {
+      const o = orch();
+      const spy = stubExec(o);
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', undefined, {
+        clients: [{ id: 'glm', provider: 'claude' }],
+      });
+      expect(ranIds(spy)).toEqual(['glm']);
+    } finally {
+      if (previous === undefined) delete process.env.BRUTALIST_FORCE_CLIS;
+      else process.env.BRUTALIST_FORCE_CLIS = previous;
+    }
   });
 
   it('C1: clis:[] is the explicit override hatch — only the named clients run', async () => {
@@ -727,10 +779,69 @@ describe('routed config-dir provisioning + pre-flight liveness', () => {
     const spy = stubExec(o);
     // Resolves (does not throw) despite the provisioning failure.
     const results = await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', undefined, {
-      clients: [{ id: 'glm', provider: 'claude', baseUrl: 'https://glm.x', authToken: 't' }],
+      clients: [{ id: 'glm', provider: 'claude' }],
     });
     // Native critics still ran.
     expect(ranIds(spy)).toEqual(expect.arrayContaining(['agy', 'claude', 'codex']));
     expect(results.filter((r) => r.success).length).toBeGreaterThanOrEqual(3);
+  });
+
+  describe('N5: per-critic context fit (raw roast)', () => {
+    // executeSingleCLI(cli, userPrompt, systemPromptSpec, options) — a[1] is the
+    // per-critic prompt, a[3].activeClient.id the critic.
+    const promptFor = (spy: any, id: string): string =>
+      spy.mock.calls.find((c: any[]) => c[3]?.activeClient?.id === id)?.[1] ?? '';
+    // ~450k chars: over agy's ~344k budget (135k window), under claude's ~510k
+    // (200k) and codex's ~694k (272k).
+    const bigContext = `diff --git a/big.txt b/big.txt\n@@ -1 +1 @@\n+${'x'.repeat(450_000)}\nTAIL_SENTINEL`;
+
+    afterEach(() => {
+      delete process.env.BRUTALIST_FORCE_CLIS;
+      delete process.env.BRUTALIST_PR_DIFF;
+      delete process.env.BRUTALIST_PR_DIFF_FILE;
+    });
+
+    it('trims an oversized context to the SMALL critic (agy) while big critics keep it verbatim', async () => {
+      const o = orch();
+      const spy = stubExec(o);
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', bigContext);
+      expect(promptFor(spy, 'agy')).toContain(CONTEXT_TRUNCATION_MARKER);
+      expect(promptFor(spy, 'agy')).not.toContain('TAIL_SENTINEL');
+      expect(promptFor(spy, 'claude')).toContain('TAIL_SENTINEL');
+      expect(promptFor(spy, 'claude')).not.toContain(CONTEXT_TRUNCATION_MARKER);
+      expect(promptFor(spy, 'codex')).toContain('TAIL_SENTINEL');
+    });
+
+    it('passes a context that fits every window verbatim to ALL critics (no-op)', async () => {
+      const o = orch();
+      const spy = stubExec(o);
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', 'short context TAIL_SENTINEL');
+      for (const id of ['agy', 'claude', 'codex']) {
+        expect(promptFor(spy, id)).toContain('TAIL_SENTINEL');
+        expect(promptFor(spy, id)).not.toContain(CONTEXT_TRUNCATION_MARKER);
+      }
+    });
+
+    it('BRUTALIST_FORCE_CLIS short-circuits the fit — the isolated critic gets the context VERBATIM (action already chunked)', async () => {
+      process.env.BRUTALIST_FORCE_CLIS = 'agy';
+      const o = orch();
+      const spy = stubExec(o);
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', bigContext);
+      expect(ranIds(spy)).toEqual(['agy']);
+      expect(promptFor(spy, 'agy')).toContain('TAIL_SENTINEL');
+      expect(promptFor(spy, 'agy')).not.toContain(CONTEXT_TRUNCATION_MARKER);
+    });
+
+    it('an injected diff (BRUTALIST_PR_DIFF) short-circuits the fit too — the COLLAPSED action pass (no FORCE_CLIS) does not double-trim', async () => {
+      // The action's collapse-if-fits path runs all critics with tag=undefined
+      // (no FORCE_CLIS) but still injects the diff, which it already sized.
+      process.env.BRUTALIST_PR_DIFF = 'diff --git a/x b/x\n@@ -1 +1 @@\n+x';
+      const o = orch();
+      const spy = stubExec(o);
+      await o.executeBrutalistAnalysis('code' as any, 'content', 'spec', bigContext);
+      // agy would normally trim a 450k context, but the action already sized it.
+      expect(promptFor(spy, 'agy')).toContain('TAIL_SENTINEL');
+      expect(promptFor(spy, 'agy')).not.toContain(CONTEXT_TRUNCATION_MARKER);
+    });
   });
 });

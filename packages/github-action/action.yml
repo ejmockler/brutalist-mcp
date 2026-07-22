@@ -137,9 +137,10 @@ inputs:
       BRUTALIST_CLAUDE_CLIENTS. Every client gets an isolated config dir
       (~/.brutalist/claude-clients/<id>, mode 0700), is isolated from native
       creds, and suppresses requested MCP by default. Bash/WebFetch/WebSearch
-      remain available in both modes. Each participant reviews the whole diff
-      chunked to its OWN contextWindow (a per-participant fidelity stream, also
-      capped by the brain window); a small client shrinks only its own stream. Example:
+      remain available in both modes. Native critics each chunk to their own
+      fidelity window (capped by the brain window); the custom clients run as ONE
+      stream sized to the SMALLEST of their contextWindows — a single custom
+      client effectively gets its own, multiple share one to avoid overflow. Example:
       custom-claude-clients: |
         [
           { "id": "glm", "baseUrl": "https://glm.example/v1",

@@ -14,7 +14,7 @@ export type ExpertiseLevel = 'junior' | 'mid' | 'senior' | 'principal' | 'archit
 export interface ModelPreferences {
   claude?: string;
   codex?: string;
-  /** agy --print is hard-pinned to Gemini 3.5 Flash (Medium); field reserved for future use. */
+  /** Agy model ID or label, forwarded via its native --model flag when supplied. */
   agy?: string;
 }
 

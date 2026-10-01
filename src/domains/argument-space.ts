@@ -37,7 +37,7 @@ export const BASE_ARGUMENTS = z.object({
     claude: z.string().optional(),
     codex: z.string().optional(),
     agy: z.string().optional()
-  }).optional().describe("Specific models per agent (agy field reserved — Flash-pinned)"),
+  }).optional().describe("Per-CLI model overrides. Agy honors its native --model flag; Codex overrides require BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true."),
 
   clis: z.array(z.enum(['codex', 'claude', 'agy'])).min(1).max(3).optional()
     .describe("Subset of critics to run."),

@@ -47,7 +47,7 @@ export const BASE_ROAST_SCHEMA = {
   models: z.object({
     claude: z.string().optional().describe("Any Claude model (e.g. opus, sonnet, haiku, or full ID). Omit for CLI default."),
     codex: z.string().optional().describe("Codex override. Ignored unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true; omit for Codex CLI configured/default model."),
-    agy: z.string().optional().describe("Agy model label, passed to agy's native --model flag (1.0.10+). Supported labels: \"Gemini 3.5 Flash (High|Medium)\" (always available), \"Gemini 3.1 Pro (High|Low)\", \"Claude Sonnet 4.6 (Thinking)\", \"Claude Opus 4.6 (Thinking)\", \"GPT-OSS 120B (Medium)\" (Pro/Claude/GPT-OSS tiers require Antigravity entitlement). Unknown labels are rejected by agy at runtime.")
+    agy: z.string().optional().describe("Agy model ID or label, passed to the native --model flag. Run agy models for choices available to your account. Omit for Agy CLI default.")
   }).optional().describe("Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Agy honors the model label via its native --model flag (1.0.10+). Omit to use each CLI's configured default."),
   clients: z.array(z.object({
     id: z.string().min(1).max(80).describe("Stable display id for this CLI client, e.g. claude-native or glm."),

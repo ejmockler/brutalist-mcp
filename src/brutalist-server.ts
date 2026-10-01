@@ -652,7 +652,7 @@ export class BrutalistServer {
           roster += "## CLI Agent Capabilities\n";
           roster += "**Claude Code** - Advanced analysis with direct system prompt injection\n";
           roster += "**Codex** - Secure execution with embedded brutal prompts\n";
-          roster += "**Antigravity (agy)** - Gemini 3.5 Flash-tier critic via Google's gemini-cli successor (one-time interactive `agy \"hi\"` auth required locally; AGY_OAUTH_TOKEN GH secret in CI). Slower per call (~30-60s); use as the rapid-pattern-scan voice alongside claude+codex.\n\n";
+          roster += "**Antigravity (agy)** - Uses its configured/default model unless models.agy is supplied. Run agy models for available IDs and labels; authenticate interactively with agy before running reviews.\n\n";
 
           // Add CLI context information
           const cliContext = await this.cliOrchestrator.detectCLIContext();

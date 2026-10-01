@@ -1160,11 +1160,8 @@ export class CLIAgentOrchestrator {
       return preferredCLI;
     }
 
-    // 2. Smart selection based on analysis type. Agy is always LAST in
-    // priority order: it's 2-4× slower per call than claude/codex
-    // (30-60s vs 5-25s) and Flash-pinned, so it's only auto-selected
-    // when the others are unavailable. Callers who explicitly pass
-    // `preferredCLI: 'agy'` get it regardless (handled at step 1).
+    // 2. Legacy single-critic selection uses the priority order below.
+    // The roast panel runs all selected critics in parallel instead.
     const selectionRules: Record<string, ('claude' | 'codex' | 'agy')[]> = {
       'code': ['claude', 'codex', 'agy'],
       'architecture': ['claude', 'codex', 'agy'],

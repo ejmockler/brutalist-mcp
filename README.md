@@ -1,62 +1,47 @@
 # Brutalist MCP
 
-Multi-perspective code analysis using Claude Code, Codex, and Antigravity (`agy`) CLI agents.
+An MCP server that runs reviews through locally installed Claude Code, Codex, and Antigravity (`agy`) CLIs. A roast runs the selected critics in parallel and returns their responses together. A debate assigns opposing positions to two critics across multiple rounds.
 
-> **Antigravity model selection (checked October 2, 2026).** Agy supports native per-call `--model` selection; [agy #35](https://github.com/google-antigravity/antigravity-cli/issues/35) is closed. Brutalist passes a model only when `models.agy` is supplied; otherwise Agy selects its configured/default model. On this machine, Agy 1.2.14 selected `Gemini 3.8 Flash (High)` for the four most recent reviews. Run `agy models` for your account's current model IDs and labels. CLI defaults are not a promise to select the newest model.
+The CLI processes run on your machine; inference uses the services and credentials configured for each CLI. Findings are model output: check the cited files, commands, and sources before acting on them.
 
-Get direct, honest technical feedback on your code, architecture, and ideas before they reach production.
+## Install
 
-## What It Does
+Use Node.js 24 and at least one authenticated CLI. CI also tests Node.js 20.
 
-The Brutalist MCP connects your AI coding assistant to three different CLI agents (Claude, Codex, Antigravity), each providing independent analysis. This gives you multiple perspectives on:
+### 1. Install and sign in to a critic
 
-- Code quality and security vulnerabilities
-- Architecture decisions and scalability
-- Product ideas and technical feasibility
-- Research methodology and design flaws
+On macOS or Linux, install whichever CLIs you want to use:
 
-Real file-system access. Straightforward analysis. No sugar-coating.
-
-## Quick Start
-
-### Step 1: Install a CLI Agent
-
-You need at least one of these installed:
-
-macOS / Linux installation commands:
-
-```bash
+```sh
 # Claude Code
 curl -fsSL https://claude.ai/install.sh | bash
 
 # Codex
 npm install -g @openai/codex
 
-# Antigravity CLI (agy)
+# Antigravity CLI
 curl -fsSL https://antigravity.google/cli/install.sh | bash
 ```
 
-Launch the CLI you installed (`claude`, `codex`, or `agy`) and complete its sign-in flow before running a review. For other platforms, see the official [Claude Code](https://code.claude.com/docs/en/setup), [Codex](https://developers.openai.com/codex/cli/), and [Antigravity CLI](https://github.com/google-antigravity/antigravity-cli#installation) instructions.
+Launch `claude`, `codex`, or `agy` and complete sign-in. Brutalist's Agy adapter also requires `python3` on PATH and a POSIX environment; native Windows is unsupported, so use WSL there. For other platforms and installation options, use the official [Claude Code](https://code.claude.com/docs/en/setup), [Codex](https://developers.openai.com/codex/cli/), and [Antigravity CLI](https://github.com/google-antigravity/antigravity-cli#installation) instructions.
 
-Brutalist prefers `~/.local/bin/agy` when present to avoid the desktop IDE's launcher shadowing the CLI on PATH. Set `AGY_BIN` only if you need a different executable. Run `agy models` to list the model IDs available to your account.
+Brutalist prefers `~/.local/bin/agy` when it exists, avoiding the Antigravity desktop launcher's PATH collision. Set `AGY_BIN` to the executable's path if your CLI is elsewhere.
 
-### Step 2: Install the MCP Server
+### 2. Connect your MCP client
 
-Choose your IDE:
+**Claude Code** — user scope makes the server available across projects:
 
-**Claude Code:**
-```bash
-claude mcp add brutalist --scope user -- npx -y @brutalist/mcp@latest
+```sh
+claude mcp add --scope user brutalist -- npx -y @brutalist/mcp@latest
 ```
 
 **Codex:**
-```bash
+
+```sh
 codex mcp add brutalist -- npx -y @brutalist/mcp@latest
 ```
 
-**Codex tool timeout:** Codex defaults to a 60-second timeout per MCP tool call. Brutalist waits for the critics to finish, so longer reviews need a larger client timeout. `codex mcp add` has no dedicated timeout flag; persist the setting in `~/.codex/config.toml` after adding the server. See [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
-
-For a parallel roast using Brutalist's two-hour per-agent default, 9,000 seconds allows an additional 30 minutes for startup and response processing:
+Codex's default MCP tool timeout is 60 seconds. Persist a larger timeout in `~/.codex/config.toml`; `codex mcp add` has no dedicated timeout flag:
 
 ```toml
 [mcp_servers.brutalist]
@@ -65,10 +50,10 @@ args = ["-y", "@brutalist/mcp@latest"]
 tool_timeout_sec = 9000
 ```
 
-This changes the client timeout, not the critics' execution budget. Adjust it for your configured agent timeouts. Debates run multiple turns and can exceed this budget; allow for their rounds and retries.
+Brutalist waits for the critics to finish. A 9,000-second client timeout covers the default two-hour critic budget plus 30 minutes for startup and response processing. It is a suggested budget, not a minimum for every review. Increase it for debates, which run multiple turns and may retry. See [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
 
-**Cursor:**
-Add to `~/.cursor/mcp.json`:
+**Other MCP clients** — register a local stdio server with command `npx` and arguments `-y`, `@brutalist/mcp@latest`. For clients that use an `mcpServers` object:
+
 ```json
 {
   "mcpServers": {
@@ -80,292 +65,203 @@ Add to `~/.cursor/mcp.json`:
 }
 ```
 
-**VS Code / Cline:**
-```bash
-code --add-mcp '{"name":"brutalist","command":"npx","args":["-y","@brutalist/mcp@latest"]}'
-```
+Place this in your client's MCP configuration, not a shell. The same server can be used from Cursor, VS Code, or Devin Desktop (formerly Windsurf); configuration locations and formats belong to those clients.
 
-**Windsurf:**
-Add to `~/.codeium/windsurf/mcp_config.json`:
-```json
-{
-  "mcpServers": {
-    "brutalist": {
-      "command": "npx",
-      "args": ["-y", "@brutalist/mcp@latest"]
-    }
-  }
-}
-```
+`@latest` selects the current npm release when the server is launched; an already running process keeps its loaded version. Restart or reconnect the MCP server after an update. To fix the package version, replace `@latest` with a version such as `@1.18.10`.
 
-### Step 3: Verify Installation
+### 3. Check detection
 
-```bash
-# Check which CLI agents are available
-cli_agent_roster()
-```
-
-## Usage Examples
-
-### Analyze Your Codebase
-
-```bash
-# Analyze entire project
-roast_codebase "/path/to/your/project"
-
-# Analyze specific modules
-roast_codebase "/src/auth"
-roast_codebase "/src/api/handlers"
-```
-
-### Validate Ideas
-
-```bash
-# Evaluate a product concept
-roast_idea "A social network for developers to share code snippets"
-
-# Review technical decisions
-roast_idea "Migrating our monolith to microservices with Kubernetes"
-```
-
-### Review Architecture
-
-```bash
-# System architecture analysis
-roast_architecture "Microservices with event sourcing and CQRS"
-
-# Infrastructure design review
-roast_architecture """
-API Gateway → Load Balancer → 3 Node.js services → PostgreSQL
-Redis for caching, Docker containers on AWS ECS
-"""
-```
-
-### Security Analysis
-
-```bash
-# Authentication review
-roast_security "JWT tokens with user roles in localStorage"
-
-# API security check
-roast_security "GraphQL API with dynamic queries and no rate limiting"
-```
-
-### Compare Perspectives
-
-```bash
-# Get multiple viewpoints on technical decisions
-roast_cli_debate "Should we use TypeScript or Go for this API?"
-
-# Compare architecture approaches
-roast_cli_debate "Microservices vs Monolith for our e-commerce platform"
-```
-
-## How It Works
-
-This MCP server coordinates analysis from locally installed CLI agents:
-- **Claude Code CLI** - Code review and architectural analysis
-- **Codex CLI** - Security and technical implementation review
-- **Antigravity (`agy`) CLI** - Independent critique using Agy's configured/default model or an explicit per-call model
-
-Each agent runs locally with direct file-system access, providing independent perspectives on your code and design decisions. Agy runs an agent with tools and can produce scratch artifacts under `~/.gemini/antigravity-cli/scratch/`; the adapter passes `--sandbox`. Review time depends on the task and tool use: the four recent local Agy reviews took about 3–7 minutes.
-
-**Analysis time:** Up to 25 minutes for complex projects. Thorough analysis requires time to examine code patterns, dependencies, and architectural decisions.
-
-## Pagination for Large Results
-
-For analyses that exceed your IDE's token limit:
-
-```bash
-# Set chunk size for large codebases
-roast_codebase({targetPath: "/monorepo", limit: 20000})
-
-# Continue from cached output; omit resume
-roast_codebase({targetPath: "/monorepo", context_id: "abc123", offset: 20000, limit: 20000})
-
-# Use cursor-based navigation
-roast_codebase({targetPath: "/complex-system", context_id: "abc123", cursor: "offset:25000"})
-```
-
-Features:
-- Smart boundary detection (preserves paragraphs and sentences)
-- Token estimation (~4 chars = 1 token)
-- Progress indicators
-- Configurable chunk size (1K to 100K characters)
-- `resume: true` is only for new follow-up prompts and starts another agent run
+Ask your assistant to call **`cli_agent_roster`** with `{}`. It reports detected CLIs and model configuration. Detection does not prove that authentication, quota, or a particular model will work; confirm with a roast.
 
 ## Tools
 
-### Code & Architecture
-
-| Tool | Analyzes |
-|------|----------|
-| `roast_codebase` | Security vulnerabilities, performance issues, code quality |
-| `roast_file_structure` | Directory organization, naming conventions, structure |
-| `roast_dependencies` | Version conflicts, security vulnerabilities, compatibility |
-| `roast_git_history` | Commit quality, branching strategy, collaboration patterns |
-| `roast_test_coverage` | Test coverage, quality gaps, testing strategy |
-
-### Design & Planning
-
-| Tool | Analyzes |
-|------|----------|
-| `roast_idea` | Feasibility, market fit, implementation challenges |
-| `roast_architecture` | Scalability, cost, operational complexity |
-| `roast_research` | Methodology, reproducibility, statistical validity |
-| `roast_security` | Attack vectors, authentication, authorization |
-| `roast_product` | UX, adoption barriers, user needs |
-| `roast_infrastructure` | Reliability, scaling, operational overhead |
-| `roast_design` | Perceptual craft, typography, affordances (Playwright for live UIs) |
-| `roast_legal` | Authority, application, adversary, procedure, interpretation, risk |
-
-### Utilities
+These are MCP tools invoked by your assistant, not terminal commands. The server exposes four:
 
 | Tool | Purpose |
-|------|---------|
-| `roast` | **Unified tool** - use `domain` parameter to select analysis type |
-| `brutalist_discover` | Find the best tool for your intent using natural language |
-| `roast_cli_debate` | Multi-agent discussion from different perspectives |
-| `cli_agent_roster` | Show available CLI agents on your system |
+| --- | --- |
+| `roast` | Review a path and context using a selected domain. |
+| `roast_cli_debate` | Have two critics defend explicit opposing positions. |
+| `cli_agent_roster` | Report detected critics and model configuration. |
+| `brutalist_discover` | Suggest domains from an `intent` string. |
 
-> **Tip:** Use the unified `roast` tool with a domain parameter for a leaner schema, or use `brutalist_discover` to find the right tool based on your intent.
+Legacy names such as `roast_codebase` and `roast_security` are not registered tools. Use `roast` with `domain` instead.
 
-See [docs/pagination.md](docs/pagination.md) for detailed pagination documentation.
+### Roast a repository
 
-## Advanced Usage
+Call `roast` with:
 
-### Choose Specific CLI Agents
-
-```bash
-# Default: run all available critics in parallel (recommended)
-roast(domain="codebase", target="/src")
-
-# Restrict to a subset only when the user explicitly names which critics
-roast(domain="codebase", target="/src", clis=["codex", "agy"])
+```json
+{
+  "domain": "codebase",
+  "target": "/absolute/path/to/repo",
+  "context": "Review the authentication changes. Trace session creation, expiry, and authorization checks. Cite file paths and lines.",
+  "limit": 20000
+}
 ```
 
-### Agent Strengths
+Use an existing directory as `target`. The path is included in the critic's prompt; it does not change the subprocess working directory, which defaults to the server's launch directory. Use absolute paths and identify the files or commands you want checked in `context`. For domains that review an idea, plan, or other text, put that material in `context`:
 
-Different agents have different strengths:
-- **Code review**: Claude, Codex, Agy
-- **Architecture**: Claude, Codex, Agy
-- **Security**: Codex, Claude, Agy
-- **Research**: Claude, Codex, Agy
-
-When auto-selecting (no `clis` parameter), `agy` is always tried LAST since it's the slowest per call. Explicit `clis=["agy"]` honors the request regardless.
-
-### Antigravity (Agy) Auth Setup
-
-Local dev (one-time):
-```bash
-agy "hi"   # browser OAuth flow seeds the macOS keychain (or Linux file)
+```json
+{
+  "domain": "architecture",
+  "target": "/absolute/path/to/repo",
+  "context": "We plan to move invoice generation to a queue. Assess duplicate delivery, transaction boundaries, and recovery after a worker crash."
+}
 ```
 
-CI / GitHub Actions: capture the token from your local macOS keychain and store as a GH secret named `AGY_OAUTH_TOKEN`:
-```bash
-security find-generic-password -s gemini -a antigravity -w \
-  | sed 's/^go-keyring-base64://' | base64 -d \
-  | gh secret set AGY_OAUTH_TOKEN
+| Domain | Review subject | Additional arguments |
+| --- | --- | --- |
+| `codebase` | Implementation | — |
+| `file_structure` | Directory and module organization | `depth` |
+| `dependencies` | Package dependencies | `includeDevDeps` |
+| `git_history` | Commits and change history | `commitRange` |
+| `test_coverage` | Tests and coverage gaps | `runCoverage` |
+| `idea` | A proposal | `resources`, `timeline` |
+| `architecture` | System design | `scale`, `constraints`, `deployment` |
+| `research` | Research methods and claims | `field`, `claims`, `data` |
+| `security` | Security controls and threats | `assets`, `threatModel`, `compliance` |
+| `product` | Product decisions | `users`, `competition`, `metrics` |
+| `infrastructure` | Deployment and operations | `scale`, `sla`, `budget` |
+| `design` | Interface or visual design | `medium`, `audience`, `brand`, `url` |
+| `legal` | Legal arguments or documents | `practice`, `jurisdiction`, `posture` |
+
+For `design`, supplying a live `url` gives critics a concrete interface to inspect. The domain automatically requests the registered Playwright MCP server. Playwright is the built-in integration; the first Claude browser review may download Chromium. Register additional servers through the `BRUTALIST_MCP_SERVERS` JSON environment variable, keyed by name with `command` and `args`. Request names with `mcp_servers`. Claude and Codex wire these integrations; Agy currently ignores the field. Requested integrations replace Codex's configured MCP server set for that run. Check the result for actual browser observations.
+
+### Choose critics and models
+
+Omit `clis` to run all detected native critics. To select a subset, add:
+
+```json
+{
+  "domain": "codebase",
+  "target": "/absolute/path/to/repo",
+  "clis": ["claude", "codex"]
+}
 ```
-The Brutalist GitHub Action writes the secret to `~/.gemini/antigravity-cli/antigravity-oauth-token` (mode 0600) before invoking the orchestrator; agy auto-detects the container environment and reads tokens from there. Agy issue [#78](https://github.com/google-antigravity/antigravity-cli/issues/78) (env-var auth) is still open — until it closes, the file-provisioning path is the only way agy authenticates in CI.
 
-If you have BOTH the Antigravity desktop IDE and the CLI agent installed on macOS, the IDE wrapper at `~/.antigravity/antigravity/bin/agy` may shadow the CLI agent at `~/.local/bin/agy` on PATH. Brutalist auto-prefers `~/.local/bin/agy` when it exists, so no manual override is usually needed. If your install is in a non-standard location, set `AGY_BIN=$HOME/.local/bin/agy` (or wherever) to override.
+No model override means the CLI chooses its configured/default model. Brutalist does not select the newest model or update the critic CLIs for you.
 
-### Per-Call Model Pinning (Agy)
+| Critic | Per-call selection |
+| --- | --- |
+| Claude Code | `models.claude` is passed to the CLI. |
+| Codex | Uses its CLI configuration. `models.codex` is ignored unless the server has `BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true`; enabled overrides use discovered model migrations. |
+| Antigravity | `models.agy` is passed through native `--model`. Run `agy models` to get choices available to your account. |
 
-Agy supports `--model` directly. Pass `models.agy` and Brutalist forwards it to that invocation, without rewriting shared settings. Omit it to let Agy select its configured/default model. Brutalist does not independently resolve a "latest" model.
+For Agy, copy a current ID or label from `agy models` into `models.agy`. Unpinned Agy responses leave the model unspecified: the adapter's plain-text output does not identify the selected model. Check Agy's local logs when you need that evidence. Brutalist disables Agy's CLI auto-update during critic runs; this does not pin the model.
 
-```python
-roast(
-  domain="codebase",
-  target="/src",
-  clis=["agy"],
-  models={"agy": "Gemini 3.1 Pro (High)"}
-)
+### Debate a decision
+
+Call `roast_cli_debate` with a topic and both positions:
+
+```json
+{
+  "topic": "Should invoice generation move to a queue?",
+  "proPosition": "Use a queue to isolate retries and absorb load spikes.",
+  "conPosition": "Keep generation synchronous until idempotency and reconciliation are proven.",
+  "agents": ["claude", "codex"],
+  "rounds": 2,
+  "context": "Current design: checkout writes the order and invoice in one database transaction. The proposed worker would receive an order ID after commit and retry on failure."
+}
 ```
 
-Discover available IDs and labels with `agy models`; availability depends on your account and can change. The local roster checked on October 2, 2026 includes Gemini 3.8, 3.7, and 3.6 Flash (High/Medium/Low), Gemini 3.1 Pro (High/Low), Claude Sonnet 4.6 (Thinking), Claude Opus 4.6 (Thinking), and GPT-OSS 120B (Medium). Gemini 3.5 Flash is absent from that roster.
+Debates require at least two detected CLIs. `agents` is optional; when supplied it contains exactly two critics, otherwise two are selected randomly. `rounds` accepts 1–3 and defaults to 3. The current debate handler accepts `target` but does not forward it to the critics; supply the evidence to debate in `context`. Use `roast` for a repository review. Positions are assigned for the debate. Its arguments are not independent endorsements. Custom routed clients are supported by `roast`, not debates.
 
-Since Agy 1.1.2, an unresolved `--model` in print mode fails with a nonzero exit and lists available models, rather than silently falling back. See the [upstream changelog](https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md). Unpinned Agy result metadata leaves the model unspecified because the adapter captures plain text, which does not identify the resolved model; Agy's local logs can confirm the selection.
+## Read large results and follow up
 
-Brutalist sets `AGY_CLI_DISABLE_AUTO_UPDATE=1` during critic runs to keep the installed CLI binary stable. Model selection still belongs to Agy; this setting does not pin a model.
+`limit` accepts 1,000–100,000 and sets a chunk-size target in characters, not tokens. Roast pagination defaults to 90,000 characters; debate and automatic pagination use smaller defaults. Chunk boundaries, a minimum chunk size, and response headers mean it is not a hard output ceiling. Set it explicitly if your MCP client truncates results.
 
-### Verification-Heavy Domains
+For another page, reuse the returned `context_id` and the next offset reported in the response. Keep the original domain and target; omit `resume`. For example, if the response asks you to continue at offset 20,000:
 
-`legal`, `research`, and `security` ship with a mandatory verification protocol. Before citing any external authority (case, statute, study, CVE, advisory), agents must invoke their native web tools, lift a verbatim quote from the source, and tag the citation with one of:
+```json
+{
+  "domain": "codebase",
+  "target": "/absolute/path/to/repo",
+  "context_id": "<returned context_id>",
+  "offset": 20000,
+  "limit": 20000
+}
+```
 
-- `[VERIFIED: <url> | "<verbatim quote supporting the attribution>"]`
-- `[SUPPLIED: <location> | "<verbatim quote from supplied materials>"]`
-- `[UNVERIFIED: <reason>]` — verification failed; no quote
+You can also pass a cursor such as `"offset:20000"` instead of `offset`. Page reads retrieve cached output. The cache defaults to two hours and belongs to the server process; a restart loses it.
 
-Untagged citations are a protocol violation. The "state doctrine without a cite" fallback is conditional on a failed web lookup, not a parallel option. Consumers of the critique can spot-check citations by fetching the URL and grepping for the quoted string.
+For a fresh follow-up, include the relevant earlier findings in `context` and set `force_refresh: true`:
 
-### Codex Model Selection
+```json
+{
+  "domain": "codebase",
+  "target": "/absolute/path/to/repo",
+  "force_refresh": true,
+  "context": "The earlier review found duplicate invoice creation after retries. Check whether the new idempotency key prevents it; inspect both the database constraint and worker retry path."
+}
+```
 
-Codex uses the Codex CLI's configured/default model by default. The server deliberately does not pass `--model` for Codex, even if `models.codex` is present, so stale tool-call tags cannot override a newer `~/.codex/config.toml` value.
+The tool also accepts `context_id` with `resume: true` for history-based continuation, but the current handler has limitations: filesystem follow-ups record the target path as the new conversation message, and a cache hit can return earlier output without running critics. `force_refresh` skips history loading. Use the fresh-follow-up pattern above when you need a new review.
 
-Set `BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true` only if you explicitly want Brutalist to pass `models.codex` through as `codex exec --model ...`. When that opt-in is enabled, deprecated Codex model names are still resolved through the migration table discovered from the Codex CLI config.
+Use `force_refresh: true` after changing files, routed clients, or MCP integrations. File contents, `clients`, and `mcp_servers` are not all represented in the cache key.
 
-### Custom Claude Code Routes
+## Custom Claude-compatible endpoints
 
-Brutalist can run named Claude Code clients in parallel, including Anthropic-compatible endpoints such as GLM gateways. `clients[]` is **additive** — the named clients run *alongside* the native critics:
+`roast` can add named Claude Code clients routed through Anthropic-compatible endpoints. Set the token in the MCP server's environment and reference its variable name:
 
-```js
-roast(
-  domain="codebase",
-  target="/src",
-  clients=[
+```json
+{
+  "domain": "codebase",
+  "target": "/absolute/path/to/repo",
+  "clis": [],
+  "clients": [
     {
-      id: "glm",
-      provider: "claude",
-      baseUrl: "https://immersivecommons13.tail5da903.ts.net",
-      authTokenEnv: "GLM_ANTHROPIC_AUTH_TOKEN",
-      model: "glm-5.1"
+      "id": "gateway",
+      "provider": "claude",
+      "baseUrl": "https://gateway.example.com",
+      "authTokenEnv": "REVIEW_GATEWAY_TOKEN",
+      "model": "<model supported by your endpoint>"
     }
   ]
-)
+}
 ```
 
-Set `GLM_ANTHROPIC_AUTH_TOKEN` in the environment before starting `brutalist-mcp`. The example above runs `claude` + `codex` + `agy` (native) **and** the routed `glm` critic. To run *only* the named clients, pass an explicit empty `clis: []`.
+`clients` is additive to native critics; `clis: []` runs only named clients. Up to 16 clients are accepted. Endpoint, model, and credential-routing fields are supported only for the `claude` provider. You can also configure default clients through the server's `BRUTALIST_CLAUDE_CLIENTS` JSON environment variable. A nonempty per-call `clients` array replaces those defaults.
 
-A client is **routed** as soon as it sets `baseUrl` (or `authToken`/`authTokenEnv`). Routed clients are hardened by default:
+Routed clients use separate configuration directories under `~/.brutalist/claude-clients/<id>` unless `configDir` is supplied. They do not inherit native Claude credentials unless `includeProcessAuth: true` is set. Their `smallFastModel` defaults to the routed `model`.
 
-- **Isolated credentials.** A routed client never inherits the host's native `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN` — only its own endpoint + token reach the gateway process. Set `includeProcessAuth: true` to opt back into inheriting native auth. (Conversely, the native critic never inherits an ambient `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`, so a `GLM` export in your shell can't silently reroute the trusted critic.)
-- **Isolated state.** `configDir` maps to `CLAUDE_CONFIG_DIR`; if omitted, a per-client dir under `~/.brutalist/claude-clients/<id>` is created (mode `0700`).
-- **`smallFastModel`** defaults to `model` so a gateway never receives Claude's built-in haiku model name.
-- **MCP containment (legacy label: `"hardened"`).** Routed critics suppress caller-requested MCP servers by default. The backward-compatible `"hardened"` name is not a shell or network sandbox: Bash, `WebFetch`, and `WebSearch` remain available in both modes. Set `containment: "standard"` to restore requested MCP for a trusted endpoint.
+The default containment setting, named `hardened`, suppresses requested MCP integrations. It does not sandbox shell commands or network access: Bash, WebFetch, and WebSearch remain available. `containment: "standard"` restores requested MCP integrations.
 
-Custom-endpoint fields (`baseUrl`, `authToken`, `model`, `containment`, …) are only valid for `provider: "claude"`; a `codex`/`agy` client carrying them is rejected. Up to **16** named clients may run in one roast (`clients[]` cap). `roast_cli_debate` does not support `clients`.
+## Execution and troubleshooting
 
-#### Many routes at once (GitHub Action)
+Critics can inspect files and invoke tools. Codex runs with `--sandbox read-only`. Claude denies its named mutation tools but enables Bash and web tools while bypassing permission prompts; this is not a filesystem sandbox. Agy runs with `--sandbox` and permission prompts disabled, and can write scratch artifacts. External MCP tools add their own capabilities. Use a checkout and credentials appropriate for those processes.
 
-The GitHub Action wires the same multi-client surface. Pass a JSON array via `custom-claude-clients` to route an arbitrary number of Claude critics (each through its own endpoint + secret) in one review:
+A roast can return findings when only some critics succeed. Check which critics contributed; a missing critic is not agreement. Error text may be generic or redacted. Authentication failures, quota limits, unsupported models, and client timeouts need separate diagnosis.
 
-```yaml
-- uses: ejmockler/brutalist-mcp/packages/github-action@v1
-  with:
-    anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
-    custom-claude-clients: |
-      [
-        { "id": "glm",   "baseUrl": "https://glm.example/v1",   "authToken": "${{ secrets.GLM_TOKEN }}",   "model": "glm-5.1",   "contextWindow": 128000 },
-        { "id": "kimi",  "baseUrl": "https://kimi.example/v1",  "authToken": "${{ secrets.KIMI_TOKEN }}",  "model": "kimi-k2",   "contextWindow": 200000 }
-      ]
+Useful server environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `BRUTALIST_TIMEOUT` | Per-agent roast timeout in milliseconds; default `7200000` (two hours). |
+| `BRUTALIST_AGY_TIMEOUT` | Agy timeout ceiling in milliseconds; can shorten, not extend, the selected agent budget. |
+| `AGY_BIN` | Override the Agy executable path. |
+| `BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE` | Set exactly `true` to pass `models.codex` to Codex. |
+| `BRUTALIST_MCP_SERVERS` | Additional MCP server definitions as a JSON object keyed by server name. |
+| `BRUTALIST_CACHE_TTL_HOURS` | Result-cache lifetime; default `2`. |
+| `BRUTALIST_LOG_FILE` | Set exactly `true` to enable NDJSON file logs. |
+| `BRUTALIST_LOG_DIR` | Override the log directory; default `~/.brutalist-mcp/logs`. |
+| `BRUTALIST_LOG_LEVEL` | Minimum file-log level; default `info`. |
+
+Set these on the MCP server process, using your client's server environment configuration. The client tool timeout is a separate setting. Logs can contain paths, model names, and prompt excerpts; redaction does not make the entire file safe to share.
+
+The `legal`, `research`, and `security` prompts ask critics to verify external authorities and label citations with `[VERIFIED: URL | "quote"]`, `[SUPPLIED: location | "quote"]`, or `[UNVERIFIED: reason]`. These are prompt instructions, not a programmatic guarantee that a citation was checked.
+
+## GitHub pull-request reviews
+
+The repository also contains a [GitHub Action](packages/github-action/README.md) and [orchestrator](packages/orchestrator). The Action posts findings as a PR review and has its own CLI installation and credential requirements. Use its README and [input definitions](packages/github-action/action.yml) for workflow setup, OAuth provisioning, and `custom-claude-clients` configuration.
+
+## Development
+
+```sh
+npm ci
+npm run build
+npm test -- tests/unit tests/integration/pagination-e2e.test.ts tests/integration/cache.integration.test.ts tests/smoke
 ```
 
-Each entry's token is placed in a dedicated env var and referenced via `authTokenEnv` — raw tokens are never inlined into the forwarded `BRUTALIST_CLAUDE_CLIENTS`. Every client gets an isolated `~/.brutalist/claude-clients/<id>` config dir (mode `0700`), is isolated from native credentials, and suppresses caller-requested MCP by default exactly like the `roast` `clients[]` above. The legacy `"hardened"` label does **not** mean egress-sandboxed: Bash, `WebFetch`, and `WebSearch` remain available. Each critic reviews the whole diff chunked to its **own** context window (claude ~1M with `[1m]`, codex 272k, agy ~135k, each routed client at its declared `contextWindow`), every stream additionally capped by the orchestrator brain's window (1M with `[1m]` on `model`, else ~200k, since the brain reads every chunk). A small client no longer forces finer chunks on the other critics — it only shrinks its own stream — so set each client's `contextWindow` to its model's usable window. When the whole diff already fits the smallest active window, all critics collapse into a single shared pass.
+The [CI workflow](.github/workflows/ci.yml) also tests and builds the orchestrator and GitHub Action. Tagged releases publish the MCP package to npm with provenance after those checks pass.
 
-The singular `custom-claude-*` inputs remain supported for the one-client case and are **backward-compatible** — they work *alongside* `custom-claude-clients` (the singular trio, if set, appends one more client; deduped by id, keep-first on collision). Add `"containment": "standard"` to an entry to restore requested MCP for an endpoint you trust. The array cap matches the tool: **16** clients.
-
-## Why Multiple Perspectives
-
-Each CLI agent brings a different approach to analysis:
-- Different training data and focus areas
-- Independent evaluation of the same code
-- Varied perspectives on technical tradeoffs
-
-Getting multiple viewpoints helps identify issues that a single perspective might miss.
-
----
-
-**License:** MIT
-**Issues:** https://github.com/ejmockler/brutalist-mcp/issues
+License: MIT · [Report an issue](https://github.com/ejmockler/brutalist-mcp/issues)

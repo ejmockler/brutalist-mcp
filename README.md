@@ -23,21 +23,22 @@ Real file-system access. Straightforward analysis. No sugar-coating.
 
 You need at least one of these installed:
 
+macOS / Linux installation commands:
+
 ```bash
-# Option 1: Claude Code (recommended)
-npm install -g claude
+# Claude Code
+curl -fsSL https://claude.ai/install.sh | bash
 
-# Option 2: Codex
-# Install from https://github.com/openai/codex-cli
+# Codex
+npm install -g @openai/codex
 
-# Option 3: Antigravity (agy) — the gemini-cli successor
+# Antigravity CLI (agy)
 curl -fsSL https://antigravity.google/cli/install.sh | bash
-# Then ONE-TIME interactive auth (browser OAuth flow):
-agy "hi"
-# On macOS, the agent binary lives at ~/.local/bin/agy; the desktop IDE
-# at ~/.antigravity/antigravity/bin/agy can shadow it on PATH. If both
-# are installed, set AGY_BIN=$HOME/.local/bin/agy in your environment.
 ```
+
+Launch the CLI you installed (`claude`, `codex`, or `agy`) and complete its sign-in flow before running a review. For other platforms, see the official [Claude Code](https://code.claude.com/docs/en/setup), [Codex](https://developers.openai.com/codex/cli/), and [Antigravity CLI](https://github.com/google-antigravity/antigravity-cli#installation) instructions.
+
+Brutalist prefers `~/.local/bin/agy` when present to avoid the desktop IDE's launcher shadowing the CLI on PATH. Set `AGY_BIN` only if you need a different executable. Run `agy models` to list the model IDs available to your account.
 
 ### Step 2: Install the MCP Server
 
@@ -50,26 +51,21 @@ claude mcp add brutalist --scope user -- npx -y @brutalist/mcp@latest
 
 **Codex:**
 ```bash
-# Install globally once to avoid npx startup chatter
-npm i -g @brutalist/mcp
-# Add MCP using the installed binary (clean stdio)
-codex mcp add brutalist -- brutalist-mcp
+codex mcp add brutalist -- npx -y @brutalist/mcp@latest
 ```
 
-**Configuring `tool_timeout_sec` for Codex:**
-Codex's MCP client defaults `tool_timeout_sec` to 60 seconds, so configure the Brutalist server entry directly in `~/.codex/config.toml`; it cannot be passed via `codex mcp add`.
+**Codex tool timeout:** Codex defaults to a 60-second timeout per MCP tool call. Brutalist waits for the critics to finish, so longer reviews need a larger client timeout. `codex mcp add` has no dedicated timeout flag; persist the setting in `~/.codex/config.toml` after adding the server. See [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
 
-Set it to at least 9000 seconds for a normal parallel roast. That leaves 30
-minutes of transport and synthesis headroom beyond Brutalist's two-hour
-per-agent default; raise it further for multi-round debates:
+For a parallel roast using Brutalist's two-hour per-agent default, 9,000 seconds allows an additional 30 minutes for startup and response processing:
 
 ```toml
 [mcp_servers.brutalist]
-command = "brutalist-mcp" # Ensure this matches your installation command
-args = [] # Depending on your setup, this might be empty or contain arguments
-tool_timeout_sec = 9000 # 2h critic budget + 30m client/synthesis headroom
+command = "npx"
+args = ["-y", "@brutalist/mcp@latest"]
+tool_timeout_sec = 9000
 ```
 
+This changes the client timeout, not the critics' execution budget. Adjust it for your configured agent timeouts. Debates run multiple turns and can exceed this budget; allow for their rounds and retries.
 
 **Cursor:**
 Add to `~/.cursor/mcp.json`:

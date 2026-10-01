@@ -411,6 +411,7 @@ describe('CLI Provider Command Construction', () => {
       const i = result.args.indexOf('--model');
       expect(i).toBeGreaterThanOrEqual(0);
       expect(result.args[i + 1]).toBe('Claude Opus 4.6 (Thinking)');
+      expect(result.model).toBe('Claude Opus 4.6 (Thinking)');
       // Legacy env-swap pin is gone.
       expect(result.env.BRUTALIST_AGY_MODEL_PIN).toBeUndefined();
     });
@@ -421,6 +422,8 @@ describe('CLI Provider Command Construction', () => {
       expect(pinned.env.AGY_CLI_DISABLE_AUTO_UPDATE).toBe('1');
       expect(plain.env.AGY_CLI_DISABLE_AUTO_UPDATE).toBe('1');
       expect(plain.args).not.toContain('--model');
+      expect(plain.model).toBeUndefined();
+      expect((orchestrator as any).modelResolver.getDefaults().agy).toBeUndefined();
     });
 
     it('uses the two-hour default for every Agy analysis domain', async () => {

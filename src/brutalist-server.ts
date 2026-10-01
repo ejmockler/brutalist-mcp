@@ -40,7 +40,7 @@ import { DEFAULT_AGENT_TIMEOUT_MS, positiveIntegerOr } from './constants.js';
 // from package.json would be cleaner but can't reference import.meta here: jest
 // compiles this module to CommonJS (TS1343), so the constant + the guard test is
 // the portable fix.
-const PACKAGE_VERSION = process.env.npm_package_version || "1.18.9";
+const PACKAGE_VERSION = process.env.npm_package_version || "1.18.10";
 
 /**
  * BrutalistServer - Composition root for the Brutalist MCP Server

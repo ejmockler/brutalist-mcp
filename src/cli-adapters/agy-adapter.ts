@@ -10,7 +10,7 @@
  *     ARG_MAX cap). Oversized prompts and all codebase critiques use a
  *     secure scratch-file pointer instead.
  *   - agy 1.0.10+ accepts a human-readable model label through --model
- *     (for example "Gemini 3.5 Flash (Medium)"). Without an override,
+ *     (choose from `agy models`). Without an override,
  *     agy uses its configured/default model.
  *   - No --system flag either. The adversarial prompt is composed into
  *     the user-prompt slot via the promptWrapper-style folding below.
@@ -244,12 +244,6 @@ const AGY_CONFIG: CLIBuilderConfig = {
   maxTimeoutMs: AGY_MAX_TIMEOUT_MS,
 };
 
-// Default model when nothing's pinned. agy reads settings.json at
-// startup; if the user previously chose a model via TUI's /model
-// command, that value is what runs. Without any settings.json model
-// key, the runtime default is Flash Medium.
-const AGY_DEFAULT_MODEL = 'Gemini 3.5 Flash (Medium)';
-
 // Refusal signals. agy bakes auth and quota outcomes into stdout (not
 // stderr), exit code 0, with anchored prefixes we can match without
 // pulling in prose-as-signal antipatterns. See affordance map § Output
@@ -445,9 +439,8 @@ export class AgyAdapter implements CLIProvider {
     // a dead string in 1.0.2, which is why the legacy path swapped
     // settings.json under flock). It resolves per-session with no file race
     // and no leftover lock marker; unknown labels are rejected at runtime
-    // ("model %s not found"). Supported labels: "Gemini 3.5 Flash (High|Medium)",
-    // "Gemini 3.1 Pro (High|Low)", "Claude Sonnet 4.6 (Thinking)",
-    // "Claude Opus 4.6 (Thinking)", "GPT-OSS 120B (Medium)" (per entitlement).
+    // ("model %s not found"). Available models change; use `agy models`
+    // for the account's current IDs and labels.
     if (modelPin) {
       agyArgs.push('--model', modelPin);
       log.info('Agy model pin requested (native --model flag)', { model: modelPin });
@@ -488,7 +481,9 @@ export class AgyAdapter implements CLIProvider {
       input: '',
       env,
       tempPromptPath,
-      model: modelPin || AGY_DEFAULT_MODEL,
+      // Plain-text capture does not identify agy's resolved default.
+      // Record only an explicit request rather than inventing a model label.
+      model: modelPin || undefined,
     };
   }
 

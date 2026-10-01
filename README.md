@@ -2,7 +2,7 @@
 
 Multi-perspective code analysis using Claude Code, Codex, and Antigravity (`agy`) CLI agents.
 
-> **Gemini → Antigravity transition (May 2026).** Google sunsets `gemini-cli` for Pro/Ultra/free users on **2026-06-18**. The successor `agy` (Antigravity v1.0.2) is now wired in as the third critic; it's slower per call (~30-60s vs 5-25s for claude/codex) and hard-pinned to `Gemini 3.5 Flash (Medium)` until Google ships [agy #35](https://github.com/google-antigravity/antigravity-cli/issues/35) (per-call `--model`), but auth + subprocess capture both work today.
+> **Antigravity model selection (checked October 2, 2026).** Agy supports native per-call `--model` selection; [agy #35](https://github.com/google-antigravity/antigravity-cli/issues/35) is closed. Brutalist passes a model only when `models.agy` is supplied; otherwise Agy selects its configured/default model. On this machine, Agy 1.2.14 selected `Gemini 3.8 Flash (High)` for the four most recent reviews. Run `agy models` for your account's current model IDs and labels. CLI defaults are not a promise to select the newest model.
 
 Get direct, honest technical feedback on your code, architecture, and ideas before they reach production.
 
@@ -170,9 +170,9 @@ roast_cli_debate "Microservices vs Monolith for our e-commerce platform"
 This MCP server coordinates analysis from locally installed CLI agents:
 - **Claude Code CLI** - Code review and architectural analysis
 - **Codex CLI** - Security and technical implementation review
-- **Antigravity (`agy`) CLI** - Gemini 3.5 Flash-tier rapid pattern-scan critique
+- **Antigravity (`agy`) CLI** - Independent critique using Agy's configured/default model or an explicit per-call model
 
-Each agent runs locally with direct file-system access, providing independent perspectives on your code and design decisions. Agy is structurally an agent (not a completion API) — it's slower per call and produces side effects under `~/.gemini/antigravity-cli/scratch/` (the adapter passes `--sandbox` to keep those out of the user's workspace).
+Each agent runs locally with direct file-system access, providing independent perspectives on your code and design decisions. Agy runs an agent with tools and can produce scratch artifacts under `~/.gemini/antigravity-cli/scratch/`; the adapter passes `--sandbox`. Review time depends on the task and tool use: the four recent local Agy reviews took about 3–7 minutes.
 
 **Analysis time:** Up to 25 minutes for complex projects. Thorough analysis requires time to examine code patterns, dependencies, and architectural decisions.
 
@@ -277,7 +277,7 @@ If you have BOTH the Antigravity desktop IDE and the CLI agent installed on macO
 
 ### Per-Call Model Pinning (Agy)
 
-agy `--print` has no `--model` flag, but its `settings.json` accepts a human-readable label. Brutalist exploits this transparently: pass `models.agy` and brutalist writes the requested label under `flock(2)` for the duration of the call, then restores.
+Agy supports `--model` directly. Pass `models.agy` and Brutalist forwards it to that invocation, without rewriting shared settings. Omit it to let Agy select its configured/default model. Brutalist does not independently resolve a "latest" model.
 
 ```python
 roast(
@@ -288,14 +288,11 @@ roast(
 )
 ```
 
-Supported labels (Pro / Claude / GPT-OSS tiers require Antigravity entitlement; Flash is always available):
-- `Gemini 3.5 Flash (High)` / `Gemini 3.5 Flash (Medium)`
-- `Gemini 3.1 Pro (High)` / `Gemini 3.1 Pro (Low)`
-- `Claude Sonnet 4.6 (Thinking)`
-- `Claude Opus 4.6 (Thinking)`
-- `GPT-OSS 120B (Medium)`
+Discover available IDs and labels with `agy models`; availability depends on your account and can change. The local roster checked on October 2, 2026 includes Gemini 3.8, 3.7, and 3.6 Flash (High/Medium/Low), Gemini 3.1 Pro (High/Low), Claude Sonnet 4.6 (Thinking), Claude Opus 4.6 (Thinking), and GPT-OSS 120B (Medium). Gemini 3.5 Flash is absent from that roster.
 
-Invalid labels silently downselect to Flash Medium (agy's behavior, not ours).
+Since Agy 1.1.2, an unresolved `--model` in print mode fails with a nonzero exit and lists available models, rather than silently falling back. See the [upstream changelog](https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md). Unpinned Agy result metadata leaves the model unspecified because the adapter captures plain text, which does not identify the resolved model; Agy's local logs can confirm the selection.
+
+Brutalist sets `AGY_CLI_DISABLE_AUTO_UPDATE=1` during critic runs to keep the installed CLI binary stable. Model selection still belongs to Agy; this setting does not pin a model.
 
 ### Verification-Heavy Domains
 

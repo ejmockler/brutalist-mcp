@@ -22,17 +22,16 @@ interface CLIModelInfo {
  * For codex, deprecated model names are resolved through the
  * migration chain before invocation.
  *
- * agy defaults to "Gemini 3.5 Flash (Medium)" but honors a model override
- * via its native --model flag (live as of 1.0.10; the adapter passes it).
- * cliModels.agy.defaultModel is that default.
+ * agy owns default selection and honors a model override via --model.
+ * Its resolved default is not discovered here; leave metadata unspecified
+ * rather than reporting an obsolete hardcoded model.
  */
-const AGY_DEFAULT_MODEL = 'Gemini 3.5 Flash (Medium)';
 
 export class ModelResolver {
   private cliModels: Record<CLIName, CLIModelInfo> = {
     claude: { migrations: new Map() },
     codex: { migrations: new Map() },
-    agy: { defaultModel: AGY_DEFAULT_MODEL, migrations: new Map() },
+    agy: { migrations: new Map() },
   };
 
   private initialized = false;
@@ -56,7 +55,7 @@ export class ModelResolver {
     logger.info('🔍 ModelResolver initialized', {
       claude: this.cliModels.claude.defaultModel || '(cli default)',
       codex: this.cliModels.codex.defaultModel || '(cli default)',
-      agy: this.cliModels.agy.defaultModel,
+      agy: this.cliModels.agy.defaultModel || '(cli default; not discovered)',
       codexMigrations: this.cliModels.codex.migrations.size,
     });
   }
@@ -98,7 +97,7 @@ export class ModelResolver {
       const def = this.cliModels[cli].defaultModel;
       parts.push(`${cli}: ${def ? `default ${def}` : 'uses CLI default'}`);
     }
-    return `Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Agy defaults to ${AGY_DEFAULT_MODEL} and honors a label override via its native --model flag (1.0.10+). Omit to use each CLI's configured default. Current defaults — ${parts.join(', ')}`;
+    return `Per-CLI model override. Claude honors overrides. Codex uses the Codex CLI configured/default model unless BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true. Agy uses its configured/default model unless an override is passed via its native --model flag; run agy models for available choices. Omit to use each CLI's configured default. Current defaults — ${parts.join(', ')}`;
   }
 
   /** Build roster text for cli_agent_roster. */
@@ -113,8 +112,8 @@ export class ModelResolver {
       info += ` — ${migrations.size} migration(s) tracked`;
     }
     info += '\n';
-    info += `**Agy:** ${defaults.agy} (default; override via --model)\n\n`;
-    info += '*Claude model overrides are passed through. Codex uses the Codex CLI configured/default model unless `BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true` is set; deprecated codex names are auto-resolved only when that opt-in is enabled. Agy defaults to Flash Medium but honors a label override via its native --model flag (1.0.10+).*\n';
+    info += `**Agy:** ${defaults.agy || '(CLI default; not discovered)'} (override via --model)\n\n`;
+    info += '*Claude model overrides are passed through. Codex uses the Codex CLI configured/default model unless `BRUTALIST_CODEX_ALLOW_MODEL_OVERRIDE=true` is set; deprecated codex names are auto-resolved only when that opt-in is enabled. Agy owns default selection and honors an override via its native --model flag. Run `agy models` for available choices.*\n';
     return info;
   }
 
